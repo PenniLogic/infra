@@ -185,11 +185,25 @@ class PortConflictTests(unittest.TestCase):
 
     def test_compose_bind_failures_are_translated_to_named_ports(self):
         samples = {
+            # Docker Engine 28.0.4 on GitHub's ubuntu-24.04 runner, captured verbatim from PR #40's CI
+            # (https://github.com/PenniLogic/infra/actions/runs/36617966906). Source: moby v28.0.4
+            # libnetwork/drivers/bridge/port_mapping_linux.go, bindTCPOrUDP:
+            #   fmt.Errorf("failed to bind host port for %s: %w", cfg, err)
+            # where %s is PortBinding.String() = host-ip:host-port:container-ip:container-port/proto.
+            # The HOST port (57005) must be captured, not the container port (5432).
+            "Error response from daemon: failed to set up container networking: driver failed programming external "
+            "connectivity on endpoint pennilogic-test-eab256a3-bind-postgres-1 "
+            "(3e5c6aee731e5fd6c4ab2ec8877a8d011b9f8ee28e6bed4e21196627c7fdcef4): failed to bind host port for "
+            "127.0.0.1:57005:172.19.0.2:5432/tcp: address already in use": [57005],
+            # Same daemon, IPv6 host address (PortBinding.String() brackets it):
+            "failed to bind host port for [::1]:16379:172.19.0.3:6379/tcp: address already in use": [16379],
+            # Same file, published-port-range sibling: fmt.Errorf("failed to bind host port %d for %s: %w", ...):
+            "failed to bind host port 57005 for 127.0.0.1:57005-57010:172.19.0.2:5432/tcp: address already in use": [57005],
             # Docker Desktop for Windows 29.7.2, captured verbatim from a failed `compose up`:
             "Error response from daemon: ports are not available: exposing port TCP 127.0.0.1:55726 -> 127.0.0.1:0: "
             "listen tcp4 127.0.0.1:55726: bind: Only one usage of each socket address (protocol/network address/port)"
             " is normally permitted.": [55726],
-            # Linux / macOS wording:
+            # Docker Engine < 28 on Linux / macOS:
             "Error response from daemon: Ports are not available: exposing port TCP 127.0.0.1:6379 -> 127.0.0.1:0: "
             "listen tcp 127.0.0.1:6379: bind: address already in use": [6379],
             # Windows excluded port range:
@@ -200,13 +214,16 @@ class PortConflictTests(unittest.TestCase):
             "Bind for 127.0.0.1:5432 failed: port is already allocated": [5432],
         }
         for stderr, ports in samples.items():
-            with self.subTest(stderr=stderr[:60]):
+            with self.subTest(stderr=stderr[-70:]):
                 error = bootstrap.compose_port_failure(stderr)
                 self.assertIsNotNone(error, stderr)
                 self.assertEqual(("port_conflict", ports), (error.kind, error.details["ports"]))
                 self.assertIn(f"port(s) {ports[0]}", str(error))
                 self.assertIn("PENNILOGIC_*_PORT", str(error))
         self.assertIsNone(bootstrap.compose_port_failure("some unrelated failure"))
+        # A Docker 28 bind failure for a different reason must not be misreported as a port conflict.
+        self.assertIsNone(bootstrap.compose_port_failure(
+            "failed to bind host port for 127.0.0.1:57005:172.19.0.2:5432/tcp: permission denied"))
 
     def test_conflict_error_carries_earlier_warnings(self):
         conflicts = [{"service": "postgres", "port": 5432, "address": "127.0.0.1", "holder": "x",

@@ -58,11 +58,19 @@ SERVICE_PORTS = {"postgres": "PENNILOGIC_POSTGRES_PORT", "redis": "PENNILOGIC_RE
 VOLUMES = ("pgdata", "redisdata")
 PROJECT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 PASSWORD_LINE = re.compile(r"^PENNILOGIC_POSTGRES_PASSWORD=[ \t]*$", re.MULTILINE)
-# Daemon wording differs by platform: Linux/macOS "address already in use", Windows
-# "Only one usage of each socket address" (port held) or "An attempt was made to access a
-# socket" (excluded port range), plus the older "Bind for <ip>:<port> failed" form.
+# Daemon wording differs by platform and version. Each alternative captures the HOST port:
+#  - Docker Engine >= 28 on Linux (moby libnetwork/drivers/bridge/port_mapping_linux.go,
+#    "failed to bind host port for %s: %w" with %s = host-ip:host-port:container-ip:container-port/proto,
+#    IPv6 host in brackets): "failed to bind host port for 127.0.0.1:57005:172.19.0.2:5432/tcp: address already in use";
+#    its published-port-range sibling "failed to bind host port %d for %s: %w" names the port first
+#  - Docker Engine < 28 on Linux/macOS: "listen tcp 127.0.0.1:6379: bind: address already in use"
+#  - Docker Desktop for Windows: "bind: Only one usage of each socket address" (port held) or
+#    "bind: An attempt was made to access a socket" (excluded port range)
+#  - older daemons: "Bind for 127.0.0.1:5432 failed: port is already allocated"
 PORT_IN_USE = re.compile(
-    r"(?:Bind for \S*?:(\d+) failed|"
+    r"(?:failed to bind host port for (?:\[[0-9A-Fa-f:.]*\]|[0-9.]+):(\d+):\S+: address already in use|"
+    r"failed to bind host port (\d+) for \S+: address already in use|"
+    r"Bind for \S*?:(\d+) failed|"
     r":(\d+): bind: address already in use|"
     r":(\d+): bind: Only one usage of each socket address|"
     r":(\d+): bind: An attempt was made to access a socket)",
