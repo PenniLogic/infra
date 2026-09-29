@@ -20,6 +20,11 @@ named volumes: the only destructive path, always explicit). ``--smoke`` addition
 ``scripts/smoke_infra.py`` and embeds its separate ``{service, status, latency_ms}`` document
 under ``"smoke"``. Human-readable progress goes to stderr; credentials never appear in
 either stream. Only resources labelled with this Compose project are ever touched.
+
+``startup_ms`` is the container's own start-to-first-healthy-probe time read from Docker's
+health log (``startup_source: "health_log"``); a container that was already running and
+healthy before this invocation reports ``0`` (``"already_running"``); when the health log
+has rotated the value is ``null`` (``"unknown"``). It is never this script's own wait time.
 """
 
 import argparse
@@ -50,9 +55,14 @@ SERVICES = smoke_infra.SERVICES
 SERVICE_PORTS = {"postgres": "PENNILOGIC_POSTGRES_PORT", "redis": "PENNILOGIC_REDIS_PORT"}
 VOLUMES = ("pgdata", "redisdata")
 PROJECT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-PASSWORD_LINE = re.compile(r"^PENNILOGIC_POSTGRES_PASSWORD=\s*$", re.MULTILINE)
+PASSWORD_LINE = re.compile(r"^PENNILOGIC_POSTGRES_PASSWORD=[ \t]*$", re.MULTILINE)
+# Daemon wording differs by platform: Linux/macOS "address already in use", Windows
+# "Only one usage of each socket address" (port held) or "An attempt was made to access a
+# socket" (excluded port range), plus the older "Bind for <ip>:<port> failed" form.
 PORT_IN_USE = re.compile(
-    r"(?:Bind for \S*?:(\d+) failed|:(\d+): bind: address already in use|"
+    r"(?:Bind for \S*?:(\d+) failed|"
+    r":(\d+): bind: address already in use|"
+    r":(\d+): bind: Only one usage of each socket address|"
     r":(\d+): bind: An attempt was made to access a socket)",
 )
 POLL_SECONDS = 0.5
@@ -75,15 +85,20 @@ class ProjectLock:
     """Serialize bootstrap invocations per Compose project on this machine.
 
     Compose itself is not atomic: two simultaneous `up` runs of one project race on
-    container names and both fail. The lock lives in the temp directory, so concurrent
-    invocations wait for each other instead of colliding.
+    container names and both fail. The lock is an OS byte-range lock on a small file in
+    ``<temp>/pennilogic-bootstrap-locks/``; it is released automatically when the holding
+    process exits, so it can never be stale. The file is removed on release when possible.
     """
 
     def __init__(self, project, wait_seconds=LOCK_WAIT_SECONDS):
-        self.path = Path(tempfile.gettempdir()) / f"pennilogic-bootstrap-{project}.lock"
+        # Per-user directory so another local account cannot pre-create the lock file (POSIX /tmp).
+        owner = f"-{os.getuid()}" if hasattr(os, "getuid") else ""
+        self.directory = Path(tempfile.gettempdir()) / f"pennilogic-bootstrap-locks{owner}"
+        self.path = self.directory / f"{project}.lock"
         self.wait_seconds, self.handle = wait_seconds, None
 
     def __enter__(self):
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.handle = open(self.path, "a+", encoding="utf-8")
         deadline = time.monotonic() + self.wait_seconds
         announced = False
@@ -100,8 +115,9 @@ class ProjectLock:
                 if time.monotonic() > deadline:
                     self.handle.close()
                     raise BootstrapError(
-                        "locked", f"Another bootstrap of this project has held {self.path} for over"
-                        f" {self.wait_seconds}s; wait for it or remove the stale lock file.",
+                        "locked", f"Another bootstrap of this project has been running for over"
+                        f" {self.wait_seconds}s (lock {self.path}). Wait for it to finish, or find and"
+                        " stop that bootstrap process; the lock is released when it exits.",
                     ) from None
                 if not announced:
                     log("another bootstrap of this project is running; waiting for it to finish")
@@ -119,6 +135,10 @@ class ProjectLock:
                 fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
         finally:
             self.handle.close()
+        try:
+            self.path.unlink()  # best effort; a concurrent waiter may legitimately hold it open
+        except OSError:
+            pass
         return False
 
 
@@ -150,7 +170,12 @@ def parse_json_records(text):
 # --- environment file -------------------------------------------------------------------------
 
 def ensure_env_file(env_file, example=ENV_EXAMPLE):
-    """Create ``env_file`` from the example with a generated password. Returns True if created."""
+    """Create ``env_file`` from the example with a generated password. Returns True if created.
+
+    The file is created exclusively (``O_EXCL``) with mode 0600 where the platform honours
+    it (POSIX; on Windows the directory ACL applies). If another invocation created it in
+    the meantime, that file is kept and False is returned.
+    """
     env_file = Path(env_file)
     if env_file.exists():
         return False
@@ -165,8 +190,10 @@ def ensure_env_file(env_file, example=ENV_EXAMPLE):
         "PENNILOGIC_POSTGRES_PASSWORD=" + secrets.token_urlsafe(24), template, count=1,
     )
     env_file.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    descriptor = os.open(env_file, flags, 0o600)
+    try:
+        descriptor = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(content)
     return True
@@ -184,6 +211,10 @@ def resolve_project(explicit, settings):
 
 
 def validate_settings(settings, allow_non_loopback=False, require_password=True):
+    """Check ports, publish address and credentials; return {service: port}.
+
+    Returns the validated ports. Also used by ``--status`` (``require_password=False``).
+    """
     ports = {}
     for service, key in SERVICE_PORTS.items():
         try:
@@ -197,14 +228,29 @@ def validate_settings(settings, allow_non_loopback=False, require_password=True)
             " give each service its own port in .env.",
         )
     address = settings["PENNILOGIC_BIND_ADDRESS"]
-    if not is_loopback(address) and not allow_non_loopback:
+    if address == "localhost":
         raise BootstrapError(
             "non_loopback_bind",
-            f"PENNILOGIC_BIND_ADDRESS={address} would publish the development services beyond this"
-            " machine. The stack binds to the loopback interface only by default; keep 127.0.0.1, or"
-            " pass --allow-non-loopback if you really intend to expose development credentials to"
-            " your network.",
+            "PENNILOGIC_BIND_ADDRESS=localhost is not accepted: Docker publishes to IP addresses only."
+            " Use 127.0.0.1 (the default) or ::1.",
         )
+    if not is_loopback(address):
+        if not allow_non_loopback:
+            raise BootstrapError(
+                "non_loopback_bind",
+                f"PENNILOGIC_BIND_ADDRESS={address} would publish the development services beyond this"
+                " machine. The stack binds to the loopback interface only by default; keep 127.0.0.1, or"
+                " pass --allow-non-loopback if you really intend to expose the development Postgres and"
+                " Redis to your network (Redis then also needs PENNILOGIC_REDIS_PASSWORD set).",
+            )
+        if not settings["PENNILOGIC_REDIS_PASSWORD"]:
+            raise BootstrapError(
+                "non_loopback_bind",
+                f"PENNILOGIC_BIND_ADDRESS={address} with --allow-non-loopback would expose Redis to your"
+                " network with no authentication at all (PENNILOGIC_REDIS_PASSWORD is blank). Set a"
+                " development-only PENNILOGIC_REDIS_PASSWORD in .env first, or keep the loopback default."
+                " Nothing was started.",
+            )
     if require_password and not settings["PENNILOGIC_POSTGRES_PASSWORD"]:
         raise BootstrapError(
             "missing_password",
@@ -215,8 +261,7 @@ def validate_settings(settings, allow_non_loopback=False, require_password=True)
 
 
 def is_loopback(address):
-    if address == "localhost":
-        return True
+    """True for loopback IP literals (127.0.0.0/8, ::1, IPv4-mapped loopback); hostnames are not accepted."""
     try:
         return ipaddress.ip_address(address).is_loopback
     except ValueError:
@@ -361,7 +406,7 @@ def find_port_conflicts(settings, ports, own_records, holders=None):
     return conflicts
 
 
-def conflict_error(conflicts):
+def conflict_error(conflicts, warnings=()):
     lines = []
     for item in conflicts:
         lines.append(
@@ -373,6 +418,7 @@ def conflict_error(conflicts):
     lines.append("Nothing was started.")
     return BootstrapError(
         "port_conflict", "\n".join(lines), ports=[item["port"] for item in conflicts], conflicts=conflicts,
+        summary={"warnings": list(warnings)},
     )
 
 
@@ -383,16 +429,36 @@ def compose_port_failure(stderr):
     named = ", ".join(str(p) for p in ports)
     return BootstrapError(
         "port_conflict",
-        f"Docker could not bind host port(s) {named}: another program took the port between the preflight"
-        f" check and the start, or Windows reserves that range. Set the matching PENNILOGIC_*_PORT in .env"
-        f" to a free port and re-run.\n{stderr.strip()}",
+        f"Port conflict: Docker could not bind host port(s) {named}. Another program holds the port"
+        " (it may only be bound, not listening, so the preflight check could not see it) or it is in"
+        " a reserved range. Set the matching PENNILOGIC_*_PORT in .env to a free port and re-run."
+        f"\n{stderr.strip()}",
         ports=ports,
+    )
+
+
+def rollback_partial_start(compose):
+    """After a failed `up`, remove the containers/network it created; volumes are always kept.
+
+    Returns a sentence for the error message describing what was done. Never touches
+    anything outside this Compose project.
+    """
+    result = compose.compose("down", "--remove-orphans", timeout=180, check=False)
+    remaining = compose.ps(all_states=True) if result.returncode == 0 else None
+    volumes = compose.volumes()
+    kept = f" Data volumes {', '.join(volumes)} were kept." if volumes else ""
+    if result.returncode == 0 and not remaining:
+        return "The partially created containers and network were removed again; nothing is running." + kept
+    return (
+        "Warning: the partially created stack could not be fully removed; run `python scripts/bootstrap.py"
+        " --down` (or re-run after fixing the port) to converge." + kept
     )
 
 
 # --- readiness ------------------------------------------------------------------------------------
 
 HEALTH_LOG_CAPACITY = 5  # Docker keeps only the most recent health probes per container
+SOURCE_HEALTH_LOG, SOURCE_ALREADY_RUNNING, SOURCE_UNKNOWN = "health_log", "already_running", "unknown"
 
 
 def derive_startup_ms(state):
@@ -411,12 +477,14 @@ def derive_startup_ms(state):
     return max(0, int(delta.total_seconds() * 1000))
 
 
-def service_records(compose, records, observed_ms=None):
-    """One contract record per service: {service, healthy, startup_ms}.
+def service_records(compose, records, already_running=()):
+    """One contract record per service: {service, healthy, startup_ms, startup_source}.
 
-    ``startup_ms`` comes from Docker's health log (container start to first successful probe);
-    when that log no longer holds the first success, the wall-clock time this run observed
-    is used, and ``None`` means unknown.
+    ``startup_ms`` is the container's own start-to-first-healthy-probe time from Docker's
+    health log (``health_log``). A container that was already running and healthy before this
+    invocation (its ID is in ``already_running``) reports ``0`` (``already_running``). When the
+    health log has rotated past the first success the value is ``None`` (``unknown``). This
+    script's own polling latency is never reported as startup time.
     """
     by_service = {record.get("Service"): record for record in records}
     # `compose ps` prints short (12-char) IDs while `docker inspect` returns full IDs.
@@ -429,39 +497,44 @@ def service_records(compose, records, observed_ms=None):
     for service in SERVICES:
         record = by_service.get(service) or {}
         healthy = record.get("State") == "running" and record.get("Health") == "healthy"
-        startup_ms = None
-        if healthy:
+        startup_ms, source = None, SOURCE_UNKNOWN
+        if healthy and record.get("ID") in already_running:
+            startup_ms, source = 0, SOURCE_ALREADY_RUNNING
+        elif healthy:
             startup_ms = derive_startup_ms(states.get(record.get("ID"), {}))
-            if startup_ms is None:
-                startup_ms = (observed_ms or {}).get(service)
-        output.append({"service": service, "healthy": healthy, "startup_ms": startup_ms})
+            source = SOURCE_HEALTH_LOG if startup_ms is not None else SOURCE_UNKNOWN
+        output.append({"service": service, "healthy": healthy, "startup_ms": startup_ms, "startup_source": source})
     return output
 
 
+def healthy_ids(records):
+    return {r.get("ID") for r in records if r.get("State") == "running" and r.get("Health") == "healthy"}
+
+
 def wait_healthy(compose, deadline):
-    observed, started = {}, time.monotonic()
+    """Poll until both services report healthy; raise on exit/unhealthy or when ``deadline`` passes."""
     while True:
         records = compose.ps()
         by_service = {record.get("Service"): record for record in records}
-        problems = []
+        problems, healthy = [], set()
         for service in SERVICES:
             record = by_service.get(service)
             if record is None:
                 continue
             if record.get("State") in ("exited", "dead") or record.get("Health") == "unhealthy":
                 problems.append(f"{service}: state={record.get('State')} health={record.get('Health') or 'n/a'}")
-            elif record.get("Health") == "healthy" and service not in observed:
-                observed[service] = int((time.monotonic() - started) * 1000)
+            elif record.get("Health") == "healthy":
+                healthy.add(service)
         if problems:
             raise BootstrapError(
                 "unhealthy", "The stack did not become healthy:\n  " + "\n  ".join(problems)
                 + "\n" + diagnostics(compose, records),
             )
-        if len(observed) == len(SERVICES):
-            return records, observed
+        if len(healthy) == len(SERVICES):
+            return records
         if time.monotonic() > deadline:
             waiting = ", ".join(f"{s}: {by_service.get(s, {}).get('Health') or by_service.get(s, {}).get('State') or 'absent'}"
-                                for s in SERVICES if s not in observed)
+                                for s in SERVICES if s not in healthy)
             raise BootstrapError(
                 "timeout", f"Timed out waiting for health checks ({waiting}).\n" + diagnostics(compose, records),
             )
@@ -509,39 +582,63 @@ def logs_free_of_credentials(compose):
 
 # --- actions -----------------------------------------------------------------------------------------
 
+def stale_volume_warning(compose, env_created):
+    """Warn when a freshly generated password cannot match data already in this project's volumes."""
+    volumes = compose.volumes()
+    if not (env_created and volumes):
+        return None
+    return (
+        f"Data volumes {', '.join(volumes)} already existed before this first start, so the freshly"
+        " generated PENNILOGIC_POSTGRES_PASSWORD will not match the password stored in that Postgres"
+        " data. If connections fail with authentication errors, run `python scripts/bootstrap.py --reset`"
+        " (destroys that development data) and start again."
+    )
+
+
 def action_up(compose, settings, ports, args):
     warnings = []
-    volumes_before = compose.volumes()
-    if args.env_created and volumes_before:
-        warnings.append(
-            f"Data volumes {', '.join(volumes_before)} already existed before this first start, so the"
-            " freshly generated PENNILOGIC_POSTGRES_PASSWORD will not match the password stored in that"
-            " Postgres data. If connections fail with authentication errors, run"
-            " `python scripts/bootstrap.py --reset` (destroys that development data) and start again."
-        )
+    stale = stale_volume_warning(compose, args.env_created)
+    if stale:
+        warnings.append(stale)
+        log("warning: " + stale)
     before = compose.ps(all_states=True)
     conflicts = find_port_conflicts(settings, ports, before, compose.published_ports())
     if conflicts:
-        raise conflict_error(conflicts)
+        raise conflict_error(conflicts, warnings)
+    already_running = healthy_ids(before)
     log(f"starting compose project '{compose.project}' on {settings['PENNILOGIC_BIND_ADDRESS']}"
         f" (postgres:{ports['postgres']}, redis:{ports['redis']})")
     started = time.monotonic()
+    # `up` may pull both images on a clean machine; that time is not counted against --timeout.
     result = compose.compose("up", "--detach", "--remove-orphans", timeout=max(args.timeout, 600), check=False)
     if result.returncode:
         stderr = compose.redact(result.stderr)
-        conflict = compose_port_failure(stderr)
-        if conflict is None and NAME_CONFLICT.search(stderr):
-            conflict = BootstrapError(
+        error = compose_port_failure(stderr)
+        if error is None and NAME_CONFLICT.search(stderr):
+            error = BootstrapError(
                 "compose_failed",
                 "Docker reports a container-name conflict for this project, which happens when another"
                 " `docker compose up` of the same project ran at the same time. Re-run `python scripts/bootstrap.py`"
                 f" once the other run has finished.\n{stderr.strip()}",
             )
-        raise conflict or BootstrapError(
-            "compose_failed", f"`docker compose up` failed (exit {result.returncode}):\n{stderr.strip()}",
-        )
-    records, observed = wait_healthy(compose, started + args.timeout)
-    services = service_records(compose, records, observed)
+        if error is None:
+            error = BootstrapError(
+                "compose_failed", f"`docker compose up` failed (exit {result.returncode}):\n{stderr.strip()}",
+            )
+        # Compose may already have created a network, volumes and some containers (Redis can even be
+        # running). Leave no half-started stack behind; data volumes are never removed here.
+        outcome = rollback_partial_start(compose)
+        error.args = (f"{error.args[0]}\n{outcome}",)
+        error.details["rollback"] = outcome
+        error.details["summary"] = {"warnings": warnings}
+        raise error
+    health_deadline = time.monotonic() + args.timeout
+    try:
+        records = wait_healthy(compose, health_deadline)
+    except BootstrapError as error:
+        error.details.setdefault("summary", {})["warnings"] = warnings
+        raise
+    services = service_records(compose, records, already_running)
     checks = stack_checks(compose)
     checks["logs_free_of_credentials"] = logs_free_of_credentials(compose)
     summary = {"services": services, "checks": checks, "warnings": warnings,
@@ -557,8 +654,16 @@ def action_up(compose, settings, ports, args):
             summary=summary,
         )
     for record in services:
-        log(f"{record['service']}: healthy in {record['startup_ms']} ms")
+        log(f"{record['service']}: " + describe_startup(record))
     return summary
+
+
+def describe_startup(record):
+    if record["startup_source"] == SOURCE_ALREADY_RUNNING:
+        return "healthy (already running before this run)"
+    if record["startup_ms"] is None:
+        return "healthy (startup time no longer in Docker's health log)"
+    return f"healthy in {record['startup_ms']} ms (from Docker's health log)"
 
 
 def action_status(compose):
@@ -567,8 +672,7 @@ def action_status(compose):
     checks = stack_checks(compose)
     ok = all(record["healthy"] for record in services) and checks["single_stack"]
     for record in services:
-        log(f"{record['service']}: {'healthy' if record['healthy'] else 'not healthy'}"
-            + (f" (startup {record['startup_ms']} ms)" if record["startup_ms"] is not None else ""))
+        log(f"{record['service']}: " + (describe_startup(record) if record["healthy"] else "not healthy"))
     return {"services": services, "checks": checks, "warnings": [], "ok": ok}
 
 
@@ -582,7 +686,7 @@ def action_down(compose, destroy_volumes):
     remaining_containers = compose.ps(all_states=True)
     remaining_volumes = compose.volumes()
     ok = not remaining_containers and (not remaining_volumes if destroy_volumes else True)
-    services = [{"service": service, "healthy": False, "startup_ms": None} for service in SERVICES]
+    services = empty_services()
     checks = {"containers_remaining": len(remaining_containers), "volumes_remaining": remaining_volumes}
     if not ok:
         raise BootstrapError(
@@ -591,6 +695,10 @@ def action_down(compose, destroy_volumes):
         )
     log("done" + ("" if destroy_volumes else f"; kept volumes {', '.join(remaining_volumes) or '(none)'}"))
     return {"services": services, "checks": checks, "warnings": [], "ok": True}
+
+
+def empty_services():
+    return [{"service": s, "healthy": False, "startup_ms": None, "startup_source": SOURCE_UNKNOWN} for s in SERVICES]
 
 
 # --- entry point ---------------------------------------------------------------------------------------
@@ -607,7 +715,8 @@ def build_parser():
     parser.add_argument("--project", help="Compose project name (default: COMPOSE_PROJECT_NAME or 'pennilogic')")
     parser.add_argument("--env-file", type=Path, default=ENV_FILE, help="environment file (default: .env)")
     parser.add_argument("--timeout", type=float, default=120.0,
-                        help="seconds to wait for both health checks (default 120)")
+                        help="seconds to wait for both health checks after `docker compose up` returns;"
+                             " image pulls are not counted (default 120)")
     parser.add_argument("--summary-file", type=Path, help="also write the JSON summary to this file")
     parser.add_argument("--allow-non-loopback", action="store_true",
                         help="permit a PENNILOGIC_BIND_ADDRESS that is not a loopback address")
@@ -623,41 +732,52 @@ def emit(summary, summary_file):
     print(text, flush=True)
 
 
+def run_up(compose, settings, ports, args, summary):
+    summary.update(action_up(compose, settings, ports, args))
+    summary["ok"] = True
+    if args.smoke:
+        smoke = smoke_infra.run(settings, timeout=min(args.timeout, 10.0))
+        for record in smoke["services"]:
+            note = "" if record["detail"] is None else f" - {record['detail']}"
+            log(f"smoke {record['service']}: {record['status']} ({record['latency_ms']} ms){note}")
+        summary["smoke"] = smoke
+        if not smoke["ok"]:
+            raise BootstrapError("smoke_failed", "The smoke probe failed; see the smoke records.")
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     action = "status" if args.status else "down" if args.down else "reset" if args.reset else "up"
     summary = {"schema": SCHEMA, "action": action, "ok": False, "project": None,
-               "services": [{"service": s, "healthy": False, "startup_ms": None} for s in SERVICES],
-               "checks": {}, "warnings": [], "error": None}
+               "services": empty_services(), "checks": {}, "warnings": [], "error": None}
     compose = None
     try:
         args.env_file = Path(args.env_file).expanduser().resolve()
         if args.summary_file:
             args.summary_file = Path(args.summary_file).expanduser().resolve()
-        args.env_created = action == "up" and ensure_env_file(args.env_file)
-        if args.env_created:
-            log(f"created {args.env_file} from {ENV_EXAMPLE.name} with a generated development password")
+        args.env_created = False
+        # Settings are read once before the lock so the project name is known; `up` re-reads them
+        # under the lock after possibly creating .env, so concurrent first runs share one file.
         settings = smoke_infra.load_settings(args.env_file)
-        ports = validate_settings(settings, args.allow_non_loopback, require_password=action == "up")
         project = resolve_project(args.project, settings)
         summary["project"] = project
-        compose = Compose(project, args.env_file, os.environ, smoke_infra.secret_values(settings), args.verbose)
-        compose.engine_version()
         if action == "status":
+            ports = validate_settings(settings, args.allow_non_loopback, require_password=False)
+            compose = Compose(project, args.env_file, os.environ, smoke_infra.secret_values(settings), args.verbose)
+            compose.engine_version()
             summary.update(action_status(compose))
         else:
             with ProjectLock(project):
                 if action == "up":
-                    summary.update(action_up(compose, settings, ports, args))
-                    summary["ok"] = True
-                    if args.smoke:
-                        smoke = smoke_infra.run(settings, timeout=min(args.timeout, 10.0))
-                        for record in smoke["services"]:
-                            note = "" if record["detail"] is None else f" - {record['detail']}"
-                            log(f"smoke {record['service']}: {record['status']} ({record['latency_ms']} ms){note}")
-                        summary["smoke"] = smoke
-                        if not smoke["ok"]:
-                            raise BootstrapError("smoke_failed", "The smoke probe failed; see the smoke records.")
+                    args.env_created = ensure_env_file(args.env_file)
+                    if args.env_created:
+                        log(f"created {args.env_file} from {ENV_EXAMPLE.name} with a generated development password")
+                    settings = smoke_infra.load_settings(args.env_file)
+                ports = validate_settings(settings, args.allow_non_loopback, require_password=action == "up")
+                compose = Compose(project, args.env_file, os.environ, smoke_infra.secret_values(settings), args.verbose)
+                compose.engine_version()
+                if action == "up":
+                    run_up(compose, settings, ports, args, summary)
                 else:
                     summary.update(action_down(compose, destroy_volumes=action == "reset"))
     except BootstrapError as error:

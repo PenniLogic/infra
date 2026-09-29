@@ -13,6 +13,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -84,8 +85,10 @@ class StackLifecycleTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        for project in (cls.project, cls.project + "-conflict"):
-            support.run_script("bootstrap.py", "--reset", "--project", project, "--env-file", cls.env_file,
+        for suffix in ("", "-conflict", "-bind", "-race"):
+            env_file = {"": cls.env_file, "-conflict": cls.tmp / "conflict.env", "-bind": cls.tmp / "bind.env",
+                        "-race": cls.tmp / "race.env"}[suffix]
+            support.run_script("bootstrap.py", "--reset", "--project", cls.project + suffix, "--env-file", env_file,
                                env=cls.env, timeout=300)
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
@@ -100,7 +103,8 @@ class StackLifecycleTests(unittest.TestCase):
                              set(summary))
         self.assertEqual("pennilogic.infra.bootstrap/1", summary["schema"])
         for record in summary["services"]:
-            self.assertEqual({"service", "healthy", "startup_ms"}, set(record))
+            self.assertEqual({"service", "healthy", "startup_ms", "startup_source"}, set(record))
+            self.assertIn(record["startup_source"], ("health_log", "already_running", "unknown"))
         return summary
 
     def compose_logs(self):
@@ -120,6 +124,7 @@ class StackLifecycleTests(unittest.TestCase):
         self.assertEqual(self.project, summary["project"])
         for record in summary["services"]:
             self.assertTrue(record["healthy"], record)
+            self.assertEqual("health_log", record["startup_source"], record)
             self.assertIsInstance(record["startup_ms"], int)
             self.assertGreater(record["startup_ms"], 0)
         self.assertTrue(summary["checks"]["single_stack"], summary["checks"])
@@ -153,6 +158,9 @@ class StackLifecycleTests(unittest.TestCase):
         self.assertEqual(self.first_ids, project_containers(self.project), "running containers were replaced")
         self.assertEqual(2, len(project_volumes(self.project)))
         self.assertTrue(summary["smoke"]["ok"])
+        for record in summary["services"]:
+            self.assertEqual((0, "already_running"), (record["startup_ms"], record["startup_source"]),
+                             "an already healthy container reports 0, never this run's own wait time")
 
     def test_03_down_keeps_data_and_recreate_restores_it(self):
         self.assertEqual("OK", redis_command(self.redis_port, "SET", "pennilogic:test:persist", "kept"))
@@ -235,7 +243,59 @@ class StackLifecycleTests(unittest.TestCase):
         summary = self.summary(result)
         self.assertEqual(("status", True), (summary["action"], summary["ok"]))
         self.assertTrue(all(record["healthy"] for record in summary["services"]))
+        for record in summary["services"]:
+            self.assertIn(record["startup_source"], ("health_log", "unknown"), "status never guesses")
         self.assertEqual(before, project_containers(self.project))
+
+    def test_08_docker_bind_failure_after_preflight_is_named_and_rolled_back(self):
+        # A socket that is bound but not listening refuses connections, so the preflight cannot see it,
+        # but Docker cannot bind the port either: this is the post-preflight race the code must translate.
+        decoy = socket.socket()
+        decoy.bind(("127.0.0.1", 0))
+        port = decoy.getsockname()[1]
+        project = self.project + "-bind"
+        env = dict(self.env, PENNILOGIC_POSTGRES_PORT=str(port), PENNILOGIC_REDIS_PORT=str(support.free_port()))
+        try:
+            result = support.run_script("bootstrap.py", "--project", project, "--env-file", self.tmp / "bind.env",
+                                        "--timeout", "60", env=env, timeout=300)
+        finally:
+            decoy.close()
+        self.assertEqual(1, result.returncode)
+        summary = json.loads(result.stdout)
+        self.assertEqual("port_conflict", summary["error"]["kind"], result.stderr)
+        self.assertEqual([port], summary["error"]["ports"])
+        self.assertIn(f"port(s) {port}", result.stderr)
+        self.assertIn("removed again", summary["error"]["rollback"])
+        self.assertEqual([], project_containers(project), "no half-started container may remain")
+        self.assertEqual([], docker("network", "ls", "--filter", f"label=com.docker.compose.project={project}",
+                                    "--format", "{{.Name}}").stdout.split())
+        self.assertEqual(2, len(project_volumes(project)), "rollback never removes data volumes")
+
+    def test_09_two_simultaneous_first_runs_share_one_env_and_one_stack(self):
+        project = self.project + "-race"
+        env_file = self.tmp / "race.env"
+        env = dict(self.env, PENNILOGIC_POSTGRES_PORT=str(support.free_port()), PENNILOGIC_REDIS_PORT=str(support.free_port()))
+        args = [sys.executable, str(support.SCRIPTS / "bootstrap.py"), "--project", project, "--env-file", str(env_file),
+                "--timeout", "180"]
+        environment = dict(env, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+        first = subprocess.Popen(args, cwd=support.ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, encoding="utf-8", errors="replace")
+        second = subprocess.Popen(args, cwd=support.ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, encoding="utf-8", errors="replace")
+        outputs = [process.communicate(timeout=420) for process in (first, second)]
+        codes = (first.returncode, second.returncode)
+        self.assertEqual((0, 0), codes, [o[1][-800:] for o in outputs])
+        summaries = [json.loads(o[0]) for o in outputs]
+        self.assertTrue(all(s["ok"] and s["checks"]["single_stack"] for s in summaries), summaries)
+        self.assertEqual(2, len(project_containers(project)))
+        self.assertEqual(2, len(project_volumes(project)))
+        self.assertTrue(any("waiting for it to finish" in o[1] for o in outputs), "one run must wait on the lock")
+        sources = sorted(r["startup_source"] for s in summaries for r in s["services"])
+        self.assertEqual(["already_running", "already_running", "health_log", "health_log"], sources)
+        password = smoke.parse_env_file(env_file)["PENNILOGIC_POSTGRES_PASSWORD"]
+        self.assertEqual("ok", smoke.probe("postgres", smoke.load_settings(env_file, env), 5.0)["status"],
+                         "both runs used the single generated password")
+        self.assertNotIn(password, "".join(o[0] + o[1] for o in outputs))
 
 
 if __name__ == "__main__":

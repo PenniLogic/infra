@@ -66,14 +66,17 @@ services:
     restart: unless-stopped
     environment:
       # Blank (default) runs Redis without authentication on the loopback-only
-      # published port. A value is honoured by the server, the health check and
+      # published port (the image ships protected-mode off, which is why
+      # scripts/bootstrap.py refuses --allow-non-loopback while this is blank).
+      # A value is honoured by the server, the health check and
       # scripts/smoke_infra.py alike.
       REDIS_PASSWORD: ${PENNILOGIC_REDIS_PASSWORD:-}
     # appendonly keeps quota counters across restarts so local testing of
     # daily/monthly windows isn't silently reset. Re-entering the image entrypoint
-    # keeps its privilege drop (redis-server runs as the redis user), and the
-    # optional password is expanded by the container shell instead of being
-    # written into this file.
+    # keeps its privilege drop (redis-server runs as the redis user). The optional
+    # password is turned into --requirepass by the container shell at start rather
+    # than being written into this file; Redis rewrites its process title
+    # immediately, so the value is not visible in `docker top` afterwards.
     command:
       - sh
       - -c

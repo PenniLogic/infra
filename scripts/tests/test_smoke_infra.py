@@ -146,15 +146,33 @@ class ProbeClassificationTests(unittest.TestCase):
 
 
 class FakePostgresTests(unittest.TestCase):
-    def test_cleartext_authentication_and_select_1(self):
-        seen = {}
+    """Fake Postgres servers: the probe must complete SCRAM-SHA-256 and refuse every weaker method."""
 
+    @staticmethod
+    def scram_server(password, seen, salt=b"W22ZaJ0SNY7soEsUEjb6gQ==", iterations=4096, tamper_signature=False):
+        """A minimal RFC 7677 server that verifies the client proof and answers SELECT 1."""
         def postgres(conn):
             reader, startup = read_startup(conn)
             seen["startup"] = startup
-            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 3)))
+            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 10) + b"SCRAM-SHA-256\0\0"))
             kind, payload = read_pg_message(reader)
-            seen["password"] = (kind, payload)
+            assert kind == b"p" and payload.startswith(b"SCRAM-SHA-256\0"), payload
+            client_first = payload[len(b"SCRAM-SHA-256\0") + 4:].decode()
+            assert client_first.startswith("n,,"), client_first
+            client_first_bare = client_first[3:]
+            client_nonce = dict(p.split("=", 1) for p in client_first_bare.split(","))["r"]
+            server_first = f"r={client_nonce}SRVNONCE,s={salt.decode()},i={iterations}"
+            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 11) + server_first.encode()))
+            kind, payload = read_pg_message(reader)
+            client_final = payload.decode()
+            seen["client_final"] = client_final
+            expected_final, server_signature = smoke.scram_messages(password, client_first_bare, server_first)
+            assert client_final == expected_final, (client_final, expected_final)  # proof verified server-side
+            if tamper_signature:
+                server_signature = bytes(32)
+            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 12) + b"v=" + base64.b64encode(server_signature)))
+            if tamper_signature:
+                return  # the client is expected to hang up here
             conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 0)))
             conn.sendall(smoke._pg_message(b"S", b"server_version\0" + b"17.11\0"))
             conn.sendall(smoke._pg_message(b"Z", b"I"))
@@ -165,8 +183,11 @@ class FakePostgresTests(unittest.TestCase):
             conn.sendall(smoke._pg_message(b"C", b"SELECT 1\0"))
             conn.sendall(smoke._pg_message(b"Z", b"I"))
             seen["terminate"] = read_pg_message(reader)[0]
+        return postgres
 
-        server = support.OneShotServer(postgres)
+    def test_scram_authentication_and_select_1(self):
+        seen = {}
+        server = support.OneShotServer(self.scram_server("dev-only", seen))
         record = smoke.probe("postgres", settings_for(
             PENNILOGIC_POSTGRES_PORT=str(server.port), PENNILOGIC_POSTGRES_PASSWORD="dev-only",
             PENNILOGIC_POSTGRES_USER="alice", PENNILOGIC_POSTGRES_DATABASE="ledger"), timeout=5.0)
@@ -175,39 +196,76 @@ class FakePostgresTests(unittest.TestCase):
         self.assertIsNone(record["detail"])
         self.assertIn(b"user\0alice\0", seen["startup"])
         self.assertIn(b"database\0ledger\0", seen["startup"])
-        self.assertEqual((b"p", b"dev-only\0"), seen["password"])
+        self.assertNotIn("dev-only", seen["client_final"], "SCRAM never transmits the password")
         self.assertEqual((b"Q", b"SELECT 1\0"), seen["query"])
         self.assertEqual(b"X", seen["terminate"])
 
-    def test_md5_authentication_uses_salt(self):
-        def postgres(conn):
-            reader, _ = read_startup(conn)
-            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 5) + b"salt"))
-            kind, payload = read_pg_message(reader)
-            expected = b"md5" + __import__("hashlib").md5(
-                __import__("hashlib").md5(b"dev-onlypennilogic").hexdigest().encode() + b"salt").hexdigest().encode()
-            assert (kind, payload) == (b"p", expected + b"\0"), (kind, payload)
-            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 0)))
-            conn.sendall(smoke._pg_message(b"Z", b"I"))
-            read_pg_message(reader)
-            conn.sendall(smoke._pg_message(b"D", struct.pack("!hi", 1, 1) + b"1"))
-            conn.sendall(smoke._pg_message(b"C", b"SELECT 1\0"))
-            conn.sendall(smoke._pg_message(b"Z", b"I"))
-            read_pg_message(reader)
-
-        server = support.OneShotServer(postgres)
+    def test_scram_server_signature_mismatch_is_rejected(self):
+        server = support.OneShotServer(self.scram_server("dev-only", {}, tamper_signature=True))
         record = smoke.probe("postgres", settings_for(
             PENNILOGIC_POSTGRES_PORT=str(server.port), PENNILOGIC_POSTGRES_PASSWORD="dev-only"), timeout=5.0)
         server.close()
-        self.assertEqual("ok", record["status"], record)
+        self.assertEqual("error", record["status"])
+        self.assertIn("server signature mismatch", record["detail"])
+
+    def test_weakened_or_absurd_iteration_count_is_refused(self):
+        for iterations in (1, 4095, 10 ** 9):
+            with self.subTest(iterations=iterations):
+                server = support.OneShotServer(self.scram_server("dev-only", {}, iterations=iterations))
+                record = smoke.probe("postgres", settings_for(
+                    PENNILOGIC_POSTGRES_PORT=str(server.port), PENNILOGIC_POSTGRES_PASSWORD="dev-only"), timeout=5.0)
+                try:
+                    server.close()
+                except AssertionError:
+                    pass  # the fake server sees the client hang up before its proof check; expected
+                self.assertEqual("error", record["status"], record)
+                self.assertIn("iteration count", record["detail"])
+
+    def test_downgrade_to_cleartext_or_md5_refuses_and_sends_nothing(self):
+        secret = "generated-development-secret-value"
+        for code, name in ((3, "cleartext password"), (5, "MD5 password"), (2, "Kerberos V5"), (7, "GSSAPI"), (9, "SSPI")):
+            with self.subTest(code=code):
+                received = {}
+
+                def decoy(conn, code=code):
+                    reader, _ = read_startup(conn)
+                    payload = struct.pack("!i", code) + (b"salt" if code == 5 else b"")
+                    conn.sendall(smoke._pg_message(b"R", payload))
+                    conn.settimeout(1.0)
+                    try:
+                        received["after"] = conn.recv(4096)
+                    except (TimeoutError, OSError):
+                        received["after"] = b""
+
+                server = support.OneShotServer(decoy)
+                record = smoke.probe("postgres", settings_for(
+                    PENNILOGIC_POSTGRES_PORT=str(server.port), PENNILOGIC_POSTGRES_PASSWORD=secret), timeout=5.0)
+                server.close()
+                self.assertEqual("error", record["status"], record)
+                self.assertIn(name, record["detail"])
+                self.assertIn("SCRAM-SHA-256", record["detail"])
+                self.assertIn("password was not sent", record["detail"])
+                self.assertNotIn(secret.encode(), received["after"], "decoy must not receive the password")
+                self.assertNotIn(b"md5", received["after"], "decoy must not receive an MD5 digest")
+
+    def test_sasl_without_scram_mechanism_is_refused(self):
+        def decoy(conn):
+            reader, _ = read_startup(conn)
+            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 10) + b"SCRAM-SHA-1\0PLAIN\0\0"))
+
+        server = support.OneShotServer(decoy)
+        record = smoke.probe("postgres", settings_for(
+            PENNILOGIC_POSTGRES_PORT=str(server.port), PENNILOGIC_POSTGRES_PASSWORD="dev-only"), timeout=5.0)
+        server.close()
+        self.assertEqual("error", record["status"])
+        self.assertIn("no SCRAM-SHA-256", record["detail"])
+        self.assertIn("PLAIN", record["detail"])
 
     def test_authentication_failure_is_hinted_and_redacted(self):
         secret = "leaky-secret-value-42"
 
         def postgres(conn):
             reader, _ = read_startup(conn)
-            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 3)))
-            read_pg_message(reader)
             # A hostile/buggy server that echoes the password back must still not leak it.
             conn.sendall(error_response("28P01", f"password authentication failed for user \"pennilogic\" ({secret})"))
 
@@ -231,26 +289,6 @@ class FakePostgresTests(unittest.TestCase):
         server.close()
         self.assertEqual("error", record["status"])
         self.assertIn("PENNILOGIC_POSTGRES_PASSWORD is blank", record["detail"])
-
-    def test_scram_server_signature_mismatch_is_rejected(self):
-        def postgres(conn):
-            reader, _ = read_startup(conn)
-            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 10) + b"SCRAM-SHA-256\0\0"))
-            kind, payload = read_pg_message(reader)
-            assert payload.startswith(b"SCRAM-SHA-256\0"), payload
-            first = payload[len(b"SCRAM-SHA-256\0") + 4:].decode()
-            client_nonce = first.split("r=", 1)[1]
-            server_first = f"r={client_nonce}SERVER,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
-            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 11) + server_first.encode()))
-            read_pg_message(reader)
-            conn.sendall(smoke._pg_message(b"R", struct.pack("!i", 12) + b"v=" + base64.b64encode(b"\0" * 32)))
-
-        server = support.OneShotServer(postgres)
-        record = smoke.probe("postgres", settings_for(
-            PENNILOGIC_POSTGRES_PORT=str(server.port), PENNILOGIC_POSTGRES_PASSWORD="dev-only"), timeout=5.0)
-        server.close()
-        self.assertEqual("error", record["status"])
-        self.assertIn("server signature mismatch", record["detail"])
 
 
 class FakeRedisTests(unittest.TestCase):

@@ -61,19 +61,39 @@ class EnvFileTests(unittest.TestCase):
 
 class ValidationTests(unittest.TestCase):
     def test_loopback_addresses_are_accepted(self):
-        for address in ("127.0.0.1", "127.0.0.5", "::1", "localhost"):
+        for address in ("127.0.0.1", "127.0.0.5", "::1", "::ffff:127.0.0.1"):
             with self.subTest(address=address):
                 ports = bootstrap.validate_settings(settings_for(PENNILOGIC_BIND_ADDRESS=address))
                 self.assertEqual({"postgres": 5432, "redis": 6379}, ports)
 
+    def test_localhost_is_refused_with_a_hint(self):
+        # Compose publishes to IP literals only; accepting "localhost" would fail later inside Docker.
+        with self.assertRaises(bootstrap.BootstrapError) as ctx:
+            bootstrap.validate_settings(settings_for(PENNILOGIC_BIND_ADDRESS="localhost"))
+        self.assertEqual("non_loopback_bind", ctx.exception.kind)
+        self.assertIn("127.0.0.1", str(ctx.exception))
+        with self.assertRaises(bootstrap.BootstrapError):
+            bootstrap.validate_settings(settings_for(PENNILOGIC_BIND_ADDRESS="localhost"), allow_non_loopback=True)
+
     def test_non_loopback_is_refused_unless_explicitly_allowed(self):
-        for address in ("0.0.0.0", "::", "192.168.1.20", "example.com", ""):
+        for address in ("0.0.0.0", "::", "192.168.1.20", "example.com", "", "127.1", "0177.0.0.1", "127.0.0.1 "):
             with self.subTest(address=address):
                 with self.assertRaises(bootstrap.BootstrapError) as ctx:
                     bootstrap.validate_settings(settings_for(PENNILOGIC_BIND_ADDRESS=address))
                 self.assertEqual("non_loopback_bind", ctx.exception.kind)
                 self.assertIn("--allow-non-loopback", str(ctx.exception))
-        bootstrap.validate_settings(settings_for(PENNILOGIC_BIND_ADDRESS="0.0.0.0"), allow_non_loopback=True)
+        bootstrap.validate_settings(
+            settings_for(PENNILOGIC_BIND_ADDRESS="0.0.0.0", PENNILOGIC_REDIS_PASSWORD="dev-redis-pw"),
+            allow_non_loopback=True,
+        )
+
+    def test_non_loopback_with_unauthenticated_redis_is_refused_even_when_allowed(self):
+        with self.assertRaises(bootstrap.BootstrapError) as ctx:
+            bootstrap.validate_settings(settings_for(PENNILOGIC_BIND_ADDRESS="0.0.0.0"), allow_non_loopback=True)
+        self.assertEqual("non_loopback_bind", ctx.exception.kind)
+        self.assertIn("no authentication", str(ctx.exception))
+        self.assertIn("PENNILOGIC_REDIS_PASSWORD", str(ctx.exception))
+        self.assertIn("Nothing was started", str(ctx.exception))
 
     def test_blank_password_is_refused_for_up_only(self):
         with self.assertRaises(bootstrap.BootstrapError) as ctx:
@@ -164,20 +184,57 @@ class PortConflictTests(unittest.TestCase):
 
     def test_compose_bind_failures_are_translated_to_named_ports(self):
         samples = {
-            "Error response from daemon: driver failed programming external connectivity on endpoint x: "
-            "Bind for 127.0.0.1:5432 failed: port is already allocated": [5432],
+            # Docker Desktop for Windows 29.7.2, captured verbatim from a failed `compose up`:
+            "Error response from daemon: ports are not available: exposing port TCP 127.0.0.1:55726 -> 127.0.0.1:0: "
+            "listen tcp4 127.0.0.1:55726: bind: Only one usage of each socket address (protocol/network address/port)"
+            " is normally permitted.": [55726],
+            # Linux / macOS wording:
             "Error response from daemon: Ports are not available: exposing port TCP 127.0.0.1:6379 -> 127.0.0.1:0: "
             "listen tcp 127.0.0.1:6379: bind: address already in use": [6379],
+            # Windows excluded port range:
             "listen tcp 127.0.0.1:5432: bind: An attempt was made to access a socket in a way forbidden by its "
             "access permissions.": [5432],
+            # Older daemon wording:
+            "Error response from daemon: driver failed programming external connectivity on endpoint x: "
+            "Bind for 127.0.0.1:5432 failed: port is already allocated": [5432],
         }
         for stderr, ports in samples.items():
-            with self.subTest(stderr=stderr[:40]):
+            with self.subTest(stderr=stderr[:60]):
                 error = bootstrap.compose_port_failure(stderr)
-                self.assertIsNotNone(error)
+                self.assertIsNotNone(error, stderr)
                 self.assertEqual(("port_conflict", ports), (error.kind, error.details["ports"]))
-                self.assertIn(str(ports[0]), str(error))
+                self.assertIn(f"port(s) {ports[0]}", str(error))
+                self.assertIn("PENNILOGIC_*_PORT", str(error))
         self.assertIsNone(bootstrap.compose_port_failure("some unrelated failure"))
+
+    def test_conflict_error_carries_earlier_warnings(self):
+        conflicts = [{"service": "postgres", "port": 5432, "address": "127.0.0.1", "holder": "x",
+                      "variable": "PENNILOGIC_POSTGRES_PORT", "suggested_port": 15432}]
+        error = bootstrap.conflict_error(conflicts, warnings=["stale volume warning"])
+        self.assertEqual(["stale volume warning"], error.details["summary"]["warnings"])
+
+    def test_rollback_after_failed_up_reports_outcome_and_keeps_volumes(self):
+        class FakeCompose:
+            project = "p"
+
+            def __init__(self):
+                self.calls = []
+
+            def compose(self, *args, **kwargs):
+                self.calls.append(args)
+                return type("R", (), {"returncode": 0})()
+
+            def ps(self, all_states=False):
+                return []
+
+            def volumes(self):
+                return ["p_pgdata", "p_redisdata"]
+
+        fake = FakeCompose()
+        outcome = bootstrap.rollback_partial_start(fake)
+        self.assertEqual([("down", "--remove-orphans")], fake.calls, "never `--volumes` on rollback")
+        self.assertIn("removed again", outcome)
+        self.assertIn("p_pgdata, p_redisdata were kept", outcome)
 
 
 class ReadinessTests(unittest.TestCase):
@@ -243,28 +300,40 @@ class ReadinessTests(unittest.TestCase):
                 return self.text
 
         leaked = "generated-development-secret-123"
-        self.assertFalse(bootstrap.logs_free_of_credentials(FakeCompose((leaked,), f"password={leaked}\n")))
+        self.assertFalse(bootstrap.logs_free_of_credentials(FakeCompose((leaked,), "credential value " + leaked + "\n")))
         self.assertTrue(bootstrap.logs_free_of_credentials(FakeCompose((leaked,), "database system is ready\n")))
         self.assertTrue(bootstrap.logs_free_of_credentials(FakeCompose(("x", "ready"), "database system is ready\n")),
                         "one-character or dictionary-word values would match any log by chance")
 
-    def test_service_records_use_health_log_then_observed_time(self):
+    def test_service_records_report_provenance_and_never_poll_latency(self):
         class FakeCompose:
             def inspect(self, ids):
                 # docker inspect returns full IDs while compose ps gives 12-char prefixes
                 return [{"Id": "pg-id" + "0" * 59, "State": {"StartedAt": "2026-09-29T10:00:00Z", "Health": {"Log": [
                     {"Start": "2026-09-29T10:00:01Z", "End": "2026-09-29T10:00:01.5Z", "ExitCode": 0}]}}},
-                        {"Id": "redis-id" + "0" * 56, "State": {"StartedAt": "2026-09-29T10:00:00Z", "Health": {"Log": []}}}]
+                        {"Id": "redis-id" + "0" * 56, "State": {"StartedAt": "2026-09-29T10:00:00Z", "Health": {"Log": [
+                            {"Start": f"2026-09-29T10:00:{s:02d}Z", "End": f"2026-09-29T10:00:{s:02d}.5Z", "ExitCode": 0}
+                            for s in range(10, 35, 5)]}}}]  # rotated: five successes, first one gone
 
         records = [{"Service": "postgres", "State": "running", "Health": "healthy", "ID": "pg-id"},
                    {"Service": "redis", "State": "running", "Health": "healthy", "ID": "redis-id"}]
-        output = bootstrap.service_records(FakeCompose(), records, observed_ms={"redis": 987})
-        self.assertEqual([{"service": "postgres", "healthy": True, "startup_ms": 1500},
-                          {"service": "redis", "healthy": True, "startup_ms": 987}], output)
+        fresh = bootstrap.service_records(FakeCompose(), records)
+        self.assertEqual([
+            {"service": "postgres", "healthy": True, "startup_ms": 1500, "startup_source": "health_log"},
+            {"service": "redis", "healthy": True, "startup_ms": None, "startup_source": "unknown"},
+        ], fresh, "rotated health log yields null, never this run's own wait time")
+        rerun = bootstrap.service_records(FakeCompose(), records, already_running={"pg-id", "redis-id"})
+        self.assertEqual([
+            {"service": "postgres", "healthy": True, "startup_ms": 0, "startup_source": "already_running"},
+            {"service": "redis", "healthy": True, "startup_ms": 0, "startup_source": "already_running"},
+        ], rerun)
         stopped = [dict(records[0], State="exited", Health="")]
-        output = bootstrap.service_records(FakeCompose(), stopped)
-        self.assertEqual([{"service": "postgres", "healthy": False, "startup_ms": None},
-                          {"service": "redis", "healthy": False, "startup_ms": None}], output)
+        self.assertEqual([
+            {"service": "postgres", "healthy": False, "startup_ms": None, "startup_source": "unknown"},
+            {"service": "redis", "healthy": False, "startup_ms": None, "startup_source": "unknown"},
+        ], bootstrap.service_records(FakeCompose(), stopped))
+        self.assertEqual({"pg-id", "redis-id"}, bootstrap.healthy_ids(records))
+        self.assertEqual(set(), bootstrap.healthy_ids(stopped))
 
 
 class CommandLineEnvelopeTests(unittest.TestCase):
@@ -289,8 +358,9 @@ class CommandLineEnvelopeTests(unittest.TestCase):
             generated = smoke.parse_env_file(Path(tmp) / ".env")
         self.assertEqual(bootstrap.SCHEMA, summary["schema"])
         self.assertEqual(("up", False, "non_loopback_bind"), (summary["action"], summary["ok"], summary["error"]["kind"]))
-        self.assertEqual([{"service": "postgres", "healthy": False, "startup_ms": None},
-                          {"service": "redis", "healthy": False, "startup_ms": None}], summary["services"])
+        self.assertEqual([{"service": "postgres", "healthy": False, "startup_ms": None, "startup_source": "unknown"},
+                          {"service": "redis", "healthy": False, "startup_ms": None, "startup_source": "unknown"}],
+                         summary["services"])
         self.assertIn("PENNILOGIC_BIND_ADDRESS=0.0.0.0", result.stderr)
         self.assertNotIn(generated["PENNILOGIC_POSTGRES_PASSWORD"], result.stdout + result.stderr,
                          "the generated password never reaches either stream")

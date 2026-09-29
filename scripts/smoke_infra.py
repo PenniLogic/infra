@@ -1,9 +1,10 @@
 """Probe the local Postgres and Redis over their published ports and report readiness.
 
 Usable by a person or CI without third-party packages: it speaks just enough of the
-PostgreSQL wire protocol (SCRAM-SHA-256, MD5 or cleartext authentication, then
-``SELECT 1``) and of Redis RESP (``AUTH``/``SELECT``/``PING``) to prove that the
-service answering on each published port is the configured one.
+PostgreSQL wire protocol (SASL SCRAM-SHA-256 only, then ``SELECT 1``) and of Redis RESP
+(``AUTH``/``SELECT``/``PING``) to prove that the service answering on each published port is
+the configured one. A server that requests any weaker Postgres authentication method is
+reported as an error and never receives the password.
 
 Output contract (stdout, one JSON document)::
 
@@ -52,6 +53,12 @@ DEFAULTS = {
 }
 SECRET_KEYS = ("PENNILOGIC_POSTGRES_PASSWORD", "PENNILOGIC_REDIS_PASSWORD")
 _ENV_LINE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+# PostgreSQL 17 defaults to scram-sha-256 and never asks for less: PBKDF2 4096 iterations by
+# default. A rogue server may not weaken the derivation or make the probe grind forever.
+SCRAM_MIN_ITERATIONS, SCRAM_MAX_ITERATIONS = 4096, 1_000_000
+PG_AUTH_NAMES = {
+    2: "Kerberos V5", 3: "cleartext password", 5: "MD5 password", 7: "GSSAPI", 9: "SSPI",
+}
 
 
 class ProbeError(Exception):
@@ -173,6 +180,11 @@ def scram_messages(password, client_first_bare, server_first):
     client_nonce = dict(part.split("=", 1) for part in client_first_bare.split(","))["r"]
     if not fields["r"].startswith(client_nonce):
         raise ProbeError("SCRAM server nonce does not continue the client nonce")
+    if not fields["i"].isdigit() or not SCRAM_MIN_ITERATIONS <= int(fields["i"]) <= SCRAM_MAX_ITERATIONS:
+        raise ProbeError(
+            f"SCRAM iteration count {fields['i']!r} is outside {SCRAM_MIN_ITERATIONS}-{SCRAM_MAX_ITERATIONS};"
+            " refusing to derive a weakened or unbounded key"
+        )
     salted = hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), base64.b64decode(fields["s"]), int(fields["i"]),
     )
@@ -214,7 +226,14 @@ def _pg_error(payload):
     return ProbeError(f"server error {code}: {message}")
 
 
-def _pg_authenticate(sock, reader, user, password):
+def _pg_authenticate(sock, reader, password):
+    """Complete authentication using SCRAM-SHA-256 only.
+
+    The stack's Postgres 17 always requests SASL/SCRAM-SHA-256. Any other method (cleartext,
+    MD5, Kerberos, GSSAPI, SSPI) means a different server is answering on the configured port,
+    and honouring it would hand the password (or a crackable digest) to that server; the probe
+    refuses without sending anything derived from the password.
+    """
     while True:
         kind, payload = _pg_read(reader)
         if kind == b"E":
@@ -226,39 +245,39 @@ def _pg_authenticate(sock, reader, user, password):
         code = struct.unpack("!i", payload[:4])[0]
         if code == 0:
             return
-        if code in (3, 5, 10) and not password:
+        if code != 10:
+            name = PG_AUTH_NAMES.get(code, f"code {code}")
+            raise ProbeError(
+                f"the server requested {name} authentication; this stack's Postgres only uses SCRAM-SHA-256,"
+                " so the port is answered by a different server. The password was not sent."
+            )
+        if not password:
             raise ProbeError("the server requires a password but PENNILOGIC_POSTGRES_PASSWORD is blank")
-        if code == 3:
-            sock.sendall(_pg_message(b"p", _cstring(password)))
-        elif code == 5:
-            inner = hashlib.md5((password + user).encode("utf-8")).hexdigest().encode("ascii")
-            digest = hashlib.md5(inner + payload[4:8]).hexdigest()
-            sock.sendall(_pg_message(b"p", _cstring("md5" + digest)))
-        elif code == 10:
-            mechanisms = [m for m in payload[4:].split(b"\0") if m]
-            if b"SCRAM-SHA-256" not in mechanisms:
-                raise ProbeError("server offers no supported SASL mechanism")
-            client_first_bare = "n=,r=" + secrets.token_urlsafe(18)
-            first = ("n,," + client_first_bare).encode("utf-8")
-            sock.sendall(_pg_message(b"p", b"SCRAM-SHA-256\0" + struct.pack("!i", len(first)) + first))
-            kind, payload = _pg_read(reader)
-            if kind == b"E":
-                raise _pg_error(payload)
-            if kind != b"R" or struct.unpack("!i", payload[:4])[0] != 11:
-                raise ProbeError("unexpected reply during SCRAM authentication")
-            server_first = payload[4:].decode("utf-8")
-            client_final, expected = scram_messages(password, client_first_bare, server_first)
-            sock.sendall(_pg_message(b"p", client_final.encode("utf-8")))
-            kind, payload = _pg_read(reader)
-            if kind == b"E":
-                raise _pg_error(payload)
-            if kind != b"R" or struct.unpack("!i", payload[:4])[0] != 12:
-                raise ProbeError("unexpected reply during SCRAM authentication")
-            final = dict(part.split("=", 1) for part in payload[4:].decode("utf-8").split(","))
-            if not hmac.compare_digest(base64.b64decode(final.get("v", "")), expected):
-                raise ProbeError("SCRAM server signature mismatch: the server did not prove it knows the password")
-        else:
-            raise ProbeError(f"unsupported PostgreSQL authentication method (code {code})")
+        mechanisms = [m for m in payload[4:].split(b"\0") if m]
+        if b"SCRAM-SHA-256" not in mechanisms:
+            raise ProbeError(
+                "the server offers no SCRAM-SHA-256 SASL mechanism (offered: "
+                + ", ".join(m.decode("ascii", "replace") for m in mechanisms) + "); the password was not sent"
+            )
+        client_first_bare = "n=,r=" + secrets.token_urlsafe(18)
+        first = ("n,," + client_first_bare).encode("utf-8")
+        sock.sendall(_pg_message(b"p", b"SCRAM-SHA-256\0" + struct.pack("!i", len(first)) + first))
+        kind, payload = _pg_read(reader)
+        if kind == b"E":
+            raise _pg_error(payload)
+        if kind != b"R" or struct.unpack("!i", payload[:4])[0] != 11:
+            raise ProbeError("unexpected reply during SCRAM authentication")
+        server_first = payload[4:].decode("utf-8")
+        client_final, expected = scram_messages(password, client_first_bare, server_first)
+        sock.sendall(_pg_message(b"p", client_final.encode("utf-8")))
+        kind, payload = _pg_read(reader)
+        if kind == b"E":
+            raise _pg_error(payload)
+        if kind != b"R" or struct.unpack("!i", payload[:4])[0] != 12:
+            raise ProbeError("unexpected reply during SCRAM authentication")
+        final = dict(part.split("=", 1) for part in payload[4:].decode("utf-8").split(","))
+        if not hmac.compare_digest(base64.b64decode(final.get("v", "")), expected):
+            raise ProbeError("SCRAM server signature mismatch: the server did not prove it knows the password")
 
 
 def probe_postgres(settings, timeout):
@@ -272,7 +291,7 @@ def probe_postgres(settings, timeout):
         ))
         startup = struct.pack("!i", 196608) + params + b"\0"
         sock.sendall(struct.pack("!i", len(startup) + 4) + startup)
-        _pg_authenticate(sock, reader, user, settings["PENNILOGIC_POSTGRES_PASSWORD"])
+        _pg_authenticate(sock, reader, settings["PENNILOGIC_POSTGRES_PASSWORD"])
         while True:
             kind, payload = _pg_read(reader)
             if kind == b"E":
