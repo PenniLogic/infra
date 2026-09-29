@@ -1,53 +1,99 @@
-# PenniLogic — local development services
+# PenniLogic — local development services (development only; never production)
 #
-# Postgres is the primary datastore (see docs/architecture/01-domain-model.md).
-# Redis backs AI quota token buckets and prompt caching (docs/ai/01-ai-harness-research.md).
+# Postgres is the primary datastore; Redis backs AI quota token buckets and
+# prompt caching. Product specifications live in PenniLogic/docs.
 #
-#   docker compose up -d
-#   docker compose down          # stop, keep data
-#   docker compose down -v       # stop, DESTROY data
+# Single documented command (creates .env on first run, starts the stack, waits
+# for both container health checks, prints a JSON readiness summary):
 #
-# NOTE: these credentials are for LOCAL DEVELOPMENT ONLY and are deliberately
-# non-secret. Never reuse this pattern for any deployed environment — real
-# credentials belong in a secrets manager.
+#   python scripts/bootstrap.py
+#
+# Other documented commands (details in LOCAL_INFRASTRUCTURE.md):
+#
+#   python scripts/bootstrap.py --status    # health + startup_ms; starts nothing
+#   python scripts/bootstrap.py --down      # remove containers and network, KEEP data
+#   python scripts/bootstrap.py --reset     # remove containers, network AND volumes (DESTROYS data)
+#   python scripts/smoke_infra.py           # probe both services over their published ports
+#
+# Plain `docker compose up -d` also works once `.env` exists (the bootstrap creates
+# it from `.env.example`); `docker compose down -v` is the manual destructive reset.
+#
+# Configuration is read from `.env` (git-ignored) using the variable contract
+# published in `.env.example`. No credential is committed: the Postgres password
+# has no default here and is generated per machine by the bootstrap. Ports are
+# published on the loopback interface only unless PENNILOGIC_BIND_ADDRESS is
+# deliberately changed. Images are pinned by digest so two machines run identical
+# bytes; bump the tag and digest together.
+#
+# Schema migrations and seed data are NOT part of this stack: T-ENV-01
+# (PenniLogic/api#20) and T-MIG-01 (PenniLogic/api#55) own that work.
+
+name: pennilogic
 
 services:
   postgres:
-    image: postgres:17-alpine
-    container_name: pennilogic-postgres
+    # postgres:17.11-alpine3.24, multi-arch index digest published 2026-09-21.
+    image: postgres:17.11-alpine3.24@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     restart: unless-stopped
     environment:
-      POSTGRES_USER: pennilogic
-      POSTGRES_PASSWORD: localdev
-      POSTGRES_DB: pennilogic
+      POSTGRES_USER: ${PENNILOGIC_POSTGRES_USER:-pennilogic}
+      # Blank makes the image refuse to initialise; scripts/bootstrap.py checks this
+      # before starting anything and generates a value into .env on first run.
+      POSTGRES_PASSWORD: ${PENNILOGIC_POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${PENNILOGIC_POSTGRES_DATABASE:-pennilogic}
       # Deterministic collation so ORDER BY behaves identically across dev machines and CI.
       POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
     ports:
-      - "5432:5432"
+      - target: 5432
+        published: "${PENNILOGIC_POSTGRES_PORT:-5432}"
+        host_ip: ${PENNILOGIC_BIND_ADDRESS:-127.0.0.1}
+        protocol: tcp
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pennilogic -d pennilogic"]
+      # TCP inside the container so the temporary initdb-only server (unix socket
+      # only) never reports healthy. pg_isready needs no credential.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 30s
+      start_interval: 1s
 
   redis:
-    image: redis:7-alpine
-    container_name: pennilogic-redis
+    # redis:7.4.11-alpine3.21, multi-arch index digest published 2026-09-21.
+    image: redis:7.4.11-alpine3.21@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     restart: unless-stopped
+    environment:
+      # Blank (default) runs Redis without authentication on the loopback-only
+      # published port. A value is honoured by the server, the health check and
+      # scripts/smoke_infra.py alike.
+      REDIS_PASSWORD: ${PENNILOGIC_REDIS_PASSWORD:-}
     # appendonly keeps quota counters across restarts so local testing of
-    # daily/monthly windows isn't silently reset.
-    command: ["redis-server", "--appendonly", "yes"]
+    # daily/monthly windows isn't silently reset. Re-entering the image entrypoint
+    # keeps its privilege drop (redis-server runs as the redis user), and the
+    # optional password is expanded by the container shell instead of being
+    # written into this file.
+    command:
+      - sh
+      - -c
+      - 'exec docker-entrypoint.sh redis-server --appendonly yes $${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}'
     ports:
-      - "6379:6379"
+      - target: 6379
+        published: "${PENNILOGIC_REDIS_PORT:-6379}"
+        host_ip: ${PENNILOGIC_BIND_ADDRESS:-127.0.0.1}
+        protocol: tcp
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - '[ -z "$$REDIS_PASSWORD" ] || export REDISCLI_AUTH="$$REDIS_PASSWORD"; redis-cli ping | grep -q PONG'
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 30s
+      start_interval: 1s
 
 volumes:
   pgdata:
