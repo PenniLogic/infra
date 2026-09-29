@@ -10,22 +10,27 @@ import sys
 HERE = Path(__file__).resolve().parent
 PROFILES = json.loads((HERE / "repository-profiles.json").read_text(encoding="utf-8"))
 # Profile strings are rendered into shell, YAML/JSON and Markdown; keep them to
-# one printable ASCII line each, without surrounding whitespace, so a profile
-# cannot smuggle extra lines or code.
+# one printable ASCII line each, without surrounding whitespace or a workflow
+# expression opener, so a profile cannot smuggle extra lines, code or `${{ }}`
+# expansion into a generated file.
 LINE = re.compile(r"[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?")
+EXPRESSION = "${{"
 PATTERNS = {
     "node": re.compile(r"\d+\.\d+\.\d+"),
     "java": re.compile(r"\d+"),
     "developer_guide": re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\.md"),
     "gradle_wrapper_jar_sha256": re.compile(r"[0-9a-f]{64}"),
-    "env_key": re.compile(r"[A-Z][A-Z0-9_]*"),
     "sdk_package": re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(;[A-Za-z0-9][A-Za-z0-9._-]*)*"),
 }
+# Job-level env applies to every step, including the JS actions and package
+# installs, so only reviewed telemetry opt-outs are accepted; extend by generator change.
+ENV_KEYS = {"NEXT_TELEMETRY_DISABLED"}
 DEFAULT_TIMEOUT_MINUTES = 10
 IGNORE = [
     ".env", ".env.*", "!.env.example", "!.env.sample", ".venv/", "__pycache__/", "*.pyc",
     ".gradle/", "build/", "node_modules/", ".next/", "coverage/", ".idea/", ".DS_Store",
 ]
+ATTRIBUTES = ["* text=auto eol=lf", "*.jar binary"]
 ROLES = {
     "core": "pennilogic-core-reviewer", "qa": "pennilogic-qa",
     "security": "pennilogic-security-reviewer", "privacy": "pennilogic-privacy-reviewer",
@@ -49,12 +54,16 @@ def encoded(value):
     return json.dumps(value, indent=2) + "\n"
 
 
+def _line(value):
+    return isinstance(value, str) and LINE.fullmatch(value) is not None and EXPRESSION not in value
+
+
 def _lines(repo, profile, field, allow_negation=True):
     values = profile.get(field, [])
-    if not isinstance(values, list) or not all(
-        isinstance(item, str) and LINE.fullmatch(item) for item in values
-    ):
-        raise ValueError(f"{repo}: {field} must be a list of single printable lines")
+    if not isinstance(values, list) or not all(_line(item) for item in values):
+        raise ValueError(f"{repo}: {field} must be a list of single printable lines without expressions")
+    if field in profile and not values:
+        raise ValueError(f"{repo}: {field} must not be empty; omit the field instead")
     if not allow_negation and any(item.startswith("!") for item in values):
         # A negation could re-expose the shared secret ignores such as .env.
         raise ValueError(f"{repo}: {field} must not negate shared ignore rules")
@@ -63,6 +72,9 @@ def _lines(repo, profile, field, allow_negation=True):
 
 def validate_profile(repo, profile):
     """Reject profile values that could change the meaning of generated files."""
+    for field in ("purpose", "state"):
+        if not _line(profile.get(field)):
+            raise ValueError(f"{repo}: {field} must be one printable line without expressions")
     for field in ("node", "java", "developer_guide", "gradle_wrapper_jar_sha256"):
         value = profile.get(field)
         if value is not None and not (isinstance(value, str) and PATTERNS[field].fullmatch(value)):
@@ -76,14 +88,20 @@ def validate_profile(repo, profile):
     if not isinstance(env, dict):
         raise ValueError(f"{repo}: env must be a mapping")
     for key, value in env.items():
-        if not PATTERNS["env_key"].fullmatch(key) or key.startswith(("GITHUB_", "RUNNER_", "ACTIONS_")):
-            raise ValueError(f"{repo}: env key {key!r} is not allowed")
-        if not isinstance(value, str) or not LINE.fullmatch(value) or "${{" in value:
+        if key not in ENV_KEYS:
+            raise ValueError(f"{repo}: env key {key!r} is not in the reviewed allowlist")
+        if not _line(value):
             raise ValueError(f"{repo}: env value for {key} must be a static non-secret string")
     if _lines(repo, profile, "commands")[:1] != ["python scripts/check_repository.py"]:
         raise ValueError(f"{repo}: commands must start with the repository check")
     _lines(repo, profile, "install")
-    _lines(repo, profile, "attributes")
+    shared_patterns = {line.split()[0] for line in ATTRIBUTES}
+    for line in _lines(repo, profile, "attributes"):
+        # Later .gitattributes lines win and macros expand from the whole file, so a
+        # profile may neither restate a shared pattern nor define a macro.
+        pattern = line.split()[0]
+        if len(line.split()) < 2 or pattern in shared_patterns or pattern.startswith("["):
+            raise ValueError(f"{repo}: attributes line {line!r} would override a shared rule")
     _lines(repo, profile, "ignore", allow_negation=False)
     for package in _lines(repo, profile, "android_sdk"):
         if not PATTERNS["sdk_package"].fullmatch(package):
@@ -127,9 +145,10 @@ def tool_steps(profile):
             "with": {"node-version-file": ".nvmrc"},
         })
     if "java" in profile:
+        # Temurin resolves from the hosted runner's tool cache (no per-run download).
         steps.append({
             "name": "JDK", "uses": f"actions/setup-java@{actions['setup-java']}",
-            "with": {"distribution": "microsoft", "java-version": profile["java"]},
+            "with": {"distribution": "temurin", "java-version": profile["java"]},
         })
     if "android_sdk" in profile:
         steps.append({"name": "Android SDK packages", "run": android_sdk_script(profile["android_sdk"])})
@@ -437,9 +456,7 @@ There is one GitHub owner with multiple independent AI sessions, not multiple hu
 No open-source license was selected by this setup migration; public visibility
 alone is not a license grant. Existing source notices are preserved.
 """,
-        ".gitattributes": "".join(
-            line + "\n" for line in ["* text=auto eol=lf", "*.jar binary", *profile.get("attributes", [])]
-        ),
+        ".gitattributes": "".join(line + "\n" for line in ATTRIBUTES + profile.get("attributes", [])),
         "scripts/check_repository.py": (HERE / "templates/check_repository.py").read_text(encoding="utf-8"),
         "scripts/setup.py": (HERE / "templates/setup.py").read_text(encoding="utf-8"),
     }

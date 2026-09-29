@@ -45,10 +45,10 @@
       "state": "Repository foundation plus the health-only AI service scaffold from PenniLogic/ai-service#1; no provider traffic, key handling or inference is implemented.",
       "developer_guide": "docs/development.md",
       "ignore": [".ruff_cache/", ".mypy_cache/", ".pytest_cache/", "dist/", "*.egg-info/"],
-      "install": ["python -m pip install --quiet \"uv>=0.11,<0.12\"", "uv sync --locked"],
+      "install": ["printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n' | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin", "uv sync --locked"],
       "commands": [
         "python scripts/check_repository.py",
-        "python -m pip install --quiet \"uv>=0.11,<0.12\"",
+        "printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n' | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin",
         "uv sync --locked",
         "uv run --locked ruff check .",
         "uv run --locked ruff format --check .",
@@ -123,7 +123,8 @@
       "id": 1394135059,
       "purpose": "Local development infrastructure and canonical repository setup",
       "state": "Development-only Compose and public repository automation; no production deployment.",
-      "commands": ["python scripts/check_repository.py", "python governance/generate.py --repository infra --check", "python -m unittest discover -s governance/tests", "docker compose -f docker-compose.yml config --quiet"]
+      "developer_guide": "LOCAL_INFRASTRUCTURE.md",
+      "commands": ["python scripts/check_repository.py", "python governance/generate.py --repository infra --check", "python -m unittest discover -s governance/tests", "docker compose -f docker-compose.yml config --quiet", "python -m unittest discover -s scripts/tests"]
     }
   }
 }

@@ -21,6 +21,12 @@ SECRET_PATTERNS = (
     re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
+# Any form of the secrets context or the workflow token, at any workflow level.
+WORKFLOW_SECRET_ACCESS = re.compile(
+    r"\bsecrets\b|\bgithub\b\s*(?:\.\s*token\b|\[\s*['\"]token['\"]\s*\])", re.IGNORECASE
+)
+SENSITIVE_NAMES = {".env", "id_rsa", "id_ed25519"}
+SENSITIVE_SUFFIXES = (".p12", ".pfx", ".keystore", ".jks", ".bks", ".pem")
 TEXT_EXTENSIONS = {".md", ".json", ".yaml", ".yml", ".py", ".kt", ".kts", ".xml", ".toml", ".properties"}
 
 
@@ -67,7 +73,7 @@ def validate_workflow(name, data):
     value = json_document(data)
     if value.get("permissions") != {"contents": "read"}:
         raise ValueError(f"{name}: expected read-only workflow token")
-    if "secrets." in json.dumps(value.get("env", {})):
+    if WORKFLOW_SECRET_ACCESS.search(json.dumps(value)):
         raise ValueError(f"{name}: public candidate jobs must not receive secrets")
     events = value.get("on", {})
     if not isinstance(events, dict) or set(events) - {"push", "pull_request", "workflow_dispatch"}:
@@ -80,13 +86,9 @@ def validate_workflow(name, data):
             raise ValueError(f"{name}: only the standard hosted Ubuntu runner is configured")
         if job.get("permissions", {"contents": "read"}) != {"contents": "read"}:
             raise ValueError(f"{name}: writable job credentials are not permitted")
-        if "secrets." in json.dumps(job.get("env", {})):
-            raise ValueError(f"{name}: public candidate jobs must not receive secrets")
         for step in job.get("steps", []):
             if "uses" in step and not re.fullmatch(r"actions/[a-z0-9-]+@[0-9a-f]{40}", step["uses"]):
                 raise ValueError(f"{name}: action must be immutable and GitHub-owned")
-            if "secrets." in json.dumps(step):
-                raise ValueError(f"{name}: public candidate jobs must not receive secrets")
             if str(step.get("uses", "")).startswith("actions/checkout@"):
                 if step.get("with", {}).get("persist-credentials") is not False:
                     raise ValueError(f"{name}: checkout must not retain credentials")
@@ -108,7 +110,7 @@ def check(files):
     for name, content in files.items():
         safe_name = name if name.isprintable() else "[non-printable path]"
         leaf = Path(name).name.lower()
-        if leaf in {".env", "id_rsa", "id_ed25519"} or leaf.endswith((".p12", ".pfx", ".keystore")):
+        if leaf in SENSITIVE_NAMES or leaf.endswith(SENSITIVE_SUFFIXES):
             problems.append(f"Sensitive file must not be committed: {safe_name}")
         if any(pattern.search(content) for pattern in SECRET_PATTERNS):
             problems.append(f"Possible credential in {safe_name}; content withheld")

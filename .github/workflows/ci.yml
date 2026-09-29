@@ -43,7 +43,7 @@
         },
         {
           "name": "Run checks",
-          "run": "python scripts/check_repository.py\npython governance/generate.py --repository infra --check\npython -m unittest discover -s governance/tests\ndocker compose -f docker-compose.yml config --quiet"
+          "run": "python scripts/check_repository.py\npython governance/generate.py --repository infra --check\npython -m unittest discover -s governance/tests\ndocker compose -f docker-compose.yml config --quiet\npython -m unittest discover -s scripts/tests"
         }
       ]
     }
