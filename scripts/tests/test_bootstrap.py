@@ -7,6 +7,7 @@ import shutil
 import socket
 import stat
 import tempfile
+import time
 import unittest
 
 import support
@@ -217,24 +218,33 @@ class PortConflictTests(unittest.TestCase):
         class FakeCompose:
             project = "p"
 
-            def __init__(self):
-                self.calls = []
+            def __init__(self, down_ok=True):
+                self.calls, self.down_ok = [], down_ok
 
             def compose(self, *args, **kwargs):
                 self.calls.append(args)
-                return type("R", (), {"returncode": 0})()
+                return type("R", (), {"returncode": 0 if self.down_ok else 1})()
 
             def ps(self, all_states=False):
+                if not self.down_ok:
+                    raise bootstrap.BootstrapError("compose_failed", "ps failed")
                 return []
 
             def volumes(self):
                 return ["p_pgdata", "p_redisdata"]
 
         fake = FakeCompose()
-        outcome = bootstrap.rollback_partial_start(fake)
+        outcome = bootstrap.rollback_partial_start(fake, had_containers_before=False)
         self.assertEqual([("down", "--remove-orphans")], fake.calls, "never `--volumes` on rollback")
         self.assertIn("removed again", outcome)
         self.assertIn("p_pgdata, p_redisdata were kept", outcome)
+        untouched = FakeCompose()
+        outcome = bootstrap.rollback_partial_start(untouched, had_containers_before=True)
+        self.assertEqual([], untouched.calls, "an existing stack is never torn down by a failed re-run")
+        self.assertIn("left untouched", outcome)
+        broken = FakeCompose(down_ok=False)
+        outcome = bootstrap.rollback_partial_start(broken, had_containers_before=False)
+        self.assertIn("could not be fully removed", outcome, "a failing rollback never raises over the original error")
 
 
 class ReadinessTests(unittest.TestCase):
@@ -245,8 +255,40 @@ class ReadinessTests(unittest.TestCase):
                 with bootstrap.ProjectLock("pennilogic-unit-lock", wait_seconds=1):
                     pass
             self.assertEqual("locked", ctx.exception.kind)
+        self.assertTrue(held.path.is_file(), "the lock file is deliberately kept: unlinking breaks POSIX waiters")
         with bootstrap.ProjectLock("pennilogic-unit-lock", wait_seconds=1):
             pass  # released by the first context manager
+
+    @unittest.skipIf(os.name == "nt", "POSIX flock inode semantics; Windows locks are handle-based")
+    def test_project_lock_three_overlapping_holders_never_overlap(self):
+        # Regression for the round-2 finding: with the lock file unlinked on release, a waiter polling
+        # the old inode and a newcomer locking a fresh inode could both hold the lock at once.
+        import subprocess
+        import sys
+        program = r"""
+import sys, time, json, os
+sys.path.insert(0, sys.argv[1]); import bootstrap
+project, out = sys.argv[2], sys.argv[3]
+with bootstrap.ProjectLock(project, wait_seconds=60):
+    start = time.monotonic(); time.sleep(0.6); end = time.monotonic()
+    with open(out, "a") as f: f.write(json.dumps({"pid": os.getpid(), "start": start, "end": end}) + "\n")
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "holders.jsonl"
+            project = f"pennilogic-unit-lock-{os.getpid()}"
+            procs = []
+            for _ in range(2):
+                procs.append(subprocess.Popen([sys.executable, "-c", program, str(support.SCRIPTS), project, str(out)]))
+                time.sleep(0.15)
+            time.sleep(0.4)  # A is inside, B is polling: now the release/newcomer race window opens
+            procs.append(subprocess.Popen([sys.executable, "-c", program, str(support.SCRIPTS), project, str(out)]))
+            for process in procs:
+                self.assertEqual(0, process.wait(timeout=60))
+            intervals = sorted((json.loads(line) for line in out.read_text().splitlines()), key=lambda r: r["start"])
+        self.assertEqual(3, len(intervals))
+        for earlier, later in zip(intervals, intervals[1:]):
+            self.assertGreaterEqual(later["start"], earlier["end"],
+                                    f"lock holders overlapped: {earlier} then {later}")
 
     def test_startup_ms_is_derived_from_first_successful_probe(self):
         state = {"StartedAt": "2026-09-29T10:00:00.000000000Z", "Health": {"Log": [

@@ -5,13 +5,14 @@ Single documented command::
     python scripts/bootstrap.py
 
 It creates ``.env`` from ``.env.example`` on first run (generating a development-only
-Postgres password), refuses to start unless the publish address is loopback, fails fast
-with the conflicting port named when another program already holds it, starts the Compose
-project, waits for both container health checks and prints one JSON summary to stdout::
+Postgres password), refuses to start unless the publish address is loopback, exits within a
+few seconds with the conflicting port named when another program already holds it, starts
+the Compose project, waits for both container health checks and prints one JSON summary to
+stdout::
 
     {"schema": "pennilogic.infra.bootstrap/1", "action": "up", "ok": true, "project": "pennilogic",
-     "services": [{"service": "postgres", "healthy": true, "startup_ms": 2345},
-                  {"service": "redis", "healthy": true, "startup_ms": 1102}],
+     "services": [{"service": "postgres", "healthy": true, "startup_ms": 2345, "startup_source": "health_log"},
+                  {"service": "redis", "healthy": true, "startup_ms": 1102, "startup_source": "health_log"}],
      "checks": {...}, "warnings": [], "error": null}
 
 Running it again leaves exactly one healthy stack. Other actions: ``--status`` (read-only),
@@ -36,6 +37,7 @@ from pathlib import Path
 import re
 import secrets
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -85,9 +87,15 @@ class ProjectLock:
     """Serialize bootstrap invocations per Compose project on this machine.
 
     Compose itself is not atomic: two simultaneous `up` runs of one project race on
-    container names and both fail. The lock is an OS byte-range lock on a small file in
-    ``<temp>/pennilogic-bootstrap-locks/``; it is released automatically when the holding
-    process exits, so it can never be stale. The file is removed on release when possible.
+    container names and both fail. The lock is an OS file lock (``flock`` on POSIX,
+    ``msvcrt.locking`` on Windows) on a zero-byte per-project file in a per-user directory
+    under the system temp directory. It is released automatically when the holding process
+    exits, so it can never be stale.
+
+    The lock file is deliberately **never unlinked**: on POSIX a waiter polls the inode it
+    opened, so unlinking on release would let a newcomer lock a fresh inode while the waiter
+    later succeeds on the old one, and two bootstraps would run at once. Independently of
+    that, an acquirer re-checks that the inode it locked is still the one at the path.
     """
 
     def __init__(self, project, wait_seconds=LOCK_WAIT_SECONDS):
@@ -97,20 +105,45 @@ class ProjectLock:
         self.path = self.directory / f"{project}.lock"
         self.wait_seconds, self.handle = wait_seconds, None
 
+    def _try_lock(self):
+        """Return True when the lock on the currently opened file is held and still authoritative."""
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        import fcntl
+        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            current = os.stat(self.path)
+        except FileNotFoundError:
+            current = None
+        held = os.fstat(self.handle.fileno())
+        if current is None or (current.st_ino, current.st_dev) != (held.st_ino, held.st_dev):
+            # The file was replaced or removed under us: this lock protects nothing. Reopen.
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+            self.handle.close()
+            self.handle = open(self.path, "a+", encoding="utf-8")
+            return False
+        return True
+
     def __enter__(self):
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if hasattr(os, "getuid"):
+            info = os.stat(self.directory)
+            if info.st_uid != os.getuid() or stat.S_ISLNK(os.lstat(self.directory).st_mode):
+                raise BootstrapError(
+                    "locked", f"Lock directory {self.directory} is not owned by this user or is a symlink;"
+                    " refusing to use it. Remove it or set TMPDIR to a private directory.",
+                )
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                os.chmod(self.directory, 0o700)
         self.handle = open(self.path, "a+", encoding="utf-8")
         deadline = time.monotonic() + self.wait_seconds
         announced = False
         while True:
             try:
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
+                if self._try_lock():
+                    return self
             except OSError:
                 if time.monotonic() > deadline:
                     self.handle.close()
@@ -135,10 +168,6 @@ class ProjectLock:
                 fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
         finally:
             self.handle.close()
-        try:
-            self.path.unlink()  # best effort; a concurrent waiter may legitimately hold it open
-        except OSError:
-            pass
         return False
 
 
@@ -437,21 +466,34 @@ def compose_port_failure(stderr):
     )
 
 
-def rollback_partial_start(compose):
-    """After a failed `up`, remove the containers/network it created; volumes are always kept.
+def rollback_partial_start(compose, had_containers_before):
+    """After a failed `up`, undo what this run created; data volumes are always kept.
 
-    Returns a sentence for the error message describing what was done. Never touches
-    anything outside this Compose project.
+    Only a stack that did not exist before this run is removed. If the project already had
+    containers (a failed re-run, or a concurrent run's stack), nothing is touched and the
+    message says so. Returns a sentence for the error message. Never raises: the original
+    failure must not be masked by a follow-up error.
     """
-    result = compose.compose("down", "--remove-orphans", timeout=180, check=False)
-    remaining = compose.ps(all_states=True) if result.returncode == 0 else None
-    volumes = compose.volumes()
+    try:
+        volumes = compose.volumes()
+    except BootstrapError:
+        volumes = []
     kept = f" Data volumes {', '.join(volumes)} were kept." if volumes else ""
-    if result.returncode == 0 and not remaining:
+    if had_containers_before:
+        return (
+            "The project's existing containers were left untouched; run `python scripts/bootstrap.py --status`"
+            " to inspect them and re-run once the cause is fixed." + kept
+        )
+    try:
+        result = compose.compose("down", "--remove-orphans", timeout=180, check=False)
+        remaining = compose.ps(all_states=True) if result.returncode == 0 else None
+    except BootstrapError:
+        result, remaining = None, None
+    if result is not None and result.returncode == 0 and not remaining:
         return "The partially created containers and network were removed again; nothing is running." + kept
     return (
         "Warning: the partially created stack could not be fully removed; run `python scripts/bootstrap.py"
-        " --down` (or re-run after fixing the port) to converge." + kept
+        " --down` (or re-run after fixing the cause) to converge." + kept
     )
 
 
@@ -626,8 +668,9 @@ def action_up(compose, settings, ports, args):
                 "compose_failed", f"`docker compose up` failed (exit {result.returncode}):\n{stderr.strip()}",
             )
         # Compose may already have created a network, volumes and some containers (Redis can even be
-        # running). Leave no half-started stack behind; data volumes are never removed here.
-        outcome = rollback_partial_start(compose)
+        # running). Leave no half-started stack behind when the project was empty before this run;
+        # an existing stack (failed re-run or a concurrent run) is left alone. Volumes are never removed.
+        outcome = rollback_partial_start(compose, had_containers_before=bool(before))
         error.args = (f"{error.args[0]}\n{outcome}",)
         error.details["rollback"] = outcome
         error.details["summary"] = {"warnings": warnings}

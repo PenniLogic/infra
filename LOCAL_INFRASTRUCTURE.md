@@ -52,8 +52,11 @@ On the first run it:
 
 Running it again is safe: an already healthy stack is left as it is, and the summary
 confirms exactly one container per service and exactly the two named volumes. Concurrent
-runs for the same project wait for each other (an OS file lock under the system temp
-directory, released automatically when the holder exits) instead of racing Compose.
+runs for the same project wait for each other instead of racing Compose: the lock is an OS
+file lock on a zero-byte `<project>.lock` file in a per-user directory under the system temp
+directory (`pennilogic-bootstrap-locks[-<uid>]`). It is released automatically when the
+holder exits, so it can never be stale; the small files are intentionally left in place and
+may be ignored.
 
 ```json
 {
@@ -85,7 +88,7 @@ read from Docker's health log, and `startup_source` says where the number comes 
 | --- | --- | --- |
 | `health_log` | measured | The container was started by this run (or its first success is still in Docker's health log) |
 | `already_running` | `0` | The container was already running and healthy before this run (idempotent re-run) |
-| `unknown` | `null` | Docker's health log (last five probes) no longer holds the first success, e.g. `--status` on a stack started minutes ago, or the service is not healthy |
+| `unknown` | `null` | Docker's health log (last five probes, so about 25 s after the first success at the 5 s interval) no longer holds the first success, e.g. `--status` on a stack started half a minute or more ago, or the service is not healthy |
 
 The script's own waiting time is never reported as `startup_ms`. For CI trend tracking,
 filter on `startup_source == "health_log"`.
@@ -150,7 +153,9 @@ python scripts/bootstrap.py --down        # remove containers and network; KEEP 
 
 Equivalent: `docker compose down --remove-orphans`. The next `python scripts/bootstrap.py`
 recreates the containers against the existing data with no manual step. To see for yourself
-that data survives, write a marker before `--down` and read it after the recreate:
+that data survives, write a marker before `--down` and read it after the recreate (run these
+from PowerShell or a POSIX shell, where single quotes work as shown; `cmd.exe` quotes
+differently and will fail on them verbatim):
 
 ```text
 docker compose exec -T redis sh -c '[ -z "$REDIS_PASSWORD" ] || export REDISCLI_AUTH="$REDIS_PASSWORD"; redis-cli SET marker kept'
@@ -162,7 +167,8 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 
 (The quoted `sh -c` scripts run inside the containers, where `POSTGRES_USER`, `POSTGRES_DB`
 and `REDIS_PASSWORD` are already set, so no credential is typed on your host command line.
-After `--reset` the same reads return `(nil)` and `Did not find any relation named "marker"`.)
+After `--reset` the Redis read prints an empty line (`redis-cli` without a terminal prints
+nothing for a missing key) and psql says `Did not find any relation named "marker"`.)
 
 ## Reset (destroys development data)
 
@@ -215,9 +221,11 @@ The preflight can only see ports that accept connections. If a program holds a p
 listening on it, or takes it between the check and the start, or the port is in a Windows
 excluded range (`netsh interface ipv4 show excludedportrange protocol=tcp`), Docker itself
 fails to bind. The bootstrap then reports the same `error.kind = "port_conflict"` with
-`error.ports` naming the port, removes the containers and network that Compose had already
-created (the data volumes are kept and named in the message, so nothing half-started is left
-behind), and exits 1. Fix the port in `.env` and re-run.
+`error.ports` naming the port and exits 1. If the project had no containers before the run,
+the containers and network that Compose had already created are removed again so nothing
+half-started is left behind; if the project already had containers (a failed re-run), they
+are left exactly as they were. Either way the data volumes are kept and the message states
+what was done (`error.rollback` carries the same sentence). Fix the port in `.env` and re-run.
 
 ## Configuration contract
 

@@ -124,9 +124,16 @@ class StackLifecycleTests(unittest.TestCase):
         self.assertEqual(self.project, summary["project"])
         for record in summary["services"]:
             self.assertTrue(record["healthy"], record)
-            self.assertEqual("health_log", record["startup_source"], record)
-            self.assertIsInstance(record["startup_ms"], int)
-            self.assertGreater(record["startup_ms"], 0)
+            if record["service"] == "postgres":
+                # Postgres is the last service to become healthy, so its first success is still in the log.
+                self.assertEqual("health_log", record["startup_source"], record)
+                self.assertIsInstance(record["startup_ms"], int)
+                self.assertGreater(record["startup_ms"], 0)
+            else:
+                # Redis is healthy long before Postgres; on a slow Postgres init its five-entry log may
+                # already have rotated, in which case the honest answer is unknown/null, never a guess.
+                self.assertIn(record["startup_source"], ("health_log", "unknown"), record)
+                self.assertEqual(record["startup_source"] == "health_log", record["startup_ms"] is not None)
         self.assertTrue(summary["checks"]["single_stack"], summary["checks"])
         self.assertEqual({"postgres": 1, "redis": 1}, summary["checks"]["containers"])
         self.assertEqual([f"{self.project}_pgdata", f"{self.project}_redisdata"], summary["checks"]["volumes"])
@@ -290,8 +297,10 @@ class StackLifecycleTests(unittest.TestCase):
         self.assertEqual(2, len(project_containers(project)))
         self.assertEqual(2, len(project_volumes(project)))
         self.assertTrue(any("waiting for it to finish" in o[1] for o in outputs), "one run must wait on the lock")
-        sources = sorted(r["startup_source"] for s in summaries for r in s["services"])
-        self.assertEqual(["already_running", "already_running", "health_log", "health_log"], sources)
+        by_run = [sorted(r["startup_source"] for r in s["services"]) for s in summaries]
+        self.assertIn(["already_running", "already_running"], by_run, "the waiter finds the winner's stack")
+        fresh = next(b for b in by_run if b != ["already_running", "already_running"])
+        self.assertTrue(set(fresh) <= {"health_log", "unknown"}, fresh)
         password = smoke.parse_env_file(env_file)["PENNILOGIC_POSTGRES_PASSWORD"]
         self.assertEqual("ok", smoke.probe("postgres", smoke.load_settings(env_file, env), 5.0)["status"],
                          "both runs used the single generated password")
