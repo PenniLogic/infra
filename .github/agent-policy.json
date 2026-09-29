@@ -20,7 +20,8 @@
     "python scripts/check_repository.py",
     "python governance/generate.py --repository infra --check",
     "python -m unittest discover -s governance/tests",
-    "docker compose -f docker-compose.yml config --quiet"
+    "docker compose -f docker-compose.yml config --quiet",
+    "python -m unittest discover -s scripts/tests"
   ],
   "review_floor": [
     "core"

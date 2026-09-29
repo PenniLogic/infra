@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -17,6 +18,10 @@ def load(name, path):
 
 generator = load("public_generator", HERE / "generate.py")
 checker = load("repository_checker", HERE / "templates/check_repository.py")
+
+
+UV_INSTALL = ("printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n'"
+              " | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin")
 
 
 class BaselineTests(unittest.TestCase):
@@ -54,13 +59,17 @@ class BaselineTests(unittest.TestCase):
                     "npm run check:bundle:planted"],
             "admin": ["npm ci --no-audit --no-fund", "npm run lint", "npm run typecheck",
                       "npm run check:imports", "npm test", "npm run build", "npm run smoke"],
-            "ai-service": ['python -m pip install --quiet "uv>=0.11,<0.12"', "uv sync --locked",
+            "ai-service": [UV_INSTALL, "uv sync --locked",
                            "uv run --locked ruff check .", "uv run --locked ruff format --check .",
                            "uv run --locked mypy", "uv run --locked pytest"],
             "android": ["python scripts/quality_gates.py build", "python scripts/quality_gates.py test",
                         "python scripts/quality_gates.py lint", "python scripts/quality_gates.py coverage",
                         "python scripts/quality_gates.py self-test",
                         'python -m unittest discover -s scripts/tests -p "test_*.py"'],
+            "infra": ["python governance/generate.py --repository infra --check",
+                      "python -m unittest discover -s governance/tests",
+                      "docker compose -f docker-compose.yml config --quiet",
+                      "python -m unittest discover -s scripts/tests"],
         }
         for repo, commands in expected.items():
             with self.subTest(repo=repo):
@@ -71,6 +80,30 @@ class BaselineTests(unittest.TestCase):
                 verify = [step for step in setup if step["name"] == "Verify repository"]
                 self.assertEqual(["python scripts/check_repository.py"], [step["run"] for step in verify])
                 self.assertEqual("python scripts/setup.py", setup[-1]["run"])
+        # The pinned uv install is hash-checked, binary-only and dependency-free.
+        install = generator.PROFILES["repositories"]["ai-service"]["install"]
+        self.assertEqual([UV_INSTALL, "uv sync --locked"], install)
+        for flag in ("uv==0.11.33", "--hash=sha256:", "--only-binary :all:", "--require-hashes", "--no-deps"):
+            self.assertIn(flag, UV_INSTALL)
+        self.assertNotIn('"uv>=', json.dumps(generator.PROFILES["repositories"]["ai-service"]))
+
+    def test_jdk_resolves_from_the_runner_tool_cache(self):
+        for repo, profile in generator.PROFILES["repositories"].items():
+            for setup in (False, True):
+                with self.subTest(repo=repo, setup=setup):
+                    job = json.loads(generator.workflow(repo, setup=setup))["jobs"]
+                    steps = job["copilot-setup-steps" if setup else "ci"]["steps"]
+                    jdk = [step for step in steps if step.get("uses", "").startswith("actions/setup-java@")]
+                    if "java" in profile:
+                        self.assertEqual([{"distribution": "temurin", "java-version": profile["java"]}],
+                                         [step["with"] for step in jdk])
+                        for key in ("check-latest", "cache", "cache-jdk", "force-download", "token"):
+                            self.assertNotIn(key, jdk[0]["with"])
+                    else:
+                        self.assertEqual([], jdk)
+        self.assertEqual({"api", "android"}, {
+            repo for repo, profile in generator.PROFILES["repositories"].items() if "java" in profile
+        })
 
     def test_node_toolchain_only_where_declared(self):
         pin = generator.PROFILES["actions"]["setup-node"]
@@ -149,7 +182,7 @@ class BaselineTests(unittest.TestCase):
                     self.assertEqual(["Checkout", "Python", "JDK", "Android SDK packages",
                                       "Verify repository", "Install managed hook"],
                                      [step["name"] for step in setup])
-                    self.assertEqual({"distribution": "microsoft", "java-version": "21"}, ci[2]["with"])
+                    self.assertEqual({"distribution": "temurin", "java-version": "21"}, ci[2]["with"])
                     sdk = ci[3]["run"]
                     self.assertIn('for package in "platforms;android-36" "build-tools;36.0.0" "platform-tools"; do', sdk)
                     self.assertIn('yes | "$manager" --licenses > /dev/null || true', sdk)
@@ -171,36 +204,72 @@ class BaselineTests(unittest.TestCase):
                         self.assertRegex(step["uses"], r"^actions/(checkout|setup-python|setup-node|setup-java)@")
 
     def test_profile_values_that_could_change_generated_meaning_are_rejected(self):
-        base = {"commands": ["python scripts/check_repository.py"]}
+        base = {
+            "purpose": "Example repository", "state": "Example state; nothing is implemented.",
+            "commands": ["python scripts/check_repository.py"],
+        }
+        expression = "echo ${{ github.event.pull_request.title }}"
         bad = [
             {"node": "24"}, {"node": "24.14.0\nrm -rf /"}, {"java": "21 && curl evil"},
             {"timeout_minutes": "30"}, {"timeout_minutes": 0}, {"timeout_minutes": 361}, {"timeout_minutes": True},
             {"env": ["A=1"]}, {"env": {"lower": "1"}}, {"env": {"GITHUB_TOKEN": "x"}},
             {"env": {"RUNNER_TEMP": "/tmp"}}, {"env": {"ACTIONS_STEP_DEBUG": "true"}},
-            {"env": {"TOKEN": "${{ secrets.TOKEN }}"}}, {"env": {"X": "a\nb"}}, {"env": {"X": 1}},
+            {"env": {"PATH": "/evil:/usr/bin"}}, {"env": {"LD_PRELOAD": "/tmp/x.so"}},
+            {"env": {"NODE_OPTIONS": "--require /tmp/x.js"}}, {"env": {"PIP_INDEX_URL": "https://evil"}},
+            {"env": {"NPM_CONFIG_REGISTRY": "https://evil"}}, {"env": {"UV_INDEX_URL": "https://evil"}},
+            {"env": {"INPUT_TOKEN": "x"}}, {"env": {"JAVA_TOOL_OPTIONS": "-javaagent:x"}},
+            {"env": {"GRADLE_OPTS": "-Dx"}}, {"env": {"NEXT_TELEMETRY_DISABLED": "1", "CI": "1"}},
+            {"env": {"NEXT_TELEMETRY_DISABLED": "${{ secrets.TOKEN }}"}},
+            {"env": {"NEXT_TELEMETRY_DISABLED": "a\nb"}}, {"env": {"NEXT_TELEMETRY_DISABLED": 1}},
             {"ignore": ["!.env"]}, {"ignore": ["a\nb"]}, {"ignore": [" leading"]}, {"ignore": ["trailing "]},
-            {"ignore": "next-env.d.ts"},
-            {"attributes": ["* text\n* -text"]}, {"install": ["npm ci\ncurl evil | sh"]},
+            {"ignore": "next-env.d.ts"}, {"ignore": []}, {"ignore": [expression]},
+            {"attributes": ["* text\n* -text"]}, {"attributes": ["* -text"]}, {"attributes": ["*.jar text"]},
+            {"attributes": ["*"]}, {"attributes": ["gradlew.bat"]}, {"attributes": []}, {"attributes": [expression]},
+            {"attributes": ["[attr]binary text"]}, {"attributes": ["[attr]lf text eol=lf"]},
+            {"install": ["npm ci\ncurl evil | sh"]}, {"install": []}, {"install": [expression]},
+            {"install": ['npm ci --tag "${{ github.head_ref }}"']},
             {"commands": []}, {"commands": ["npm ci"]},
             {"commands": ["python scripts/check_repository.py", "bad\nline"]},
+            {"commands": ["python scripts/check_repository.py", expression]},
+            {"commands": ["python scripts/check_repository.py", "echo ${{secrets.X}}"]},
             {"developer_guide": "docs/development.txt"}, {"developer_guide": "../other/README.md"},
             {"developer_guide": "/etc/passwd.md"},
             {"gradle_wrapper_jar_sha256": "7a9ce74c"}, {"gradle_wrapper_jar_sha256": "G" * 64},
             {"android_sdk": ["platforms;android-36; rm -rf /"]}, {"android_sdk": ['"platform-tools"']},
-            {"android_sdk": ["$HOME"]}, {"android_sdk": ["platform tools"]},
+            {"android_sdk": ["$HOME"]}, {"android_sdk": ["platform tools"]}, {"android_sdk": []},
+            {"purpose": "Line one\nLine two"}, {"purpose": ""}, {"purpose": None}, {"purpose": 3},
+            {"state": "Read ${{ github.event.issue.body }}"}, {"state": "Trailing "}, {"state": "Caf\u00e9 state"},
         ]
         for overrides in bad:
             with self.subTest(overrides=overrides):
                 with self.assertRaises(ValueError):
                     generator.validate_profile("example", {**base, **overrides})
+        for missing in ("purpose", "state", "commands"):
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                generator.validate_profile("example", {key: value for key, value in base.items() if key != missing})
         generator.validate_profile("example", {
             **base, "node": "24.14.0", "java": "21", "timeout_minutes": 30,
             "env": {"NEXT_TELEMETRY_DISABLED": "1"}, "ignore": ["next-env.d.ts"], "attributes": ["gradlew.bat text eol=crlf"],
-            "install": ["npm ci"], "developer_guide": "docs/development.md",
+            "install": [UV_INSTALL, "npm ci"], "developer_guide": "docs/development.md",
             "gradle_wrapper_jar_sha256": "0" * 64, "android_sdk": ["platforms;android-36", "platform-tools"],
+            "commands": ["python scripts/check_repository.py", UV_INSTALL, 'echo "$HOME" | sha256sum -c -',
+                         "python -m unittest discover -s scripts/tests -p \"test_*.py\""],
         })
         for repo, profile in generator.PROFILES["repositories"].items():
             generator.validate_profile(repo, profile)
+
+    def test_expression_opener_never_reaches_a_generated_workflow(self):
+        for repo in generator.PROFILES["repositories"]:
+            for setup in (False, True):
+                workflow = json.loads(generator.workflow(repo, setup=setup))
+                job = workflow["jobs"]["copilot-setup-steps" if setup else "ci"]
+                for step in job["steps"]:
+                    if "run" in step:
+                        self.assertNotIn("${{", step["run"], msg=f"{repo} {step['name']}")
+                if repo == "api" and not setup:
+                    self.assertEqual(["Coverage against explicit base"],
+                                     [step["name"] for step in job["steps"] if "${{" in json.dumps(step)])
+                self.assertNotIn("${{", json.dumps(job.get("env", {})))
 
     def test_generated_output_passes_the_generated_repository_check(self):
         for repo in generator.PROFILES["repositories"]:
@@ -262,24 +331,71 @@ class BaselineTests(unittest.TestCase):
                 checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
 
     def test_secret_in_job_or_workflow_env_is_rejected(self):
-        for level in ("job", "workflow"):
-            workflow = json.loads(generator.workflow("web"))
-            target = workflow["jobs"]["ci"] if level == "job" else workflow
-            target["env"] = {"NPM_TOKEN": "${{ secrets.NPM_TOKEN }}"}
-            with self.assertRaisesRegex(ValueError, "secrets"):
-                checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
+        forms = ("${{ secrets.NPM_TOKEN }}", "${{ secrets['NPM_TOKEN'] }}", '${{ secrets["NPM_TOKEN"] }}',
+                 "${{ toJSON(secrets) }}", "${{ github.token }}", "${{ github['token'] }}",
+                 "${{ SECRETS.NPM_TOKEN }}", "${{ GitHub.Token }}")
+        for level in ("job", "workflow", "step-env", "step-with", "step-run"):
+            for form in forms:
+                with self.subTest(level=level, form=form):
+                    workflow = json.loads(generator.workflow("web"))
+                    job = workflow["jobs"]["ci"]
+                    if level == "workflow":
+                        workflow["env"] = {"NPM_TOKEN": form}
+                    elif level == "job":
+                        job["env"] = {"NPM_TOKEN": form}
+                    elif level == "step-env":
+                        job["steps"][-1]["env"] = {"NPM_TOKEN": form}
+                    elif level == "step-with":
+                        job["steps"][0]["with"]["token"] = form
+                    else:
+                        job["steps"][-1]["run"] += f"\necho {form}"
+                    with self.assertRaisesRegex(ValueError, "secrets"):
+                        checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
+        # A workflow that merely mentions a "secretsmanager" tool, the word "token" or a
+        # script named check_secrets is not flagged.
+        workflow = json.loads(generator.workflow("web"))
+        workflow["jobs"]["ci"]["steps"][-1]["run"] += "\necho secretsmanager tokens github_token\npython check_secrets.py"
+        checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
+
+    def test_sensitive_key_material_files_are_rejected(self):
+        for name in ("release.jks", "app/keystore.bks", "certs/server.pem", "upload.keystore", "id_rsa", ".env",
+                     "Release.JKS"):
+            with self.subTest(name=name):
+                errors = checker.check({name: b"binary"})
+                self.assertTrue(any("Sensitive file" in item for item in errors), errors)
+        self.assertFalse(any("Sensitive file" in item for item in checker.check({"README.md": b"x", ".env.example": b"x"})))
 
     def test_unimplemented_repositories_are_explicit(self):
         self.assertIn("foundation only", generator.PROFILES["repositories"]["contracts"]["state"])
+        # Words that would turn a scope statement into an acceptance or release claim.
+        claims = re.compile(
+            r"\b(accept(?:ed|s)?|approv(?:ed|al)|production[- ]ready|complete[ds]?|finished|"
+            r"released?|shipped|live|verified|passe[sd]|done|stable|ready)\b", re.IGNORECASE)
         for repo in ("admin", "ai-service", "android", "web"):
             state = generator.PROFILES["repositories"][repo]["state"]
             with self.subTest(repo=repo):
                 # The state may describe the scaffold but must still say what is not
-                # implemented and must not declare the consumer scaffold accepted.
+                # implemented and must not read as acceptance of the consumer scaffold.
+                self.assertIn("scaffold", state)
                 self.assertRegex(state, r"no [a-z\-]+[^.;]* (?:is|are) implemented")
                 self.assertIn(f"PenniLogic/{repo}#1", state)
-                self.assertNotIn("accepted", state.lower())
+                self.assertIsNone(claims.search(state.replace("acceptance is claimed", "")), state)
         self.assertIn("no physical-device acceptance is claimed", generator.PROFILES["repositories"]["android"]["state"])
+        self.assertIsNotNone(claims.search("Scaffold accepted; no product is implemented."))
+        self.assertIsNotNone(claims.search("Approved scaffold from PenniLogic/web#1; no screens are implemented."))
+
+    def test_infra_runs_its_application_tests_and_links_the_runbook(self):
+        profile = generator.PROFILES["repositories"]["infra"]
+        self.assertEqual("python -m unittest discover -s scripts/tests", profile["commands"][-1])
+        self.assertEqual("LOCAL_INFRASTRUCTURE.md", profile["developer_guide"])
+        output = generator.artifacts("infra")
+        for name in ("README.md", "AGENTS.md", "CONTRIBUTING.md"):
+            self.assertIn("[LOCAL_INFRASTRUCTURE.md](LOCAL_INFRASTRUCTURE.md)", output[name])
+            self.assertIn("python -m unittest discover -s scripts/tests\n```", output[name])
+        steps = json.loads(output[".github/workflows/ci.yml"])["jobs"]["ci"]["steps"]
+        self.assertTrue(steps[-1]["run"].endswith("\npython -m unittest discover -s scripts/tests"))
+        self.assertTrue((HERE.parent / "LOCAL_INFRASTRUCTURE.md").is_file())
+        self.assertTrue((HERE.parent / "scripts/tests").is_dir())
 
 
 if __name__ == "__main__":

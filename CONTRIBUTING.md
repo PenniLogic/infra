@@ -11,7 +11,11 @@ python scripts/check_repository.py
 python governance/generate.py --repository infra --check
 python -m unittest discover -s governance/tests
 docker compose -f docker-compose.yml config --quiet
+python -m unittest discover -s scripts/tests
 ```
+
+Repository-specific setup, commands and troubleshooting are maintained by hand in
+[LOCAL_INFRASTRUCTURE.md](LOCAL_INFRASTRUCTURE.md); that guide is not generated.
 
 `CI` runs on standard GitHub-hosted Ubuntu for pushes and pull requests, including
 forks, with read-only permissions and no repository secrets. Actions are SHA-pinned.
