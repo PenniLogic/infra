@@ -223,9 +223,11 @@ excluded range (`netsh interface ipv4 show excludedportrange protocol=tcp`), Doc
 fails to bind. The bootstrap then reports the same `error.kind = "port_conflict"` with
 `error.ports` naming the port and exits 1. If the project had no containers before the run,
 the containers and network that Compose had already created are removed again so nothing
-half-started is left behind; if the project already had containers (a failed re-run), they
-are left exactly as they were. Either way the data volumes are kept and the message states
-what was done (`error.rollback` carries the same sentence). Fix the port in `.env` and re-run.
+half-started is left behind; if the project already had containers (a failed re-run), the
+rollback does not touch them (Compose itself may have recreated a container whose port
+changed; the next successful run converges to one healthy stack). Either way the data volumes
+are kept and the message states what was done (`error.rollback` carries the same sentence).
+Fix the port in `.env` and re-run.
 
 ## Configuration contract
 

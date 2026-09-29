@@ -241,7 +241,7 @@ class PortConflictTests(unittest.TestCase):
         untouched = FakeCompose()
         outcome = bootstrap.rollback_partial_start(untouched, had_containers_before=True)
         self.assertEqual([], untouched.calls, "an existing stack is never torn down by a failed re-run")
-        self.assertIn("left untouched", outcome)
+        self.assertIn("did not touch", outcome)
         broken = FakeCompose(down_ok=False)
         outcome = bootstrap.rollback_partial_start(broken, had_containers_before=False)
         self.assertIn("could not be fully removed", outcome, "a failing rollback never raises over the original error")

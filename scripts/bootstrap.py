@@ -481,8 +481,10 @@ def rollback_partial_start(compose, had_containers_before):
     kept = f" Data volumes {', '.join(volumes)} were kept." if volumes else ""
     if had_containers_before:
         return (
-            "The project's existing containers were left untouched; run `python scripts/bootstrap.py --status`"
-            " to inspect them and re-run once the cause is fixed." + kept
+            "This run's rollback did not touch the project's containers because some already existed before"
+            " it started (Compose itself may have recreated a container whose configuration changed). Run"
+            " `python scripts/bootstrap.py --status` to inspect them and re-run once the cause is fixed;"
+            " the re-run converges to one healthy stack." + kept
         )
     try:
         result = compose.compose("down", "--remove-orphans", timeout=180, check=False)
@@ -655,8 +657,9 @@ def action_up(compose, settings, ports, args):
     result = compose.compose("up", "--detach", "--remove-orphans", timeout=max(args.timeout, 600), check=False)
     if result.returncode:
         stderr = compose.redact(result.stderr)
+        name_conflict = bool(NAME_CONFLICT.search(stderr))
         error = compose_port_failure(stderr)
-        if error is None and NAME_CONFLICT.search(stderr):
+        if error is None and name_conflict:
             error = BootstrapError(
                 "compose_failed",
                 "Docker reports a container-name conflict for this project, which happens when another"
@@ -669,8 +672,9 @@ def action_up(compose, settings, ports, args):
             )
         # Compose may already have created a network, volumes and some containers (Redis can even be
         # running). Leave no half-started stack behind when the project was empty before this run;
-        # an existing stack (failed re-run or a concurrent run) is left alone. Volumes are never removed.
-        outcome = rollback_partial_start(compose, had_containers_before=bool(before))
+        # an existing stack (failed re-run) or another run's containers (name conflict) are left alone.
+        # Volumes are never removed.
+        outcome = rollback_partial_start(compose, had_containers_before=bool(before) or name_conflict)
         error.args = (f"{error.args[0]}\n{outcome}",)
         error.details["rollback"] = outcome
         error.details["summary"] = {"warnings": warnings}
