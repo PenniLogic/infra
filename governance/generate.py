@@ -3,11 +3,29 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 
 
 HERE = Path(__file__).resolve().parent
 PROFILES = json.loads((HERE / "repository-profiles.json").read_text(encoding="utf-8"))
+# Profile strings are rendered into shell, YAML/JSON and Markdown; keep them to
+# one printable ASCII line each, without surrounding whitespace, so a profile
+# cannot smuggle extra lines or code.
+LINE = re.compile(r"[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?")
+PATTERNS = {
+    "node": re.compile(r"\d+\.\d+\.\d+"),
+    "java": re.compile(r"\d+"),
+    "developer_guide": re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\.md"),
+    "gradle_wrapper_jar_sha256": re.compile(r"[0-9a-f]{64}"),
+    "env_key": re.compile(r"[A-Z][A-Z0-9_]*"),
+    "sdk_package": re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(;[A-Za-z0-9][A-Za-z0-9._-]*)*"),
+}
+DEFAULT_TIMEOUT_MINUTES = 10
+IGNORE = [
+    ".env", ".env.*", "!.env.example", "!.env.sample", ".venv/", "__pycache__/", "*.pyc",
+    ".gradle/", "build/", "node_modules/", ".next/", "coverage/", ".idea/", ".DS_Store",
+]
 ROLES = {
     "core": "pennilogic-core-reviewer", "qa": "pennilogic-qa",
     "security": "pennilogic-security-reviewer", "privacy": "pennilogic-privacy-reviewer",
@@ -31,6 +49,70 @@ def encoded(value):
     return json.dumps(value, indent=2) + "\n"
 
 
+def _lines(repo, profile, field, allow_negation=True):
+    values = profile.get(field, [])
+    if not isinstance(values, list) or not all(
+        isinstance(item, str) and LINE.fullmatch(item) for item in values
+    ):
+        raise ValueError(f"{repo}: {field} must be a list of single printable lines")
+    if not allow_negation and any(item.startswith("!") for item in values):
+        # A negation could re-expose the shared secret ignores such as .env.
+        raise ValueError(f"{repo}: {field} must not negate shared ignore rules")
+    return values
+
+
+def validate_profile(repo, profile):
+    """Reject profile values that could change the meaning of generated files."""
+    for field in ("node", "java", "developer_guide", "gradle_wrapper_jar_sha256"):
+        value = profile.get(field)
+        if value is not None and not (isinstance(value, str) and PATTERNS[field].fullmatch(value)):
+            raise ValueError(f"{repo}: {field} has an unexpected value")
+    if ".." in profile.get("developer_guide", ""):
+        raise ValueError(f"{repo}: developer_guide must stay inside the repository")
+    timeout = profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES)
+    if type(timeout) is not int or not 1 <= timeout <= 360:
+        raise ValueError(f"{repo}: timeout_minutes must be a whole number of minutes up to 360")
+    env = profile.get("env", {})
+    if not isinstance(env, dict):
+        raise ValueError(f"{repo}: env must be a mapping")
+    for key, value in env.items():
+        if not PATTERNS["env_key"].fullmatch(key) or key.startswith(("GITHUB_", "RUNNER_", "ACTIONS_")):
+            raise ValueError(f"{repo}: env key {key!r} is not allowed")
+        if not isinstance(value, str) or not LINE.fullmatch(value) or "${{" in value:
+            raise ValueError(f"{repo}: env value for {key} must be a static non-secret string")
+    if _lines(repo, profile, "commands")[:1] != ["python scripts/check_repository.py"]:
+        raise ValueError(f"{repo}: commands must start with the repository check")
+    _lines(repo, profile, "install")
+    _lines(repo, profile, "attributes")
+    _lines(repo, profile, "ignore", allow_negation=False)
+    for package in _lines(repo, profile, "android_sdk"):
+        if not PATTERNS["sdk_package"].fullmatch(package):
+            raise ValueError(f"{repo}: android_sdk package {package!r} is not a plain sdkmanager path")
+
+
+def profile_for(repo):
+    profile = PROFILES["repositories"][repo]
+    validate_profile(repo, profile)
+    return profile
+
+
+def android_sdk_script(packages):
+    quoted = " ".join(f'"{package}"' for package in packages)
+    return f"""sdk="${{ANDROID_HOME:?ANDROID_HOME is not set on this runner}}"
+manager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+missing=""
+for package in {quoted}; do
+  [ -d "$sdk/${{package//;//}}" ] || missing="$missing $package"
+done
+if [ -n "$missing" ]; then
+  echo "Installing missing Android SDK packages:$missing"
+  yes | "$manager" --licenses > /dev/null || true
+  "$manager" --install $missing
+else
+  echo "Requested Android SDK packages are already installed in $sdk"
+fi"""
+
+
 def tool_steps(profile):
     actions = PROFILES["actions"]
     steps = [
@@ -39,17 +121,30 @@ def tool_steps(profile):
         {"name": "Python", "uses": f"actions/setup-python@{actions['setup-python']}",
          "with": {"python-version": PROFILES["python"]}},
     ]
+    if "node" in profile:
+        steps.append({
+            "name": "Node", "uses": f"actions/setup-node@{actions['setup-node']}",
+            "with": {"node-version-file": ".nvmrc"},
+        })
     if "java" in profile:
         steps.append({
             "name": "JDK", "uses": f"actions/setup-java@{actions['setup-java']}",
             "with": {"distribution": "microsoft", "java-version": profile["java"]},
         })
+    if "android_sdk" in profile:
+        steps.append({"name": "Android SDK packages", "run": android_sdk_script(profile["android_sdk"])})
     return steps
 
 
 def workflow(repo, setup=False):
-    profile = PROFILES["repositories"][repo]
+    profile = profile_for(repo)
     steps = tool_steps(profile)
+    if "gradle_wrapper_jar_sha256" in profile and not setup:
+        steps.append({
+            "name": "Verify Gradle wrapper",
+            "run": f'echo "{profile["gradle_wrapper_jar_sha256"]}  gradle/wrapper/gradle-wrapper.jar"'
+                   " | sha256sum -c -",
+        })
     commands = ["python scripts/check_repository.py"] if setup else profile["commands"]
     steps.append({"name": "Verify repository" if setup else "Run checks", "run": "\n".join(commands)})
     if repo == "api" and not setup:
@@ -59,10 +154,20 @@ def workflow(repo, setup=False):
             "run": 'python scripts/quality.py coverage --base "$BASE_SHA"',
         })
     if setup:
+        if profile.get("install"):
+            steps.append({"name": "Install dependencies", "run": "\n".join(profile["install"])})
         steps.append({"name": "Install managed hook", "run": "python scripts/setup.py"})
     events = {"workflow_dispatch": {}}
     if not setup:
         events.update({"push": {"branches": ["main"]}, "pull_request": {"branches": ["main"]}})
+    job = {
+        "name": "Copilot setup" if setup else "CI",
+        "runs-on": PROFILES["runner"],
+        "timeout-minutes": profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES),
+    }
+    if profile.get("env"):
+        job["env"] = profile["env"]
+    job["steps"] = steps
     return encoded({
         "name": "Copilot Setup Steps" if setup else "CI",
         "on": events,
@@ -71,20 +176,37 @@ def workflow(repo, setup=False):
             "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
             "cancel-in-progress": True,
         },
-        "jobs": {
-            "copilot-setup-steps" if setup else "ci": {
-                "name": "Copilot setup" if setup else "CI",
-                "runs-on": PROFILES["runner"],
-                "timeout-minutes": 30 if repo == "api" else 10,
-                "steps": steps,
-            }
-        },
+        "jobs": {"copilot-setup-steps" if setup else "ci": job},
     })
 
 
+def toolchain(profile):
+    tools = [f"Python {PROFILES['python']}", "Git"]
+    if "node" in profile:
+        tools.append(f"Node {profile['node']} (see `.nvmrc`)")
+    if "java" in profile:
+        tools.append(f"JDK {profile['java']}")
+    if "android_sdk" in profile:
+        tools.append("the Android SDK packages " + ", ".join(f"`{p}`" for p in profile["android_sdk"]))
+    if len(tools) == 2:
+        return ", ".join(tools)
+    return ", ".join(tools[:-1]) + ", and " + tools[-1]
+
+
+def guide_paragraph(profile):
+    path = profile.get("developer_guide")
+    if not path:
+        return ""
+    return f"""
+Repository-specific setup, commands and troubleshooting are maintained by hand in
+[{path}]({path}); that guide is not generated.
+"""
+
+
 def artifacts(repo):
-    profile = PROFILES["repositories"][repo]
+    profile = profile_for(repo)
     commands = "\n".join(profile["commands"])
+    guide = guide_paragraph(profile)
     policy = {
         "version": 1, "repository": f"PenniLogic/{repo}", "repository_id": profile["id"],
         "required_native_check": "CI", "review_roles": ROLES,
@@ -95,21 +217,7 @@ def artifacts(repo):
         "no_bypass": True,
     }
     return {
-        ".gitignore": """.env
-.env.*
-!.env.example
-!.env.sample
-.venv/
-__pycache__/
-*.pyc
-.gradle/
-build/
-node_modules/
-.next/
-coverage/
-.idea/
-.DS_Store
-""",
+        ".gitignore": "\n".join(IGNORE + profile.get("ignore", [])) + "\n",
         "AGENTS.md": HEADER + f"""# PenniLogic/{repo}
 
 {profile['purpose']}.
@@ -144,7 +252,7 @@ cannot approve its own PR. Never invent another GitHub reviewer.
 python scripts/setup.py
 {commands}
 ```
-
+{guide}
 Install the managed hook with the documented setup command. Preserve a custom
 hook rather than replacing it. Never claim an unrun build, test, accessibility
 or load gate passed; foundation checks are not product acceptance.
@@ -264,13 +372,13 @@ Describe the changed behavior, safety boundaries and reversal.
 
 Read [AGENTS.md](AGENTS.md). {profile['state']}
 
-Install Python 3.14, Git{', and JDK 21' if repo == 'api' else ''}, then run:
+Install {toolchain(profile)}, then run:
 
 ```text
 python scripts/setup.py
 {commands}
 ```
-
+{guide}
 `CI` runs on standard GitHub-hosted Ubuntu for pushes and pull requests, including
 forks, with read-only permissions and no repository secrets. Actions are SHA-pinned.
 Workflow/config files generated here use JSON syntax, a valid YAML subset, so
@@ -313,7 +421,7 @@ The old private repositories, unmerged branches and discussions remain in
 python scripts/setup.py
 {commands}
 ```
-
+{guide}
 See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 Product specifications and the preserved backlog are in
 [PenniLogic/docs](https://github.com/PenniLogic/docs).
@@ -329,7 +437,9 @@ There is one GitHub owner with multiple independent AI sessions, not multiple hu
 No open-source license was selected by this setup migration; public visibility
 alone is not a license grant. Existing source notices are preserved.
 """,
-        ".gitattributes": "* text=auto eol=lf\n*.jar binary\n",
+        ".gitattributes": "".join(
+            line + "\n" for line in ["* text=auto eol=lf", "*.jar binary", *profile.get("attributes", [])]
+        ),
         "scripts/check_repository.py": (HERE / "templates/check_repository.py").read_text(encoding="utf-8"),
         "scripts/setup.py": (HERE / "templates/setup.py").read_text(encoding="utf-8"),
     }

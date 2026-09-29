@@ -67,6 +67,8 @@ def validate_workflow(name, data):
     value = json_document(data)
     if value.get("permissions") != {"contents": "read"}:
         raise ValueError(f"{name}: expected read-only workflow token")
+    if "secrets." in json.dumps(value.get("env", {})):
+        raise ValueError(f"{name}: public candidate jobs must not receive secrets")
     events = value.get("on", {})
     if not isinstance(events, dict) or set(events) - {"push", "pull_request", "workflow_dispatch"}:
         raise ValueError(f"{name}: unreviewed workflow trigger")
@@ -78,6 +80,8 @@ def validate_workflow(name, data):
             raise ValueError(f"{name}: only the standard hosted Ubuntu runner is configured")
         if job.get("permissions", {"contents": "read"}) != {"contents": "read"}:
             raise ValueError(f"{name}: writable job credentials are not permitted")
+        if "secrets." in json.dumps(job.get("env", {})):
+            raise ValueError(f"{name}: public candidate jobs must not receive secrets")
         for step in job.get("steps", []):
             if "uses" in step and not re.fullmatch(r"actions/[a-z0-9-]+@[0-9a-f]{40}", step["uses"]):
                 raise ValueError(f"{name}: action must be immutable and GitHub-owned")
