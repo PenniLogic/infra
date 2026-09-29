@@ -9,6 +9,7 @@
   "actions": {
     "checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
     "setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "setup-node": "820762786026740c76f36085b0efc47a31fe5020",
     "setup-java": "de7274f081f381c8f8158605e0321c36c376e2e6"
   },
   "repositories": {
@@ -35,31 +36,88 @@
       "purpose": "Kotlin/Ktor core API with deterministic server-authoritative money",
       "state": "Accepted health-service scaffold only. Authentication, ledger and product APIs are not implemented.",
       "java": "21",
+      "timeout_minutes": 30,
       "commands": ["python scripts/check_repository.py", "python scripts/quality.py build", "python -m unittest discover -s scripts/tests"]
     },
     "ai-service": {
       "id": 1394134652,
       "purpose": "Backend AI routing and explanations; no client raw-message ingestion",
-      "state": "Repository foundation only. The previous unmerged scaffold is retained in PenniLogic-old, not accepted here.",
-      "commands": ["python scripts/check_repository.py"]
+      "state": "Repository foundation plus the health-only AI service scaffold from PenniLogic/ai-service#1; no provider traffic, key handling or inference is implemented.",
+      "developer_guide": "docs/development.md",
+      "ignore": [".ruff_cache/", ".mypy_cache/", ".pytest_cache/", "dist/", "*.egg-info/"],
+      "install": ["python -m pip install --quiet \"uv>=0.11,<0.12\"", "uv sync --locked"],
+      "commands": [
+        "python scripts/check_repository.py",
+        "python -m pip install --quiet \"uv>=0.11,<0.12\"",
+        "uv sync --locked",
+        "uv run --locked ruff check .",
+        "uv run --locked ruff format --check .",
+        "uv run --locked mypy",
+        "uv run --locked pytest"
+      ]
     },
     "android": {
       "id": 1394134737,
       "purpose": "Native Kotlin/Compose Android client",
-      "state": "Repository foundation only. No Android build or physical-device acceptance is claimed.",
-      "commands": ["python scripts/check_repository.py"]
+      "state": "Repository foundation plus the reproducible Gradle/Kotlin scaffold from PenniLogic/android#1 (emulator start is local PR evidence, not CI); no product navigation, storage or permission journeys are implemented and no physical-device acceptance is claimed.",
+      "java": "21",
+      "android_sdk": ["platforms;android-36", "build-tools;36.0.0", "platform-tools"],
+      "gradle_wrapper_jar_sha256": "7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d",
+      "timeout_minutes": 30,
+      "developer_guide": "SCAFFOLD.md",
+      "ignore": ["local.properties", ".kotlin/", "captures/", ".cxx/", "*.apk", "*.aab", "*.jks", "*.keystore", "*.hprof", "app/release/"],
+      "attributes": ["gradlew.bat text eol=crlf"],
+      "commands": [
+        "python scripts/check_repository.py",
+        "python scripts/quality_gates.py build",
+        "python scripts/quality_gates.py test",
+        "python scripts/quality_gates.py lint",
+        "python scripts/quality_gates.py coverage",
+        "python scripts/quality_gates.py self-test",
+        "python -m unittest discover -s scripts/tests -p \"test_*.py\""
+      ]
     },
     "web": {
       "id": 1394134850,
       "purpose": "Customer web application",
-      "state": "Repository foundation only. The previous unmerged scaffold remains in PenniLogic-old.",
-      "commands": ["python scripts/check_repository.py"]
+      "state": "Repository foundation plus the customer web application scaffold from PenniLogic/web#1; no product screens, authentication or administrative routes are implemented.",
+      "node": "24.14.0",
+      "env": {"NEXT_TELEMETRY_DISABLED": "1"},
+      "developer_guide": "docs/development.md",
+      "ignore": ["next-env.d.ts", "*.tsbuildinfo"],
+      "install": ["npm ci"],
+      "commands": [
+        "python scripts/check_repository.py",
+        "npm ci",
+        "npm run lint",
+        "npm run format:check",
+        "npm run typecheck",
+        "npm test",
+        "npm run build",
+        "npm run check:bundle",
+        "npm run report:build",
+        "npm run check:bundle:planted"
+      ]
     },
     "admin": {
       "id": 1394135000,
       "purpose": "Administrative console with a separate authorization boundary",
-      "state": "Repository foundation only. The previous unmerged scaffold remains in PenniLogic-old.",
-      "commands": ["python scripts/check_repository.py"]
+      "state": "Repository foundation plus the isolated deny-only admin console scaffold from PenniLogic/admin#1; no administrative identity provider, features or authentication are implemented.",
+      "node": "24.14.0",
+      "env": {"NEXT_TELEMETRY_DISABLED": "1"},
+      "developer_guide": "docs/scaffold.md",
+      "ignore": ["next-env.d.ts", "*.tsbuildinfo"],
+      "install": ["npm ci --no-audit --no-fund"],
+      "commands": [
+        "python scripts/check_repository.py",
+        "npm ci --no-audit --no-fund",
+        "npm run lint",
+        "npm run typecheck",
+        "npm run check:imports",
+        "npm test",
+        "npm run build",
+        "npm run smoke"
+      ]
     },
     "infra": {
       "id": 1394135059,
