@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "repository": "PenniLogic/infra",
+  "repository_id": 1394135059,
+  "required_native_check": "CI",
+  "review_roles": {
+    "core": "pennilogic-core-reviewer",
+    "qa": "pennilogic-qa",
+    "security": "pennilogic-security-reviewer",
+    "privacy": "pennilogic-privacy-reviewer",
+    "money": "pennilogic-money-reviewer",
+    "contract": "pennilogic-contract-reviewer",
+    "compliance": "pennilogic-compliance-reviewer",
+    "accessibility": "pennilogic-accessibility-reviewer",
+    "design": "pennilogic-design-reviewer",
+    "reliability": "pennilogic-reliability-reviewer",
+    "release": "pennilogic-release-reviewer"
+  },
+  "commands": [
+    "python scripts/check_repository.py",
+    "python governance/generate.py --repository infra --check",
+    "python -m unittest discover -s governance/tests",
+    "docker compose -f docker-compose.yml config --quiet"
+  ],
+  "review_floor": [
+    "core"
+  ],
+  "behavior_changes_add": [
+    "qa"
+  ],
+  "review_identity": "Separate non-author AI sessions; one GitHub user, not two-human approval.",
+  "github_approving_review_count": 0,
+  "mandatory_commit_signatures": false,
+  "no_bypass": true
+}

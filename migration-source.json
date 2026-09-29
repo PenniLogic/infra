@@ -1,0 +1,15 @@
+{
+  "source_repository": "PenniLogic-old/infra",
+  "source_commit": "26f2d8c030e87f2dbbf11adde78a3b0fdcdb1e08",
+  "source_history_copied": false,
+  "private_discussions_or_actions_logs_copied": false,
+  "unmerged_changes_copied": false,
+  "files": [
+    {
+      "path": "docker-compose.yml",
+      "source_path": "docker-compose.yml",
+      "source_sha256": "de89aae308aae89308bb6500654bcf0ee32f5c88882e89d3f86bb943b6daaa20",
+      "export_sha256": "de89aae308aae89308bb6500654bcf0ee32f5c88882e89d3f86bb943b6daaa20"
+    }
+  ]
+}

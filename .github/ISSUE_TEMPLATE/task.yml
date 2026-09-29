@@ -1,0 +1,36 @@
+{
+  "name": "Delivery task",
+  "description": "A bounded product or setup change",
+  "body": [
+    {
+      "type": "textarea",
+      "id": "outcome",
+      "attributes": {
+        "label": "Outcome",
+        "description": "What observable behavior or artifact should change?"
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "acceptance",
+      "attributes": {
+        "label": "Acceptance and verification",
+        "description": "List real checks, affected risks and explicit exclusions."
+      },
+      "validations": {
+        "required": true
+      }
+    },
+    {
+      "type": "textarea",
+      "id": "dependencies",
+      "attributes": {
+        "label": "Dependencies and source backlog item",
+        "description": "Link the existing card, contracts and blocking decisions. Do not paste credentials or user data."
+      }
+    }
+  ]
+}

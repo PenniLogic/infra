@@ -1,0 +1,17 @@
+{
+  "instructions": "Read AGENTS.md and the current task; keep one writer per checkout.",
+  "scripts": [
+    {
+      "name": "Install managed hook",
+      "command": "python scripts/setup.py"
+    },
+    {
+      "name": "Repository checks",
+      "command": "python scripts/check_repository.py"
+    }
+  ],
+  "automation": {
+    "auto_issue_session": false,
+    "remote_control": false
+  }
+}

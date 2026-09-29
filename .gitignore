@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+!.env.sample
+.venv/
+__pycache__/
+*.pyc
+.gradle/
+build/
+node_modules/
+.next/
+coverage/
+.idea/
+.DS_Store

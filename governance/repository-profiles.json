@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "organization": "PenniLogic",
+  "organization_id": 335295566,
+  "source_organization": "PenniLogic-old",
+  "owner": "basiltt",
+  "runner": "ubuntu-24.04",
+  "python": "3.14",
+  "actions": {
+    "checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "setup-java": "de7274f081f381c8f8158605e0321c36c376e2e6"
+  },
+  "repositories": {
+    ".github": {
+      "id": 1394134381,
+      "purpose": "Shared contributor guidance and independent AI agent profiles",
+      "state": "Shared setup; not an application.",
+      "commands": ["python scripts/check_repository.py"]
+    },
+    "docs": {
+      "id": 1394134442,
+      "purpose": "Product specifications, architecture decisions and delivery backlog",
+      "state": "Product/design source and historical planning evidence; not a release approval.",
+      "commands": ["python scripts/check_repository.py", "python scripts/check_docs.py", "python -m unittest discover -s scripts/tests"]
+    },
+    "contracts": {
+      "id": 1394134505,
+      "purpose": "Versioned API contracts and shared schemas",
+      "state": "Repository foundation only. Contract generation and publishing are not implemented.",
+      "commands": ["python scripts/check_repository.py"]
+    },
+    "api": {
+      "id": 1394134582,
+      "purpose": "Kotlin/Ktor core API with deterministic server-authoritative money",
+      "state": "Accepted health-service scaffold only. Authentication, ledger and product APIs are not implemented.",
+      "java": "21",
+      "commands": ["python scripts/check_repository.py", "python scripts/quality.py build", "python -m unittest discover -s scripts/tests"]
+    },
+    "ai-service": {
+      "id": 1394134652,
+      "purpose": "Backend AI routing and explanations; no client raw-message ingestion",
+      "state": "Repository foundation only. The previous unmerged scaffold is retained in PenniLogic-old, not accepted here.",
+      "commands": ["python scripts/check_repository.py"]
+    },
+    "android": {
+      "id": 1394134737,
+      "purpose": "Native Kotlin/Compose Android client",
+      "state": "Repository foundation only. No Android build or physical-device acceptance is claimed.",
+      "commands": ["python scripts/check_repository.py"]
+    },
+    "web": {
+      "id": 1394134850,
+      "purpose": "Customer web application",
+      "state": "Repository foundation only. The previous unmerged scaffold remains in PenniLogic-old.",
+      "commands": ["python scripts/check_repository.py"]
+    },
+    "admin": {
+      "id": 1394135000,
+      "purpose": "Administrative console with a separate authorization boundary",
+      "state": "Repository foundation only. The previous unmerged scaffold remains in PenniLogic-old.",
+      "commands": ["python scripts/check_repository.py"]
+    },
+    "infra": {
+      "id": 1394135059,
+      "purpose": "Local development infrastructure and canonical repository setup",
+      "state": "Development-only Compose and public repository automation; no production deployment.",
+      "commands": ["python scripts/check_repository.py", "python governance/generate.py --repository infra --check", "python -m unittest discover -s governance/tests", "docker compose -f docker-compose.yml config --quiet"]
+    }
+  }
+}

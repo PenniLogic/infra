@@ -1,0 +1,10 @@
+{
+  "blank_issues_enabled": false,
+  "contact_links": [
+    {
+      "name": "Private security reports",
+      "url": "https://github.com/PenniLogic/infra/security/advisories/new",
+      "about": "Do not disclose vulnerabilities or sensitive data in a public issue."
+    }
+  ]
+}

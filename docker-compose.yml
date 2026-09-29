@@ -1,0 +1,54 @@
+# PenniLogic — local development services
+#
+# Postgres is the primary datastore (see docs/architecture/01-domain-model.md).
+# Redis backs AI quota token buckets and prompt caching (docs/ai/01-ai-harness-research.md).
+#
+#   docker compose up -d
+#   docker compose down          # stop, keep data
+#   docker compose down -v       # stop, DESTROY data
+#
+# NOTE: these credentials are for LOCAL DEVELOPMENT ONLY and are deliberately
+# non-secret. Never reuse this pattern for any deployed environment — real
+# credentials belong in a secrets manager.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: pennilogic-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pennilogic
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: pennilogic
+      # Deterministic collation so ORDER BY behaves identically across dev machines and CI.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pennilogic -d pennilogic"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: pennilogic-redis
+    restart: unless-stopped
+    # appendonly keeps quota counters across restarts so local testing of
+    # daily/monthly windows isn't silently reset.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
