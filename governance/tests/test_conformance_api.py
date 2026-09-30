@@ -4,11 +4,13 @@ sensitive, branch rules and rulesets reduce to the recorded fields, the last com
 the required workflow is selected, and the wall-clock figure is checked against the ten-minute
 budget. No network: every response is a fake."""
 
+import gc
 import io
 import json
 import subprocess
 import unittest
 import urllib.error
+import warnings
 
 import conformance_support as support
 from conformance import github_api
@@ -46,14 +48,24 @@ class AnonymousClientTests(unittest.TestCase):
         self.assertEqual(1, client.requests)
 
     def test_http_network_and_body_failures_become_api_errors(self):
+        errors = []
+
         def http_error(request, timeout):
-            raise urllib.error.HTTPError(request.full_url, 403, "rate limited", {"X-RateLimit-Remaining": "0"}, None)
+            error = urllib.error.HTTPError(request.full_url, 403, "rate limited", {"X-RateLimit-Remaining": "0"}, None)
+            errors.append(error)
+            raise error
 
         client = github_api.AnonymousClient(http_error)
-        with self.assertRaises(github_api.ApiError) as caught:
-            client.get("/repos/PenniLogic/infra/rulesets")
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            warnings.simplefilter("always")
+            with self.assertRaises(github_api.ApiError) as caught:
+                client.get("/repos/PenniLogic/infra/rulesets")
+            errors.clear()
+            gc.collect()
         self.assertEqual("GET /repos/PenniLogic/infra/rulesets failed with HTTP 403", str(caught.exception))
         self.assertEqual(0, client.rate_limit_remaining)
+        # C5: the error's response body is closed by the client, so no ResourceWarning is emitted.
+        self.assertEqual([], [w for w in caught_warnings if issubclass(w.category, ResourceWarning)])
 
         def network_error(request, timeout):
             raise urllib.error.URLError("unreachable")
@@ -96,6 +108,27 @@ class GhClientTests(unittest.TestCase):
 
         with self.assertRaises(github_api.ApiError):
             github_api.GhClient(garbage).get("/x")
+
+    def test_gh_subprocesses_have_a_timeout_and_a_hang_becomes_an_api_error(self):
+        """S3: every external call is bounded; a hanging gh is reported, not waited for."""
+        seen = []
+
+        def spy(command, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            return subprocess.CompletedProcess(command, 0, b"[]", b"")
+
+        github_api.GhClient(spy).get("/x")
+        self.assertEqual([github_api.GH_TIMEOUT_SECONDS], seen)
+        self.assertEqual("gh", github_api.choose_client("auto", run=spy, which=lambda name: "/usr/bin/gh").name)
+        self.assertEqual([github_api.GH_TIMEOUT_SECONDS] * 2, seen)
+
+        def hanging(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+        with self.assertRaises(github_api.ApiError) as caught:
+            github_api.GhClient(hanging).get("/x")
+        self.assertEqual("gh api GET /x timed out", str(caught.exception))
+        self.assertEqual("anonymous", github_api.choose_client("auto", run=hanging, which=lambda name: "/usr/bin/gh").name)
 
     def test_choose_client_prefers_gh_only_when_installed_and_authenticated(self):
         ok = lambda command, **kwargs: subprocess.CompletedProcess(command, 0, b"basiltt\n", b"")  # noqa: E731
@@ -162,8 +195,13 @@ class RunTests(unittest.TestCase):
         self.assertEqual(660, github_api.wall_clock_seconds(run))
         self.assertFalse(github_api.summarize_run(run)["within_budget"])
         self.assertTrue(github_api.summarize_run(run, budget_minutes=30)["within_budget"])
-        self.assertEqual(600, github_api.wall_clock_seconds({"run_started_at": "2026-09-30T11:47:05Z", "updated_at": "2026-09-30T11:57:05Z"}))
-        self.assertTrue(github_api.summarize_run({"run_started_at": "2026-09-30T11:47:05Z", "updated_at": "2026-09-30T11:57:05Z"})["within_budget"])
+        exactly = {"run_started_at": "2026-09-30T11:47:05Z", "updated_at": "2026-09-30T11:57:05Z"}
+        self.assertEqual(600, github_api.wall_clock_seconds(exactly))
+        self.assertTrue(github_api.summarize_run(exactly)["within_budget"])
+        one_over = {"run_started_at": "2026-09-30T11:47:05Z", "updated_at": "2026-09-30T11:57:06Z"}
+        self.assertEqual(601, github_api.wall_clock_seconds(one_over))
+        self.assertFalse(github_api.summarize_run(one_over)["within_budget"])  # Q2: the 10:01 boundary
+        self.assertEqual(1, github_api.summarize_run(one_over, budget_minutes=1)["budget_minutes"])
         self.assertIsNone(github_api.wall_clock_seconds({"run_started_at": None, "updated_at": "2026-09-30T11:58:05Z"}))
         self.assertIsNone(github_api.wall_clock_seconds({"run_started_at": "not a time", "updated_at": "2026-09-30T11:58:05Z"}))
         self.assertIsNone(github_api.wall_clock_seconds({"run_started_at": "2026-09-30T12:00:00Z", "updated_at": "2026-09-30T11:00:00Z"}))

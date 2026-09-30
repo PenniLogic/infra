@@ -7,7 +7,10 @@ credential-shaped string before anything is written; the summary is rendered fro
 document only, so both files carry the same facts.
 """
 
+import ctypes
+import getpass
 import json
+import os
 import re
 import sys
 import tempfile
@@ -21,13 +24,49 @@ SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
 OUTCOME_MARK = {
-    "proved": "proved", "recorded": "recorded", "not_exercised": "not exercised",
-    "not_proved": "NOT PROVED", "error": "ERROR", None: "-",
+    "proved": "proved", "recorded": "recorded", "consumer_evidence": "consumer evidence",
+    "not_exercised": "not exercised", "not_proved": "NOT PROVED", "error": "ERROR", None: "-",
 }
+USER_PLACEHOLDER = "<user>"
+# An absolute drive path that survived redaction (a letter that is not part of a longer word such as
+# the `s` of `https:`, a colon, then a separator in plain, repr or JSON spelling).
+DRIVE_PATH = re.compile(r"(?<![A-Za-z])[A-Za-z]:(?:\\\\|\\|/)")
+
+
+def spellings(text):
+    """Every spelling a tool may print for one path: plain, repr/JSON-escaped (doubled backslashes)
+    and POSIX separators. Matching is case-insensitive, so case variants need no entry."""
+    forms = {text, text.replace("\\", "/"), text.replace("\\", "\\\\"), json.dumps(text)[1:-1]}
+    return {form for form in forms if form and form not in ("/", "\\", "\\\\")}
+
+
+def short_path(path):
+    """The Windows 8.3 form of an existing path (``C:\\Users\\TTBASI~1``), or ``None`` elsewhere."""
+    if os.name != "nt":
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(1024)
+        length = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, 1024)
+    except (AttributeError, OSError, ValueError):
+        return None
+    return buffer.value if 0 < length < 1024 else None
+
+
+def current_user():
+    try:
+        return getpass.getuser()
+    except (OSError, ImportError, KeyError):
+        return None
 
 
 def path_replacements(scratch=None, infra_root=None):
-    """Ordered (needle, placeholder) pairs for every local path that must not reach the report."""
+    """Ordered (needle, placeholder) pairs for every local path that must not reach the report.
+
+    Every spelling a tool may print is covered: native and POSIX separators, the resolved path, the
+    Windows 8.3 short form, and the repr/JSON-escaped form with doubled backslashes that a failed
+    command's repr carries; matching is case-insensitive. The last pair redacts the account name
+    wherever it appears as a path component, as defence in depth against a spelling not listed.
+    """
     pairs = []
     if scratch is not None:
         pairs.append((Path(scratch), "<scratch>"))
@@ -37,21 +76,70 @@ def path_replacements(scratch=None, infra_root=None):
     pairs.append((Path.home(), "<home>"))
     replacements = []
     for path, placeholder in pairs:
-        variants = {str(path), str(path.resolve()), path.as_posix(), path.resolve().as_posix()}
+        variants = {str(path), str(path.resolve())}
+        short = short_path(path)
+        if short:
+            variants.add(short)
         for variant in variants:
-            if variant and variant not in ("/", "\\"):
-                replacements.append((variant, placeholder))
-    replacements.append((sys.executable, "python"))
+            for spelling in spellings(variant):
+                replacements.append((spelling, placeholder))
+    for spelling in spellings(sys.executable):
+        replacements.append((spelling, "python"))
     replacements.sort(key=lambda item: len(item[0]), reverse=True)
     return replacements
 
 
+def _user_pattern():
+    user = current_user()
+    if not user:
+        return None
+    # A component between separators in plain, repr/JSON-escaped or POSIX spelling.
+    return re.compile(r"(?<=[\\/])" + re.escape(user) + r"(?=[\\/])", re.IGNORECASE)
+
+
+USER_IN_PATH = _user_pattern()
+
+
 def redact_text(text, replacements):
     for needle, placeholder in replacements:
-        text = text.replace(needle, placeholder)
+        text = re.sub(re.escape(needle), lambda match: placeholder, text, flags=re.IGNORECASE)
+    if USER_IN_PATH is not None:
+        text = USER_IN_PATH.sub(USER_PLACEHOLDER, text)
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[redacted]", text)
     return text
+
+
+def strings_of(value):
+    """Every key and string of a JSON-like structure, at any depth."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from strings_of(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings_of(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def redaction_survivors(value, replacements):
+    """Fail-closed self-scan of a redacted document: the kinds of local marker that still appear.
+
+    Returns kinds only (``path needle``, ``user in path``, ``drive path``), never the text, so the
+    caller can refuse to write the document without echoing what leaked.
+    """
+    survivors = set()
+    needles = [needle.lower() for needle, _ in replacements]
+    for text in strings_of(value):
+        lowered = text.lower()
+        if any(needle in lowered for needle in needles):
+            survivors.add("path needle")
+        if USER_IN_PATH is not None and USER_IN_PATH.search(text):
+            survivors.add("user in path")
+        if DRIVE_PATH.search(text):
+            survivors.add("drive path")
+    return sorted(survivors)
 
 
 def redact(value, replacements):
@@ -111,6 +199,9 @@ def evaluate_repository(record, budget_minutes=10):
         failures.append("the registry check name is not produced by the rendered workflow")
     if registry.get("workflow_ref_renders_current_workflow") is False:
         failures.append("the registry workflow_ref does not render the workflow on main")
+    elif registry.get("workflow_ref_renders_current_workflow") == "unverifiable":
+        warnings.append("registry workflow_ref not verifiable in this run: "
+                        + (registry.get("note") or "no local history or checkout to render it against"))
     for defect in record.get("planted_defects") or []:
         if defect["outcome"] in ("not_proved", "error"):
             failures.append(f"planted defect {defect['id']}: {defect['outcome']} ({defect.get('reason') or 'see probes'})")
@@ -200,7 +291,8 @@ def render_markdown(report):
         run = record.get("last_main_run") or {}
         defects = record.get("planted_defects") or []
         proved = sum(1 for defect in defects if defect["outcome"] == "proved")
-        exercised = sum(1 for defect in defects if defect["outcome"] not in ("not_exercised",))
+        consumer = sum(1 for defect in defects if defect["outcome"] == "consumer_evidence")
+        exercised = sum(1 for defect in defects if defect["outcome"] not in ("not_exercised", "consumer_evidence"))
         contexts = ", ".join(f"`{check['context']}`" for check in required.get("required", [])) or "none"
         if required.get("missing"):
             contexts += " (MISSING PRODUCER)"
@@ -213,8 +305,9 @@ def render_markdown(report):
             f" | {run.get('conclusion') or 'none'}"
             f" | {_seconds(run.get('wall_clock_seconds'))}"
             + ("" if run.get("within_budget") in (True, None) else " (OVER BUDGET)")
-            + f" | {proved}/{exercised} proved, {len(defects) - exercised} not exercised"
-            f" | **{record['result'].upper()}** |"
+            + f" | {proved}/{exercised} proved, {len(defects) - exercised - consumer} not exercised"
+            + (f", {consumer} consumer evidence" if consumer else "")
+            + f" | **{record['result'].upper()}** |"
         )
     lines += ["", "## Findings", ""]
     if not report["failures"]:
@@ -261,5 +354,6 @@ def render_markdown(report):
         lines += ["## Not run in this report", ""]
         for item in report["not_run"]:
             lines.append(f"- {item}")
-        lines.append("")
+    while lines and lines[-1] == "":
+        lines.pop()  # exactly one newline at the end of the file
     return "\n".join(lines) + "\n"

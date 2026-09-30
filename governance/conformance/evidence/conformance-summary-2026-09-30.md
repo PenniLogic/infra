@@ -197,4 +197,3 @@ Detected steps - build: 0, test: 2, lint: 1, consumer self-tests: 0.
 
 - java planted defects not exercised for: api
 - android planted defects not exercised for: android
-

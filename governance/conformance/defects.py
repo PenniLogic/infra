@@ -9,10 +9,16 @@ recorded as ``not_exercised`` with the reason; nothing is inferred. Precedents: 
 
 Safety: the harness refuses to plant into a tree that ``git status`` does not report clean,
 restores every changed path in reverse order, and reports ``error`` (which fails the job) when
-the tree is not clean again afterwards. Probe processes receive an environment without any
-variable whose name looks like a credential. Nothing here writes to a remote.
+the tree is not clean again afterwards. Every probe, and every git command on a scratch checkout,
+runs with ``probe_environment()``: an explicit deny-list of credential-bearing and runner-state
+variables (plus a name heuristic behind it) is removed, git sees an empty global config and no
+system config, ``gh`` sees an empty config directory, and cmd.exe does not resolve commands from
+the consumer's working directory. File-based credentials outside those locations (SSH keys, OS
+keyrings, package-manager rc files) are not covered; see CI_CONFORMANCE.md. Nothing here writes
+to a remote.
 """
 
+import atexit
 import dataclasses
 import json
 import os
@@ -33,7 +39,23 @@ COMMAND_TIMEOUT_SECONDS = 900
 OUTPUT_TAIL = 3000
 RECORDED_TAIL = 400
 UNITTEST_COMMAND = re.compile(r"python -m unittest discover -s (\S+)")
+# Removed from every child environment (names compared upper-case, as Windows does). The names and
+# prefixes carry credentials, point git/ssh/gh at credential sources, or let a child write state the
+# Actions runner reads in later steps (GITHUB_ENV, GITHUB_PATH, ACTIONS_RUNTIME_TOKEN).
+DENIED_VARIABLES = frozenset({
+    "GIT_ASKPASS", "SSH_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_PROXY_COMMAND", "GIT_TERMINAL_PROMPT",
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+    "SSH_AUTH_SOCK", "SSH_AGENT_PID", "NODE_AUTH_TOKEN", "NPM_TOKEN", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL",
+    "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_GITHUB_TOKEN", "UV_PUBLISH_TOKEN", "UV_PUBLISH_PASSWORD",
+    "UV_PUBLISH_USERNAME", "DOCKER_AUTH_CONFIG", "KUBECONFIG", "VAULT_TOKEN", "CARGO_REGISTRY_TOKEN", "HF_TOKEN",
+})
+DENIED_PREFIXES = (
+    "GH_", "GITHUB_", "ACTIONS_", "GIT_CONFIG_", "SSH_", "AWS_", "AZURE_", "GOOGLE_", "DOCKER_", "NUGET_",
+    "TWINE_", "PYPI_", "NPM_CONFIG_", "ORG_GRADLE_PROJECT_", "OPENAI_", "ANTHROPIC_",
+)
+# Tripwire behind the deny-list: a name that looks like a credential is removed even when unlisted.
 CREDENTIAL_VARIABLE = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY|_KEY$", re.IGNORECASE)
+_ISOLATION = None
 PLANTED_PYTHON_TEST = '''"""Planted by the PenniLogic conformance job; never committed."""
 
 import unittest
@@ -83,9 +105,11 @@ class Probe:
     """One command run against the planted tree.
 
     ``expect`` is ``fail`` (the command must exit non-zero, with ``expect_text`` in its output when
-    given), ``pass`` (it must exit 0) or ``observe`` (recorded, never required). ``detail_text`` is
-    recorded when present in the output but never required: the checker template surfaces its rule
-    text only since PR E (#50), and a consumer that has not regenerated still refuses correctly.
+    given), ``consumer`` (a consumer-owned self-test that must exit 0; its success is recorded as the
+    consumer's evidence, never as a defect this job proved) or ``observe`` (recorded, never required).
+    ``detail_text`` is recorded when present in the output but never required: the checker template
+    surfaces its rule text only since PR E (#50), and a consumer that has not regenerated still
+    refuses correctly.
     """
     label: str
     command: object          # argv list (run directly) or one shell line (the profile's own wording)
@@ -115,11 +139,41 @@ class Context:
     infra_root: object       # Path of the PenniLogic/infra checkout running the job
 
 
+def denied_variable(name):
+    upper = name.upper()
+    return (upper in DENIED_VARIABLES or upper.startswith(DENIED_PREFIXES)
+            or CREDENTIAL_VARIABLE.search(name) is not None)
+
+
+def isolation_directory():
+    """A process-wide temporary directory with an empty git config file and an empty gh config dir."""
+    global _ISOLATION
+    if _ISOLATION is None or not os.path.isdir(_ISOLATION):
+        _ISOLATION = tempfile.mkdtemp(prefix="pennilogic-conformance-env-")
+        with open(os.path.join(_ISOLATION, "gitconfig"), "wb"):
+            pass
+        os.mkdir(os.path.join(_ISOLATION, "gh"))
+        atexit.register(shutil.rmtree, _ISOLATION, ignore_errors=True)
+    return _ISOLATION
+
+
 def probe_environment(environ=None):
-    """The inherited environment without credential-looking variables, plus the Python hygiene flags."""
+    """The environment every probe and scratch git command receives.
+
+    The deny-list and the credential-name tripwire are removed; git reads an empty global config and
+    no system config, so no credential helper, askpass program or URL rewrite from the operator's
+    files applies; ``gh`` reads an empty config directory, so its stored hosts file is unreachable;
+    cmd.exe does not resolve a bare command name from the consumer's working directory.
+    """
     environ = os.environ if environ is None else environ
-    cleaned = {key: value for key, value in environ.items() if CREDENTIAL_VARIABLE.search(key) is None}
-    cleaned.update(PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8", CI="1")
+    cleaned = {key: value for key, value in environ.items() if not denied_variable(key)}
+    isolation = isolation_directory()
+    cleaned.update(
+        PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8", CI="1",
+        GIT_CONFIG_GLOBAL=os.path.join(isolation, "gitconfig"), GIT_CONFIG_NOSYSTEM="1",
+        GIT_TERMINAL_PROMPT="0", GH_CONFIG_DIR=os.path.join(isolation, "gh"),
+        NoDefaultCurrentDirectoryInExePath="1",
+    )
     return cleaned
 
 
@@ -140,7 +194,7 @@ def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS):
 
 def git_status(root, run=subprocess.run):
     result = run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
-                 capture_output=True, check=False)
+                 capture_output=True, check=False, env=probe_environment(), timeout=120)
     if result.returncode:
         raise RuntimeError("git status failed in the scratch checkout")
     return sorted(line for line in result.stdout.decode("utf-8", errors="replace").splitlines() if line)
@@ -207,11 +261,21 @@ class Planter:
         self._undo.append(lambda: shutil.move(target, str(path)))
 
     def restore(self):
+        """Undo every recorded change in reverse order; a step that raises does not stop the others,
+        the aside directory is removed either way, and the first error is re-raised afterwards so the
+        harness records the fixture as ``error`` with the paths ``git status`` still reports."""
+        first = None
         while self._undo:
-            self._undo.pop()()
+            step = self._undo.pop()
+            try:
+                step()
+            except OSError as error:
+                first = first if first is not None else error
         if self._aside is not None:
             shutil.rmtree(self._aside, ignore_errors=True)
             self._aside = None
+        if first is not None:
+            raise first
 
 
 def unittest_directories(profile):
@@ -496,12 +560,12 @@ FIXTURES = (
     ),
     Fixture(
         "kotlin-android-self-test", "kotlin", "android",
-        "the consumer-owned quality_gates.py self-test plants a failing test, spotless and lint defects and reused results on every CI run",
+        "consumer evidence: the consumer-owned quality_gates.py self-test plants a failing test, spotless and lint defects and reused results on every CI run",
         lambda context: has_command(context.profile, r"\bquality_gates\.py self-test\b"),
         lambda context, planter: None,
-        lambda context: [Probe("profile command: python scripts/quality_gates.py self-test",
-                               "python scripts/quality_gates.py self-test", expect="pass",
-                               note="exit 0 means every planted defect was refused; needs the Android SDK")],
+        lambda context: [Probe("consumer command: python scripts/quality_gates.py self-test",
+                               "python scripts/quality_gates.py self-test", expect="consumer",
+                               note="exit 0 is the consumer's own claim that its planted defects were refused; nothing here is planted by this job; needs the Android SDK")],
     ),
 )
 
@@ -518,7 +582,7 @@ def probe_outcome(probe, result):
     matched = probe.expect_text is None or probe.expect_text in result.output
     if probe.expect == "fail":
         return "as_expected" if failed and matched else "unexpected"
-    if probe.expect == "pass":
+    if probe.expect in ("pass", "consumer"):
         return "as_expected" if not failed else "unexpected"
     return "detected" if failed else "not_detected"
 
@@ -536,8 +600,10 @@ def _probe_record(probe, result):
 def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXERCISE, status=git_status):
     """Plant, probe and restore one fixture; the returned record is what the report publishes.
 
-    Outcomes: ``proved`` (every required probe behaved as required), ``not_proved``, ``recorded``
-    (only observations), ``not_exercised`` (toolchain excluded from this run) or ``error``.
+    Outcomes: ``proved`` (every probe this job planted for behaved as required), ``consumer_evidence``
+    (a consumer-owned self-test exited 0; recorded as the consumer's claim, not as proof by this job),
+    ``not_proved``, ``recorded`` (only observations), ``not_exercised`` (toolchain excluded from this
+    run) or ``error``.
     """
     record = {
         "id": fixture.id, "language": fixture.language, "toolchain": fixture.toolchain,
@@ -587,11 +653,13 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
         return record
     if record["outcome"] == "error":
         return record
-    required = [probe for probe in record["probes"] if probe["expect"] in ("fail", "pass")]
+    required = [probe for probe in record["probes"] if probe["expect"] in ("fail", "pass", "consumer")]
     if any(probe["outcome"] == "error" for probe in record["probes"]):
         record["outcome"], record["reason"] = "error", "a probe timed out or could not start"
     elif required and all(probe["outcome"] == "as_expected" for probe in required):
-        record["outcome"] = "proved"
+        # A fixture whose only required probes are consumer-owned commands proves nothing by itself.
+        planted = any(probe["expect"] in ("fail", "pass") for probe in required)
+        record["outcome"] = "proved" if planted else "consumer_evidence"
     elif required:
         record["outcome"] = "not_proved"
         record["reason"] = "a required probe did not behave as the fixture requires"
@@ -612,7 +680,7 @@ def run_fixtures(context, runner=subprocess_runner, exercise=DEFAULT_EXERCISE, f
 
 def language_coverage(records):
     """Per language: ``proved`` when at least one fixture was proved, else the weakest outcome seen."""
-    rank = {"proved": 0, "recorded": 1, "not_exercised": 2, "not_proved": 3, "error": 4}
+    rank = {"proved": 0, "recorded": 1, "consumer_evidence": 1, "not_exercised": 2, "not_proved": 3, "error": 4}
     coverage = {}
     for record in records:
         language, outcome = record["language"], record["outcome"]

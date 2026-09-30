@@ -24,6 +24,7 @@ HEADERS = {
 GITHUB_ACTIONS_APP_ID = 15368
 BUDGET_MINUTES = 10
 REQUEST_TIMEOUT_SECONDS = 30
+GH_TIMEOUT_SECONDS = 60
 
 
 class ApiError(RuntimeError):
@@ -47,6 +48,7 @@ class AnonymousClient:
                 body = response.read()
         except urllib.error.HTTPError as error:
             remaining = error.headers.get("X-RateLimit-Remaining") if error.headers else None
+            error.close()  # the error carries the response body file object
             self._record(remaining)
             raise ApiError(f"GET {path} failed with HTTP {error.code}") from None
         except (urllib.error.URLError, OSError, TimeoutError) as error:
@@ -76,13 +78,25 @@ class GhClient:
 
     def get(self, path):
         self.requests += 1
-        result = self._run(["gh", "api", "-X", "GET", path], capture_output=True, check=False)
+        try:
+            result = self._run(["gh", "api", "-X", "GET", path], capture_output=True, check=False,
+                               timeout=GH_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise ApiError(f"gh api GET {path} timed out") from None
         if result.returncode:
             raise ApiError(f"gh api GET {path} exited {result.returncode}")
         try:
             return json.loads(result.stdout.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             raise ApiError(f"gh api GET {path} returned an unparsable body") from None
+
+
+def _gh_authenticated(run):
+    try:
+        return run(["gh", "api", "user", "--jq", ".login"], capture_output=True, check=False,
+                   timeout=GH_TIMEOUT_SECONDS).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def choose_client(mode="auto", run=subprocess.run, which=shutil.which, opener=urllib.request.urlopen):
@@ -94,7 +108,7 @@ def choose_client(mode="auto", run=subprocess.run, which=shutil.which, opener=ur
         if not available:
             raise ApiError("gh is not installed")
         return GhClient(run)
-    if available and run(["gh", "api", "user", "--jq", ".login"], capture_output=True, check=False).returncode == 0:
+    if available and _gh_authenticated(run):
         return GhClient(run)
     return AnonymousClient(opener)
 
@@ -178,12 +192,12 @@ def missing_required_checks(required, produced, actions_app_id=GITHUB_ACTIONS_AP
     return missing
 
 
-def last_main_run(client, full_name, workflow_name="CI", branch="main"):
+def last_main_run(client, full_name, workflow_name="CI", branch="main", budget_minutes=BUDGET_MINUTES):
     """The newest completed push run of the named workflow on ``branch`` (``None`` when there is none)."""
     data = client.get(f"/repos/{full_name}/actions/runs?branch={branch}&event=push&status=completed&per_page=10")
     for run in data.get("workflow_runs", []):
         if run.get("name") == workflow_name:
-            return summarize_run(run)
+            return summarize_run(run, budget_minutes)
     return None
 
 

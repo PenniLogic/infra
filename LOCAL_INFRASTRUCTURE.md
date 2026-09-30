@@ -330,3 +330,5 @@ simultaneous first runs share one `.env` and one stack.
   and the migration runner T-MIG-01, [PenniLogic/api#55](https://github.com/PenniLogic/api/issues/55).
   This stack asserts nothing about schemas.
 - Production infrastructure, backup/restore of the local volume, and any deployment.
+- The read-only CI conformance job over the nine PenniLogic repositories, its check-name registry and
+  its planted-defect evidence: [CI_CONFORMANCE.md](CI_CONFORMANCE.md) (`governance/conformance/`).

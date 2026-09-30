@@ -28,10 +28,13 @@ from conformance import report as report_module, steps  # noqa: E402
 
 CLONE_TIMEOUT_SECONDS = 600
 WORKFLOW_PREFIX = ".github/workflows/"
+DISABLED_PUSH_URL = "DISABLED"
 
 
 def git(root, *args, timeout=60):
-    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False, timeout=timeout)
+    """Run git on a scratch checkout with the isolated probe environment (no operator git/gh config)."""
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False, timeout=timeout,
+                          env=defects.probe_environment())
 
 
 def clone_url(organization, name):
@@ -42,7 +45,8 @@ def prepare_checkout(scratch, organization, name, refresh=False):
     """Clone ``main`` shallowly into ``scratch/<name>`` or reuse a clean existing clone of the same origin.
 
     With ``refresh`` an existing clone is advanced to the current remote ``main`` (a shallow fetch
-    followed by a hard reset of the already-clean tree); without it the clone is used as found.
+    followed by a hard reset of the already-clean tree); without it the clone is used as found. The
+    clone's push URL is set to an invalid value so that no command run inside it can push anywhere.
     """
     root = Path(scratch) / name
     url = clone_url(organization, name)
@@ -54,11 +58,12 @@ def prepare_checkout(scratch, organization, name, refresh=False):
     else:
         result = subprocess.run(
             ["git", "clone", "--quiet", "--depth", "1", "--branch", "main", "--single-branch", url, str(root)],
-            capture_output=True, check=False, timeout=CLONE_TIMEOUT_SECONDS,
-            env={**defects.probe_environment(), "GIT_TERMINAL_PROMPT": "0"},
+            capture_output=True, check=False, timeout=CLONE_TIMEOUT_SECONDS, env=defects.probe_environment(),
         )
         if result.returncode:
             return None, None, False, "git clone failed"
+    if git(root, "remote", "set-url", "--push", "origin", DISABLED_PUSH_URL).returncode:
+        return root, None, reused, "disabling the scratch push URL failed"
     if defects.git_status(root):
         return root, None, reused, "scratch checkout is not clean"
     if reused and refresh:
@@ -125,7 +130,7 @@ def registry_status(document, infra_root, name, full_name, produced, workflow_by
 
 
 def inspect_repository(name, profile, generator, client, registry_document, scratch, infra_root, runner, exercise,
-                       refresh=False):
+                       refresh=False, budget_minutes=github_api.BUDGET_MINUTES):
     organization = generator.PROFILES["organization"]
     full_name = f"{organization}/{name}"
     record = {
@@ -147,7 +152,13 @@ def inspect_repository(name, profile, generator, client, registry_document, scra
     except github_api.ApiError as error:
         record["api_error"] = str(error)
         record["identity"] = {"expected_id": profile["id"], "verified": None}
-    root, main_sha, reused, clone_error = prepare_checkout(scratch, organization, name, refresh)
+    root, main_sha, reused, clone_error = None, None, None, None
+    if record["identity"].get("verified") is True:
+        root, main_sha, reused, clone_error = prepare_checkout(scratch, organization, name, refresh)
+    else:
+        # The id assertion gates everything that executes the repository's code: nothing is cloned,
+        # checked or planted for a repository that is not the one the profile names or cannot be read.
+        clone_error = "repository identity not verified; nothing from the repository was executed"
     record["reused_existing_clone"] = reused
     record["main_sha"] = main_sha
     record["clone_error"] = clone_error
@@ -172,7 +183,8 @@ def inspect_repository(name, profile, generator, client, registry_document, scra
     if record["api_error"] is None:
         try:
             record["required_checks"] = required_checks(client, full_name, produced)
-            record["last_main_run"] = github_api.last_main_run(client, full_name, workflow_name="CI")
+            record["last_main_run"] = github_api.last_main_run(client, full_name, workflow_name="CI",
+                                                               budget_minutes=budget_minutes)
         except github_api.ApiError as error:
             record["api_error"] = str(error)
     return record
@@ -245,7 +257,8 @@ def main(argv=None):
         profile = generator.PROFILES["repositories"][name]
         try:
             record = inspect_repository(name, profile, generator, client, registry_document,
-                                        args.scratch, infra_root, runner, args.exercise, args.refresh)
+                                        args.scratch, infra_root, runner, args.exercise, args.refresh,
+                                        args.budget_minutes)
         except Exception as error:  # noqa: BLE001 - one broken repository must not lose the report of the others
             record = {"repository": f"{generator.PROFILES['organization']}/{name}", "profile": name,
                       "repository_id": profile["id"], "language": registry_module.expected_language(name, profile),
@@ -266,6 +279,11 @@ def main(argv=None):
         api_requests=client.requests, rate_limit_remaining=client.rate_limit_remaining, not_run=not_run,
     )
     document = report_module.redact(document, replacements)
+    survivors = report_module.redaction_survivors(document, replacements)
+    if survivors:
+        # Fail closed without echoing what survived: the kinds are named, the text is not written anywhere.
+        print(f"Redaction incomplete ({', '.join(survivors)}); nothing written", file=sys.stderr)
+        return 2
     (args.output / "conformance-report.json").write_text(report_module.to_json(document), encoding="utf-8", newline="\n")
     (args.output / "conformance-summary.md").write_text(report_module.render_markdown(document), encoding="utf-8", newline="\n")
     print(f"Conformance {document['result'].upper()}: {document['repository_count']} repositories, "

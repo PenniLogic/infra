@@ -18,8 +18,12 @@ Do not reintroduce reusable-workflow adoption.
 `repository-profiles.json` it:
 
 1. clones the repository's `main` shallowly into a scratch directory (or reuses a clean clone of the same
-   origin; `--refresh` advances it) and records the cloned commit;
-2. asserts the numeric repository id through the read-only REST API against the profile's `id`;
+   origin; `--refresh` advances it), sets the clone's push URL to the invalid value `DISABLED`, and
+   records the cloned commit;
+2. asserts the numeric repository id through the read-only REST API against the profile's `id` **before**
+   anything is cloned or executed: a repository whose id does not match, or whose id cannot be read,
+   fails its row with `repository identity not verified; nothing from the repository was executed` and
+   only the read-only API facts are recorded for it;
 3. compares every generated artifact byte for byte with the current generator rendering: a differing
    **workflow** file fails the repository, differing non-workflow files (a consumer that has not
    regenerated since the last generator PR) are a warning listing the stale files;
@@ -36,13 +40,36 @@ Do not reintroduce reusable-workflow adoption.
 9. records the last completed push run of the `CI` workflow on `main`, its conclusion and wall-clock
    (`run_started_at` to `updated_at`, queue time excluded) against the ten-minute budget;
 10. writes `conformance-report.json` (schema `pennilogic.infra.conformance/1`) and
-    `conformance-summary.md` with every local path and credential-shaped string redacted, and exits 1 when
-    any repository fails.
+    `conformance-summary.md` with every local path and credential-shaped string redacted, after a
+    fail-closed self-scan: if any local marker survives redaction (a path spelling, the account name as a
+    path component, or an absolute drive path) the job names the kind of marker, writes nothing and
+    exits 2; otherwise it exits 1 when any repository fails.
 
-It never pushes, comments, or writes to any repository. Probe processes run with an environment stripped
-of every variable whose name looks like a credential. The harness refuses to plant into a tree that
+It never pushes, comments, or writes to any repository. The harness refuses to plant into a tree that
 `git status` does not report clean, and a tree that is not clean again after restoration is an `error`,
 which fails the job and stops further planting in that repository.
+
+Every probe, and every git command on a scratch checkout, runs with `probe_environment()`
+(`governance/conformance/defects.py`): an explicit deny-list of variable names and prefixes is removed
+(`GIT_CONFIG_PARAMETERS` and the whole `GIT_CONFIG_*` family, `GH_*`, `GITHUB_*`, `ACTIONS_*`, `SSH_*`,
+`GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, package-manager and
+cloud credential variables), a name heuristic (`TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `API_KEY`,
+`PRIVATE_KEY`, `_KEY`) removes what the list does not name, git reads an empty global config and no
+system config (`GIT_CONFIG_GLOBAL` → an empty file, `GIT_CONFIG_NOSYSTEM=1`, so no credential helper,
+askpass program or URL rewrite of the operator applies), `gh` reads an empty config directory
+(`GH_CONFIG_DIR`), terminal prompts are off, and `NoDefaultCurrentDirectoryInExePath=1` stops cmd.exe from
+resolving a bare command name such as `python` or `npm` from the consumer's working directory (a
+consumer-committed `python.cmd` would otherwise run first on Windows). Removing `GITHUB_ENV`,
+`GITHUB_PATH` and `ACTIONS_RUNTIME_TOKEN` also keeps consumer code from writing state or artifacts into
+later steps of the requested workflow.
+
+**Remaining limit:** the scrub covers variables and the git/gh configuration files; it cannot cover
+credentials that live in files or stores a consumer command can open by itself — SSH keys in `~/.ssh`,
+an OS keyring or Git Credential Manager store, `~/.npmrc`, `~/.pypirc`, `~/.docker/config.json`, or a
+credential helper the command configures in its own process. The disabled push URL means those
+credentials cannot push through the scratch clone, but a command could still use them elsewhere.
+That is why the job is meant for a disposable tokenless runner or for local runs against the
+organization's own repositories only, and why consumer `main` code is inside the trust boundary.
 
 Trust boundary: proving that a consumer's real command refuses a defect means executing that consumer's
 code (`scripts/check_repository.py`, `check_docs.py`, `npm ci` lifecycle scripts, `uv sync`, Gradle). Run
@@ -66,9 +93,10 @@ Options: `--repository <profile>` (repeatable) limits the run; `--github-client 
 (`auto` uses the `gh` CLI's stored credential when it is installed and authenticated, else anonymous);
 `--exercise` names the toolchains whose planted defects run (`python` by default; `node`, `uv`, `java`,
 `android` need the matching toolchain on the machine and a network for `npm ci` / `uv sync`);
-`--command-timeout`, `--budget-minutes`, `--generated-at`. Exit status: 0 pass, 1 at least one
-repository failed, 2 the job itself could not run (registry invalid, unknown profile, `gh` requested but
-absent).
+`--command-timeout`, `--budget-minutes` (the wall-clock budget recorded per row and applied to the last
+`main` run; default 10), `--generated-at`. Exit status: 0 pass, 1 at least one repository failed, 2 the
+job itself could not run (registry invalid, unknown profile, `gh` requested but absent, or the redaction
+self-scan found a surviving local marker — nothing is written in that case).
 
 The anonymous client is the design the scheduled job uses (generated workflows never receive a token):
 five GET requests per repository (identity, ruleset list, ruleset detail, branch rules, runs), 45 for nine
@@ -101,11 +129,21 @@ default ten minutes.
 Warnings (recorded, not failing): stale non-workflow generated files; a ruleset that does not require an
 up-to-date branch; planted defects of a toolchain not exercised in this run; no completed `main` run
 found; a run over ten minutes for a profile with a larger reviewed `timeout_minutes` (contracts, api,
-android run with 30); `main` moved since the last completed run.
+android run with 30); `main` moved since the last completed run; a registry `workflow_ref` that could
+not be verified in this run (no local history for the commit, or no scratch checkout to compare with).
 
-Planted-defect outcomes: `proved` (every required probe behaved as required), `not_proved`, `recorded`
-(observation-only fixture), `not_exercised` (toolchain excluded from the run), `error` (timeout, could not
-start, tree not clean or not restored). Probe outcomes: `as_expected` / `unexpected` for required probes,
+Budget decision (Q5 of the QA review): the ten-minute budget of addendum item 3 fails a repository only
+when its profile runs with the default ten-minute `timeout-minutes`; for the three heavy profiles whose
+reviewed timeout is 30 minutes an overrun is a warning naming both figures, because the reviewed
+timeout is the current per-profile decision. Making the budget per profile (or failing the heavy
+profiles too) is the enforcement decision of [PenniLogic/infra#22](https://github.com/PenniLogic/infra/issues/22),
+not of this report-only job.
+
+Planted-defect outcomes: `proved` (every probe this job planted for behaved as required), `not_proved`,
+`recorded` (observation-only fixture), `consumer_evidence` (a consumer-owned self-test exited 0 — the
+consumer's own claim, presented separately and never counted as proved by this job; a non-zero exit is
+`not_proved`), `not_exercised` (toolchain excluded from the run), `error` (timeout, could not start,
+tree not clean or not restored). Probe outcomes: `as_expected` / `unexpected` for required probes,
 `detected` / `not_detected` for observations; `detail_surfaced` records whether the consumer's checker
 printed its rule text (only checkers regenerated after PR E, [#50](https://github.com/PenniLogic/infra/pull/50),
 do; older ones refuse with the same exit code and the line `Invalid or unsafe workflow: <file>`).
@@ -131,7 +169,7 @@ security acceptance.
 | `documentation-body-link-broken` | documentation | python | docs | observation: a broken relative link outside the ADR graph is **not** detected (see limitations) |
 | `typescript-test-failing` / `typescript-tests-removed` | typescript | node | web, admin | `npm ci` then `npm test` exits non-zero (`planted defect` / `No test files found`) |
 | `kotlin-test-failing` | kotlin | java | api | `python scripts/quality.py test` must fail on a planted JUnit 5 test |
-| `kotlin-android-self-test` | kotlin | android | android | the consumer-owned `quality_gates.py self-test` (plants a failing test, spotless and lint defects, UP-TO-DATE and FROM-CACHE results) must exit 0; needs the Android SDK |
+| `kotlin-android-self-test` | kotlin | android | android | consumer evidence, not a defect this job plants: the consumer-owned `quality_gates.py self-test` (a failing test, spotless and lint defects, UP-TO-DATE and FROM-CACHE results) must exit 0; recorded as `consumer_evidence`, never as `proved`; needs the Android SDK |
 
 Kotlin fixtures are not exercised by the Python-only job; their evidence is the consumer's last `main`
 CI run (api runs `quality.py build`, android runs its own `self-test` on every run) recorded in the
@@ -293,6 +331,21 @@ through the generator). Making it blocking is an owner decision recorded above. 
 generated workflow from the infra profile and regenerate; the registry and the job code are inert
 without it.
 
+## Remaining for infra#24 after this pull request
+
+- The generated scheduled workflow with its artifact upload (the request above; generator owner).
+- Ruleset wiring decisions and any change to the `Protect main` rulesets (owner; proposals above).
+- Phase 2: Node and uv on the runner so the TypeScript and pytest fixtures run in the scheduled job.
+- Kotlin evidence on the runner: `java` and `android` are never exercised by the Python-only scheduled
+  job; the api `kotlin-test-failing` fixture has been proved only in local runs, and the android
+  self-test remains consumer evidence. A JDK/Android SDK setup in the conformance workflow is a later
+  generator request with a real cost in runner minutes.
+- The opt-out-with-recorded-expiry mechanism of the original rollout note: not implemented; if the owner
+  wants it, the natural place is an optional `opt_out_until` (ISO date) field per registry entry that the
+  job honours only while the date is in the future and reports as a warning.
+- A general Markdown link checker for docs (docs decision; `check_docs.py` covers the ADR graph only).
+- Per-profile budgets or failing the heavy profiles on the ten-minute budget (infra#22 decision).
+
 ## Limitations recorded honestly
 
 - A test body that is trivially passing but keeps the count above zero is not detectable by this job:
@@ -323,4 +376,11 @@ without it.
 - The job reads consumers' `main`, never the pull request under review, so it cannot gate a consumer PR;
   it reports the state of what was merged.
 - The registry `workflow_ref` verification needs the commit in local history; a shallow infra checkout
-  records `unverifiable` instead of failing.
+  records `unverifiable` and the row carries a warning instead of failing.
+- Redaction covers the scratch, infra, temp and home paths in every spelling the code knows (native,
+  POSIX, resolved, Windows 8.3 short form, repr/JSON-escaped doubled backslashes; matched
+  case-insensitively) plus the account name as a path component and token/private-key shapes. The
+  fail-closed self-scan refuses to write a report in which any of those markers or an absolute drive path
+  survives — an unknown spelling therefore costs a run, never a leak. A local path that is neither under
+  those roots nor spelled with a drive letter (a POSIX path outside home and temp, for example) is not a
+  marker the scan knows.

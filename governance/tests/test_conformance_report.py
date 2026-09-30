@@ -6,8 +6,10 @@ the redacted document, and the orchestrator runs end to end against a fake consu
 API with no network."""
 
 import contextlib
+import copy
 import io
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -145,6 +147,50 @@ class DocumentTests(unittest.TestCase):
         self.assertIn("<scratch>/as-key", {key.replace("\\", "/") for key in redacted})
         self.assertEqual("<home>", redacted["home"])
 
+    def test_redaction_covers_repr_json_lower_case_and_short_spellings(self):
+        """Q1 / S4: a failed command's repr doubles the backslashes, tools lower-case the drive and
+        user, JSON encodes the same doubled form, Windows may print the 8.3 name; all are redacted."""
+        scratch = Path.home() / "conformance-scratch"
+        replacements = report.path_replacements(scratch, None)
+        native = str(scratch / "api" / "gradlew.bat")
+        spellings = {
+            "plain": native,
+            "repr": repr(native)[1:-1],
+            "json": json.dumps(native)[1:-1],
+            "lower": native.lower(),
+            "upper": native.upper(),
+            "posix": (scratch / "api" / "gradlew.bat").as_posix(),
+            "nested json": json.dumps({"cmd": [native]}),
+        }
+        for label, text in spellings.items():
+            with self.subTest(spelling=label):
+                redacted = report.redact_text(f"command failed: {text}", replacements)
+                self.assertNotIn(str(Path.home()).lower(), redacted.lower())
+                self.assertIn("<scratch>", redacted)
+                self.assertEqual([], report.redaction_survivors({"x": redacted}, replacements))
+        short = report.short_path(Path.home())
+        if short and short.lower() != str(Path.home()).lower():
+            redacted = report.redact_text(f"at {short}\\x.txt", replacements)
+            self.assertNotIn(short.lower(), redacted.lower())
+            self.assertEqual("at <home>\\x.txt", redacted)
+
+    def test_user_name_is_redacted_as_a_path_component_and_the_self_scan_names_survivors(self):
+        replacements = report.path_replacements(None, None)
+        user = report.current_user()
+        self.assertTrue(user)
+        other = f"D:\\elsewhere\\{user}\\file.txt"
+        self.assertEqual(f"D:\\elsewhere\\{report.USER_PLACEHOLDER}\\file.txt", report.redact_text(other, replacements))
+        self.assertEqual(f"/srv/{report.USER_PLACEHOLDER}/x", report.redact_text(f"/srv/{user.upper()}/x", replacements))
+        # The bare user name outside a path is not a marker: on the runner it is the word "runner".
+        self.assertEqual(f"{user} said hi", report.redact_text(f"{user} said hi", replacements))
+        self.assertEqual([], report.redaction_survivors({"ok": ["https://github.com/x", "ratio 3:1", "11:47:05Z", "<scratch>/api"]}, replacements))
+        self.assertEqual(["drive path"], report.redaction_survivors({"leak": "see D:\\other\\thing"}, replacements))
+        self.assertEqual(["drive path"], report.redaction_survivors({"leak": "see d:/other/thing"}, replacements))
+        self.assertEqual(["drive path"], report.redaction_survivors({"leak": json.dumps("Z:\\repr\\form")}, replacements))
+        self.assertIn("path needle", report.redaction_survivors({"leak": str(Path.home()).upper()}, replacements))
+        self.assertEqual(["user in path"], report.redaction_survivors({"leak": f"//server/{user}/share"}, replacements))
+        self.assertIn("path needle", report.redaction_survivors({str(Path.home()): "as a key"}, replacements))
+
 
 class OrchestratorTests(support.ConsumerCase):
     def test_parse_arguments_rejects_unknown_toolchains(self):
@@ -168,6 +214,40 @@ class OrchestratorTests(support.ConsumerCase):
         root, sha, reused, error = run.prepare_checkout(self.scratch, support.ORGANIZATION, self.profile_name)
         self.assertIsNone(root)
         self.assertEqual("existing scratch directory is not a clone of the expected repository", error)
+
+    def test_prepare_checkout_disables_the_push_url_of_the_scratch_clone(self):
+        """S1: a command run inside the scratch clone cannot push anywhere, whatever credential it finds."""
+        self.assertEqual("", support.git(self.root, "config", "--default", "", "--get", "remote.origin.pushurl").strip())
+        root, sha, reused, error = run.prepare_checkout(self.scratch, support.ORGANIZATION, self.profile_name)
+        self.assertIsNone(error)
+        self.assertEqual(run.DISABLED_PUSH_URL, support.git(self.root, "config", "--get", "remote.origin.pushurl").strip())
+        self.assertEqual(f"https://github.com/{support.ORGANIZATION}/{self.profile_name}.git",
+                         support.git(self.root, "remote", "get-url", "origin").strip(), "the fetch URL is untouched")
+        push = subprocess.run(["git", "-C", str(self.root), "push", "--dry-run", "origin", "HEAD"],
+                              capture_output=True, check=False, env=defects.probe_environment(), timeout=60)
+        self.assertNotEqual(0, push.returncode)
+        self.assertIn(b"DISABLED", push.stderr)
+        # Idempotent on reuse, and the clone still counts as clean afterwards.
+        root, sha, reused, error = run.prepare_checkout(self.scratch, support.ORGANIZATION, self.profile_name)
+        self.assertIsNone(error)
+        self.assertEqual([], defects.git_status(self.root))
+
+    def test_scratch_git_commands_run_in_the_isolated_environment(self):
+        seen = []
+        real_run = subprocess.run
+
+        def spy(command, **kwargs):
+            seen.append(kwargs.get("env"))
+            return real_run(command, **kwargs)
+
+        with mock.patch.object(run.subprocess, "run", spy):
+            run.prepare_checkout(self.scratch, support.ORGANIZATION, self.profile_name)
+        self.assertTrue(seen)
+        for env in seen:
+            self.assertIsNotNone(env)
+            self.assertEqual("1", env["GIT_CONFIG_NOSYSTEM"])
+            self.assertNotIn("GIT_CONFIG_PARAMETERS", env)
+            self.assertNotIn("GH_TOKEN", env)
 
     def test_generated_baseline_separates_workflow_drift_from_stale_files(self):
         runner = lambda command, cwd: defects.subprocess_runner(command, cwd, 120)  # noqa: E731
@@ -211,27 +291,100 @@ class OrchestratorTests(support.ConsumerCase):
 
     def test_inspect_repository_fails_closed_on_id_mismatch_missing_producer_and_api_errors(self):
         head = support.git(self.root, "rev-parse", "HEAD").strip()
-        runner = lambda command, cwd: defects.Result(0, "")  # noqa: E731
+        calls = []
+
+        def runner(command, cwd):
+            calls.append(command)
+            return defects.Result(0, "")
+
         registry_document = run.registry_module.load_registry()
         client = support.fake_client_for(self.profile_name, self.profile["id"], head,
                                          identity={"id": 42, "full_name": "x", "default_branch": "main"},
                                          branch_rules=support.branch_rules_payload(contexts=(("CI", 15368), ("policy", 15368))))
         record = run.inspect_repository(self.profile_name, self.profile, support.generator, client, registry_document,
-                                        self.scratch, support.GOVERNANCE.parent, runner, ())
+                                        self.scratch, support.GOVERNANCE.parent, runner, ("python",))
         report.evaluate_repository(record)
         self.assertEqual("fail", record["result"])
         self.assertFalse(record["identity"]["verified"])
+        # S2: the id assertion gates execution — no clone, no checker, no fixture ran in the unverified repository.
+        self.assertEqual([], calls)
+        self.assertIsNone(record["main_sha"])
+        self.assertIsNone(record["generated_baseline"])
+        self.assertIsNone(record["repository_check"])
+        self.assertEqual([], record["planted_defects"])
+        self.assertEqual("repository identity not verified; nothing from the repository was executed", record["clone_error"])
+        self.assertTrue(any("repository id does not match" in failure for failure in record["failures"]))
+        # The read-only API facts are still recorded so the row explains itself.
         self.assertEqual([{"context": "policy", "integration_id": 15368}], record["required_checks"]["missing"])
         self.assertTrue(any("policy" in failure for failure in record["failures"]))
-        self.assertEqual({"not_exercised"}, {defect["outcome"] for defect in record["planted_defects"]})
         failing = support.fake_client_for(self.profile_name, self.profile["id"], head,
                                           identity=run.github_api.ApiError("GET failed with HTTP 403"))
         record = run.inspect_repository(self.profile_name, self.profile, support.generator, failing, registry_document,
-                                        self.scratch, support.GOVERNANCE.parent, runner, ())
+                                        self.scratch, support.GOVERNANCE.parent, runner, ("python",))
         report.evaluate_repository(record)
         self.assertEqual("fail", record["result"])
+        self.assertEqual([], calls)
+        self.assertIsNone(record["identity"]["verified"])
         self.assertIsNone(record["required_checks"])
         self.assertTrue(any("read-only API unavailable" in failure for failure in record["failures"]))
+
+    def test_budget_minutes_reaches_the_recorded_run_and_its_evaluation(self):
+        """Q4: a 120 s run is over a one-minute budget; 600 s is within and 601 s over the default."""
+        head = support.git(self.root, "rev-parse", "HEAD").strip()
+        client = support.fake_client_for(self.profile_name, self.profile["id"], head, runs=support.runs_payload(head, seconds=120))
+        registry_document = run.registry_module.load_registry()
+        record = run.inspect_repository(self.profile_name, self.profile, support.generator, client, registry_document,
+                                        self.scratch, support.GOVERNANCE.parent, lambda command, cwd: defects.Result(0, ""),
+                                        (), budget_minutes=1)
+        self.assertEqual(1, record["last_main_run"]["budget_minutes"])
+        self.assertEqual(120, record["last_main_run"]["wall_clock_seconds"])
+        self.assertFalse(record["last_main_run"]["within_budget"])
+        report.evaluate_repository(record, budget_minutes=1)
+        # The profile's reviewed timeout (10) exceeds a one-minute budget, so the overrun is the documented warning.
+        self.assertTrue(any("over the 1-minute budget (profile timeout 10 min)" in warning for warning in record["warnings"]),
+                        record["warnings"])
+        record["profile_timeout_minutes"] = 1
+        report.evaluate_repository(record, budget_minutes=1)
+        self.assertTrue(any("over the 1-minute budget" in failure for failure in record["failures"]), record["failures"])
+        for seconds, within in ((600, True), (601, False)):
+            client = support.fake_client_for(self.profile_name, self.profile["id"], head, runs=support.runs_payload(head, seconds=seconds))
+            summary = run.github_api.last_main_run(client, f"{support.ORGANIZATION}/{self.profile_name}")
+            self.assertEqual(seconds, summary["wall_clock_seconds"])
+            self.assertEqual(within, summary["within_budget"], seconds)
+
+    def test_registry_status_verifies_the_recorded_generator_commit_against_the_workflow_on_main(self):
+        """Q6 / C1: the recorded commit must render the workflow on main; an unknown commit or a missing
+        checkout is recorded as unverifiable and evaluated as a warning, never silently."""
+        infra = support.GOVERNANCE.parent
+        registry_document = run.registry_module.load_registry()
+        full_name = f"{support.ORGANIZATION}/{self.profile_name}"
+        current = support.generator.artifacts(self.profile_name)[".github/workflows/ci.yml"].encode("utf-8")
+        status = run.registry_status(registry_document, infra, self.profile_name, full_name, {"CI"}, current)
+        if status["workflow_ref_renders_current_workflow"] == "unverifiable":
+            self.skipTest("registry commit not present in this shallow history")
+        self.assertTrue(status["workflow_ref_renders_current_workflow"])
+        self.assertTrue(status["check_name_produced"])
+        drifted = run.registry_status(registry_document, infra, self.profile_name, full_name, {"CI"}, b'{"jobs": {"ci": {}}}')
+        self.assertFalse(drifted["workflow_ref_renders_current_workflow"])
+        record = report.evaluate_repository(passing_record(registry=drifted))
+        self.assertIn("the registry workflow_ref does not render the workflow on main", record["failures"])
+        unknown = copy.deepcopy(registry_document)
+        next(entry for entry in unknown["entries"] if entry["repo"] == full_name)["workflow_ref"] = "0" * 40
+        status = run.registry_status(unknown, infra, self.profile_name, full_name, {"CI"}, current)
+        self.assertEqual("unverifiable", status["workflow_ref_renders_current_workflow"])
+        record = report.evaluate_repository(passing_record(registry=status))
+        self.assertEqual("pass", record["result"])
+        self.assertTrue(any(warning.startswith("registry workflow_ref not verifiable in this run: ") and "history" in warning
+                            for warning in record["warnings"]), record["warnings"])
+        status = run.registry_status(registry_document, infra, self.profile_name, full_name, {"CI"}, None)
+        self.assertEqual("unverifiable", status["workflow_ref_renders_current_workflow"])
+        self.assertIn("no scratch checkout", status["note"])
+        markdown = report.render_markdown(report.build_report([report.evaluate_repository(passing_record(registry=status))],
+                                                              None, "anonymous", ()))
+        self.assertIn("- warning PenniLogic/example: registry workflow_ref not verifiable in this run: no scratch checkout", markdown)
+        missing = run.registry_status({"entries": []}, infra, self.profile_name, full_name, {"CI"}, current)
+        self.assertIsNone(missing["entry"])
+        self.assertIn("no check-name registry entry", report.evaluate_repository(passing_record(registry=missing))["failures"])
 
     def test_redacting_runner_removes_a_path_before_the_harness_truncates_the_output(self):
         """Regression: the 400-character tail kept per probe could start in the middle of a local path,
@@ -261,16 +414,38 @@ class OrchestratorTests(support.ConsumerCase):
         self.assertEqual("pass", document["result"])
         self.assertEqual("2026-09-30T12:00:00+00:00", document["generated_at"])
         self.assertEqual(["python"], document["exercised_toolchains"])
-        for text in ((output / "conformance-report.json").read_text(encoding="utf-8"), summary):
-            self.assertNotIn(str(self.scratch), text)
-            self.assertNotIn(self.scratch.as_posix(), text)
-            self.assertNotIn(str(Path.home()), text)
-            self.assertNotIn(sys.executable, text)
-        self.assertIn("<scratch>", (output / "conformance-report.json").read_text(encoding="utf-8"))
+        raw = (output / "conformance-report.json").read_text(encoding="utf-8")
+        # Q3: assert on the parsed strings (the JSON text doubles backslashes, hiding a native Windows path)
+        # and on the raw text in every spelling the redaction promises to cover.
+        for marker in (str(self.scratch), str(Path.home()), sys.executable):
+            for text in report.strings_of(document):
+                self.assertNotIn(marker.lower(), text.lower())
+            for spelling in report.spellings(marker):
+                self.assertNotIn(spelling.lower(), raw.lower())
+                self.assertNotIn(spelling.lower(), summary.lower())
+        self.assertEqual([], report.redaction_survivors(document, report.path_replacements(self.scratch, support.GOVERNANCE.parent)))
+        self.assertIn("<scratch>", raw)
+        self.assertTrue(summary.endswith("\n"))
+        self.assertFalse(summary.endswith("\n\n"), "C4: exactly one newline at the end of the summary")
         self.assertIn("Conformance PASS: 1 repositories, 0 failure(s)", out.getvalue())
         self.assertEqual([], document["not_run"])  # no non-python fixture applies to the .github profile
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(2, run.main(["--scratch", str(self.scratch), "--output", str(output), "--repository", "nope"]))
+
+    def test_main_writes_nothing_when_the_redaction_self_scan_finds_a_survivor(self):
+        """Q1: a marker that survives redaction fails the job before any file is written."""
+        head = support.git(self.root, "rev-parse", "HEAD").strip()
+        client = support.fake_client_for(self.profile_name, self.profile["id"], head)
+        output = self.scratch / "unwritten"
+        err = io.StringIO()
+        with mock.patch.object(run.github_api, "choose_client", lambda mode: client), \
+                mock.patch.object(run.report_module, "redaction_survivors", lambda document, replacements: ["drive path"]), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = run.main(["--scratch", str(self.scratch), "--output", str(output), "--repository", self.profile_name,
+                             "--github-client", "anonymous", "--exercise", "node"])
+        self.assertEqual(2, code)
+        self.assertEqual([], list(output.iterdir()))
+        self.assertIn("Redaction incomplete (drive path); nothing written", err.getvalue())
 
     def test_main_still_writes_the_report_when_one_repository_inspection_crashes(self):
         output = self.scratch / "crash"

@@ -4,6 +4,9 @@ commands refuse the planted defects, the tree is restored byte for byte, a stubb
 pass (a runner that always exits 0 is reported not_proved), an unrestored tree fails, excluded
 toolchains are recorded as not exercised, and probe processes never inherit credential variables."""
 
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -80,6 +83,28 @@ class PlanterTests(support.ConsumerCase):
         planter.restore()
         self.assertEqual([], defects.git_status(self.root))
 
+    def test_restore_continues_past_a_failing_undo_step_and_removes_the_aside_directory(self):
+        """C2: one undo step that raises must not abandon the remaining steps or the moved-aside files."""
+        before = support.tree_digest(self.root)
+        planter = defects.Planter(self.root)
+        planter.write("README.md", b"changed")
+        planter.move_aside("scripts/tests/test_baseline_ok.py")
+        planter.create("planted.txt", "planted")
+        aside = planter._aside
+        self.assertTrue(aside and Path(aside).is_dir())
+
+        def failing_step():
+            raise PermissionError("locked")
+
+        planter._undo.insert(1, failing_step)  # runs after the planted.txt removal, before the move back and the write
+        with self.assertRaises(PermissionError):
+            planter.restore()
+        self.assertEqual(before, support.tree_digest(self.root), "every other undo step still ran")
+        self.assertFalse(Path(aside).exists(), "the aside directory is removed even when a step raised")
+        self.assertIsNone(planter._aside)
+        self.assertEqual([], planter._undo)
+        self.assertEqual([], defects.git_status(self.root))
+
 
 class RealFixtureTests(unittest.TestCase):
     """The .github profile: python unittest plus the six workflow fixtures, run once with the real runner."""
@@ -87,15 +112,12 @@ class RealFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._temporary = tempfile.TemporaryDirectory(prefix="pennilogic-conformance-test-")
+        cls.addClassCleanup(cls._temporary.cleanup)
         cls.root = support.make_consumer(Path(cls._temporary.name) / ".github", ".github")
         cls.profile = support.generator.PROFILES["repositories"][".github"]
         context = defects.Context(".github", cls.profile, cls.root, support.GOVERNANCE.parent)
         cls.before = support.tree_digest(cls.root)
         cls.records = {record["id"]: record for record in defects.run_fixtures(context, exercise=("python",))}
-
-    @classmethod
-    def tearDownClass(cls):
-        cls._temporary.cleanup()
 
     def test_tree_is_restored_byte_for_byte_and_clean(self):
         self.assertEqual(self.before, support.tree_digest(self.root))
@@ -201,6 +223,28 @@ class FakeRunnerTests(support.ConsumerCase):
         self.assertTrue(record.get("unrestored_paths"))
         (self.root / "scripts/tests/test_planted_conformance_defect.py").unlink()
 
+    def test_consumer_self_test_is_recorded_as_consumer_evidence_never_as_proved(self):
+        """Q7: the android self-test is a consumer-owned command; its exit 0 is the consumer's claim."""
+        android = support.generator.PROFILES["repositories"]["android"]
+        context = defects.Context("android", android, self.root, support.GOVERNANCE.parent)
+        self_test = fixture("kotlin-android-self-test")
+        self.assertEqual(["consumer"], [probe.expect for probe in self_test.probes(context)])
+        green = defects.run_fixture(self_test, context, runner=lambda command, cwd: defects.Result(0, "all gates bit"), exercise=("android",))
+        self.assertEqual("consumer_evidence", green["outcome"])
+        self.assertNotEqual("proved", green["outcome"])
+        red = defects.run_fixture(self_test, context, runner=lambda command, cwd: defects.Result(1, "gate did not bite"), exercise=("android",))
+        self.assertEqual("not_proved", red["outcome"], "a consumer whose own self-test fails is still a finding")
+        self.assertEqual({"kotlin": "consumer_evidence"}, defects.language_coverage([green]))
+        self.assertEqual({"kotlin": "proved"}, defects.language_coverage([green, {"language": "kotlin", "outcome": "proved"}]))
+        # No other fixture relies on a consumer-owned pass; every other required probe expects a failure.
+        consumer_fixtures = set()
+        for name, profile in support.generator.PROFILES["repositories"].items():
+            probe_context = defects.Context(name, profile, self.root, support.GOVERNANCE.parent)
+            for item in defects.applicable_fixtures(probe_context):
+                if any(probe.expect == "consumer" for probe in item.probes(probe_context)):
+                    consumer_fixtures.add(item.id)
+        self.assertEqual({"kotlin-android-self-test"}, consumer_fixtures)
+
     def test_prepare_commands_run_before_planting_and_their_failure_is_an_error(self):
         web = support.generator.PROFILES["repositories"]["web"]
         context = defects.Context("web", web, self.root, support.GOVERNANCE.parent)
@@ -279,14 +323,91 @@ class PlantShapeTests(support.ConsumerCase):
 
 
 class EnvironmentTests(unittest.TestCase):
+    ISOLATION_KEYS = {"PYTHONDONTWRITEBYTECODE", "PYTHONIOENCODING", "CI", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
+                      "GIT_TERMINAL_PROMPT", "GH_CONFIG_DIR", "NoDefaultCurrentDirectoryInExePath"}
+
     def test_probe_environment_drops_credential_looking_variables_and_keeps_the_path(self):
         environ = {"PATH": "/usr/bin", "GH_TOKEN": "x", "GITHUB_TOKEN": "x", "MY_SECRET": "x", "DB_PASSWORD": "x",
                    "AWS_ACCESS_KEY": "x", "NPM_CONFIG_PRIVATE_KEY": "x", "JAVA_HOME": "/jdk", "ANDROID_HOME": "/sdk",
                    "SOME_CREDENTIAL_FILE": "x", "PATHEXT": ".EXE"}
         cleaned = defects.probe_environment(environ)
-        self.assertEqual({"PATH", "JAVA_HOME", "ANDROID_HOME", "PATHEXT", "PYTHONDONTWRITEBYTECODE", "PYTHONIOENCODING", "CI"},
-                         set(cleaned))
+        self.assertEqual({"PATH", "JAVA_HOME", "ANDROID_HOME", "PATHEXT"} | self.ISOLATION_KEYS, set(cleaned))
         self.assertEqual("1", cleaned["PYTHONDONTWRITEBYTECODE"])
+
+    def test_probe_environment_removes_the_explicit_deny_list_and_isolates_git_and_gh(self):
+        """S1 of the security review: names that carry or point at credentials, or that the Actions
+        runner reads back from a step, never reach a child; git and gh see empty configuration."""
+        denied = {
+            "GIT_CONFIG_PARAMETERS": "'credential.https://github.com.helper=copilot'", "GH_TOKEN": "x",
+            "GITHUB_TOKEN": "x", "SSH_AUTH_SOCK": "/run/agent", "SSH_AGENT_PID": "1", "GIT_ASKPASS": "/bin/askpass",
+            "SSH_ASKPASS": "/bin/askpass", "GIT_SSH_COMMAND": "ssh -i key", "GIT_SSH": "/bin/ssh",
+            "GH_CONFIG_DIR": "/home/op/.config/gh", "GH_HOST": "github.example", "GH_ENTERPRISE_TOKEN": "x",
+            "GIT_TERMINAL_PROMPT": "1", "GIT_CONFIG_GLOBAL": "/home/op/.gitconfig", "GIT_CONFIG_SYSTEM": "/etc/gitconfig",
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "store",
+            "GIT_PROXY_COMMAND": "/bin/proxy", "ACTIONS_RUNTIME_TOKEN": "x", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "x",
+            "ACTIONS_RESULTS_URL": "https://results", "GITHUB_ENV": "/runner/env", "GITHUB_PATH": "/runner/path",
+            "GITHUB_STEP_SUMMARY": "/runner/summary", "GITHUB_ACTIONS": "true", "DOCKER_AUTH_CONFIG": "{}",
+            "DOCKER_CONFIG": "/home/op/.docker", "NUGET_APIKEY": "x", "NPM_CONFIG__AUTH": "x", "NODE_AUTH_TOKEN": "x",
+            "NPM_TOKEN": "x", "PIP_INDEX_URL": "https://u:p@pypi", "UV_INDEX_URL": "https://u:p@pypi",
+            "AWS_SECRET_ACCESS_KEY": "x", "AWS_SESSION_TOKEN": "x", "AZURE_CLIENT_SECRET": "x",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/k.json", "TWINE_PASSWORD": "x", "ORG_GRADLE_PROJECT_signingKey": "x",
+            "KUBECONFIG": "/k", "VAULT_TOKEN": "x", "gh_token": "lower-case spelling", "Git_Config_Parameters": "mixed",
+        }
+        kept = {"PATH": "/usr/bin", "PATHEXT": ".EXE", "HOME": "/home/op", "USERPROFILE": "C:\\Users\\op",
+                "JAVA_HOME": "/jdk", "ANDROID_HOME": "/sdk", "TEMP": "/tmp", "SystemRoot": "C:\\Windows",
+                "RUNNER_TEMP": "/runner/temp", "NEXT_TELEMETRY_DISABLED": "1", "LANG": "C.UTF-8"}
+        cleaned = defects.probe_environment({**denied, **kept})
+        self.assertEqual(set(kept) | self.ISOLATION_KEYS, set(cleaned))
+        for name, value in kept.items():
+            self.assertEqual(value, cleaned[name])
+        self.assertEqual("1", cleaned["GIT_CONFIG_NOSYSTEM"])
+        self.assertEqual("0", cleaned["GIT_TERMINAL_PROMPT"])
+        self.assertEqual("1", cleaned["NoDefaultCurrentDirectoryInExePath"])
+        global_config = Path(cleaned["GIT_CONFIG_GLOBAL"])
+        self.assertTrue(global_config.is_file())
+        self.assertEqual(b"", global_config.read_bytes())
+        gh_config = Path(cleaned["GH_CONFIG_DIR"])
+        self.assertTrue(gh_config.is_dir())
+        self.assertEqual([], list(gh_config.iterdir()))
+        self.assertNotEqual("/home/op/.gitconfig", cleaned["GIT_CONFIG_GLOBAL"])
+        self.assertNotEqual("/home/op/.config/gh", cleaned["GH_CONFIG_DIR"])
+
+    def test_a_real_child_process_sees_the_isolated_environment(self):
+        """The environment handed to a real child carries none of the denied variables. (The parent's
+        os.environ is never patched: restoring an empty-valued variable through putenv deletes it from
+        the real process block on Windows and would break git for the rest of the test process.)"""
+        script = ("import os, json; print(json.dumps({k: v for k, v in os.environ.items() "
+                  "if k.upper().startswith(('GH_', 'GIT_CONFIG', 'GITHUB_', 'ACTIONS_', 'SSH_')) or k == 'PLAIN'}))")
+        environ = {**os.environ, "GH_TOKEN": "x", "GITHUB_TOKEN": "x", "GIT_CONFIG_PARAMETERS": "x",
+                   "SSH_AUTH_SOCK": "x", "ACTIONS_RUNTIME_TOKEN": "x", "PLAIN": "kept"}
+        completed = subprocess.run([sys.executable, "-c", script], capture_output=True, check=False,
+                                   env=defects.probe_environment(environ), timeout=60)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        child = json.loads(completed.stdout.decode("utf-8").strip().splitlines()[-1])
+        self.assertEqual({"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GH_CONFIG_DIR", "PLAIN"}, set(child))
+        self.assertEqual("kept", child["PLAIN"])
+
+    def test_git_in_the_isolated_environment_reads_no_operator_configuration(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            home = Path(scratch) / "home"
+            home.mkdir()
+            (home / ".gitconfig").write_text("[credential]\n\thelper = store\n[user]\n\tname = operator\n", encoding="utf-8")
+            environ = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "GIT_CONFIG_GLOBAL": str(home / ".gitconfig")}
+            visible = subprocess.run(["git", "config", "--global", "--list"], capture_output=True, check=False, env=environ)
+            self.assertIn(b"credential.helper=store", visible.stdout, "precondition: the operator config is readable")
+            hidden = subprocess.run(["git", "config", "--global", "--list"], capture_output=True, check=False,
+                                    env=defects.probe_environment(environ))
+            self.assertEqual(b"", hidden.stdout.strip())
+
+    @unittest.skipUnless(os.name == "nt", "cmd.exe resolves bare command names from the working directory")
+    def test_shell_probes_do_not_resolve_commands_from_the_consumer_working_directory(self):
+        """S5: a consumer-committed python.cmd in the scratch root must not shadow the real interpreter."""
+        with tempfile.TemporaryDirectory() as cwd:
+            (Path(cwd) / "python.cmd").write_text("@echo HIJACKED\n", encoding="utf-8")
+            result = defects.subprocess_runner('python -c "print(7 * 6)"', cwd)
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertIn("42", result.output)
+        self.assertNotIn("HIJACKED", result.output)
 
     def test_probe_outcomes(self):
         probe = defects.Probe("x", "cmd", expect="fail", expect_text="rule")
@@ -300,6 +421,9 @@ class EnvironmentTests(unittest.TestCase):
         observe = defects.Probe("x", "cmd", expect="observe")
         self.assertEqual("detected", defects.probe_outcome(observe, defects.Result(1, "")))
         self.assertEqual("not_detected", defects.probe_outcome(observe, defects.Result(0, "")))
+        consumer = defects.Probe("x", "cmd", expect="consumer")
+        self.assertEqual("as_expected", defects.probe_outcome(consumer, defects.Result(0, "")))
+        self.assertEqual("unexpected", defects.probe_outcome(consumer, defects.Result(1, "")))
 
     def test_language_coverage_keeps_the_weakest_outcome_until_one_fixture_is_proved(self):
         records = [{"language": "kotlin", "outcome": "not_exercised"}, {"language": "kotlin", "outcome": "error"},
