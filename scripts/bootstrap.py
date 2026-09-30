@@ -81,6 +81,8 @@ PORT_IN_USE = re.compile(
 )
 POLL_SECONDS = 0.5
 DOCKER_TIMEOUT = 60
+DOCKER_COMMAND = ("docker",)  # tests substitute a harmless stand-in; production always runs `docker`
+TEARDOWN_SECONDS = 5  # after a timeout: bounded wait for the terminated command tree to exit and release its pipes
 LOCK_WAIT_SECONDS = 600
 NAME_CONFLICT = re.compile(r"The container name \"/?([^\"]+)\" is already in use")
 
@@ -309,29 +311,241 @@ def is_loopback(address):
         return False
 
 
+# --- process-tree ownership on Windows -----------------------------------------------------------
+
+class TreeTimeoutExpired(subprocess.TimeoutExpired):
+    """``TimeoutExpired`` plus a sentence saying what happened to the command's process tree."""
+
+    def __init__(self, cmd, timeout, cleanup):
+        super().__init__(cmd, timeout)
+        self.cleanup = cleanup
+
+
+class ProcessOwnershipError(OSError):
+    """Windows refused to place the command under this bootstrap's job object (the run fails closed)."""
+
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation = 1, 9
+    PROCESS_TERMINATE, PROCESS_SET_QUOTA = 0x0001, 0x0100
+
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION), ("IoInfo", _IO_COUNTERS),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    class _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+        _fields_ = [("TotalUserTime", ctypes.c_longlong), ("TotalKernelTime", ctypes.c_longlong),
+                    ("ThisPeriodTotalUserTime", ctypes.c_longlong), ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                    ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+    for _name, _restype, _argtypes in (
+        ("CreateJobObjectW", wintypes.HANDLE, (wintypes.LPVOID, wintypes.LPCWSTR)),
+        ("SetInformationJobObject", wintypes.BOOL, (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)),
+        ("QueryInformationJobObject", wintypes.BOOL,
+         (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, wintypes.LPDWORD)),
+        ("AssignProcessToJobObject", wintypes.BOOL, (wintypes.HANDLE, wintypes.HANDLE)),
+        ("TerminateJobObject", wintypes.BOOL, (wintypes.HANDLE, wintypes.UINT)),
+        ("OpenProcess", wintypes.HANDLE, (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)),
+        ("CloseHandle", wintypes.BOOL, (wintypes.HANDLE,)),
+    ):
+        _function = getattr(_kernel32, _name)
+        _function.restype, _function.argtypes = _restype, _argtypes
+
+
+class WindowsJob:
+    """Own a command's whole process tree on Windows through an unnamed Job Object.
+
+    On Windows ``docker.exe`` runs ``docker compose`` as a child process (``docker-compose.exe``)
+    that inherits the captured stdout/stderr pipes. ``subprocess.run(timeout=...)`` terminates
+    only ``docker.exe`` itself and then blocks until every holder of those pipes has exited, so a
+    timed-out Compose command returned only when the orphaned plugin had finished its work (or
+    never, for a stuck one). Measured on Docker Desktop 29.7.2 / Compose v5.5.0 (infra#37): a
+    `compose up` with a 2.5 s timeout returned at 2.9 s, once the plugin had created the containers;
+    a `compose events` kept the pipes open for the whole observation window.
+
+    The job is created before the child exists, with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and no
+    breakaway right, so descendants cannot leave it and anything still alive dies when the handle
+    is closed. The child is assigned immediately after ``CreateProcess`` returns: the remaining
+    window is a few microseconds of Python, far shorter than a Go binary needs to start and spawn
+    its plugin, and a process started inside the job is a member from birth. Nested jobs are used
+    when this process already runs inside a job (Windows 8+). The job handle is never inheritable.
+    A failure to establish ownership while the command is running fails closed: the just-started
+    command is terminated and :class:`ProcessOwnershipError` is raised; nothing runs unowned. A
+    command that has already exited by then is reported with its own result.
+    """
+
+    def __init__(self):
+        self.handle = _kernel32.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise self._failure("CreateJobObject", ctypes.get_last_error())
+        limits = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not _kernel32.SetInformationJobObject(
+            self.handle, JobObjectExtendedLimitInformation, ctypes.byref(limits), ctypes.sizeof(limits),
+        ):
+            code = ctypes.get_last_error()
+            self.close()
+            raise self._failure("SetInformationJobObject", code)
+
+    @staticmethod
+    def _failure(what, code):
+        error = ctypes.WinError(code)
+        return ProcessOwnershipError(error.errno, f"{what} failed: {error.strerror}", None, error.winerror)
+
+    def assign(self, pid):
+        """Put the process (and, from then on, everything it starts) into the job."""
+        process = _kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+        if not process:
+            raise self._failure("OpenProcess", ctypes.get_last_error())
+        try:
+            if not _kernel32.AssignProcessToJobObject(self.handle, process):
+                raise self._failure("AssignProcessToJobObject", ctypes.get_last_error())
+        finally:
+            _kernel32.CloseHandle(process)
+
+    def terminate(self):
+        """Terminate every process in the job (and in nested jobs); True when Windows accepted it."""
+        return bool(_kernel32.TerminateJobObject(self.handle, 1))
+
+    def active_processes(self):
+        """Number of processes still alive in the job, or None when Windows will not say."""
+        info = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+        if not _kernel32.QueryInformationJobObject(
+            self.handle, JobObjectBasicAccountingInformation, ctypes.byref(info), ctypes.sizeof(info), None,
+        ):
+            return None
+        return info.ActiveProcesses
+
+    def close(self):
+        if self.handle:
+            _kernel32.CloseHandle(self.handle)  # kill-on-close: anything still in the job dies now
+            self.handle = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+        return False
+
+
+def release_pipes(process, timeout):
+    """Collect the output threads and reap the child within ``timeout``.
+
+    True when every holder of the output pipes has exited. On a timeout the pipes are deliberately
+    left open: closing a pipe that a reader thread is blocked on would block this thread as well,
+    and the bootstrap exits shortly after reporting the error anyway.
+    """
+    try:
+        process.communicate(timeout=timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def terminate_tree(job, process):
+    """After a timeout: terminate the whole tree and wait, bounded by TEARDOWN_SECONDS, until it is
+    gone and the output pipes are released. Returns a sentence for the error message. The teardown
+    wait only observes the exit; it is never extra command time."""
+    deadline = time.monotonic() + TEARDOWN_SECONDS
+    terminated = job.terminate()
+    if not terminated:
+        process.kill()  # at least docker itself, as `subprocess.run` would
+    released = release_pipes(process, max(0.0, deadline - time.monotonic()))
+    active = job.active_processes()
+    while active and time.monotonic() < deadline:
+        time.sleep(0.05)
+        active = job.active_processes()
+    if terminated and released and active == 0:
+        return "Its whole process tree (docker and the compose plugin) was terminated."
+    return (
+        f"Warning: docker was terminated, but its process tree could not be confirmed gone within {TEARDOWN_SECONDS}s"
+        f" (job termination {'accepted' if terminated else 'refused'}, output released: {released},"
+        f" processes still active: {'unknown' if active is None else active}); a descendant may still be running."
+    )
+
+
+def run_docker(command, cwd, env, timeout):
+    """``subprocess.run`` with captured UTF-8 output; on Windows the command's process tree is owned.
+
+    POSIX keeps the plain ``subprocess.run`` call, unchanged. On Windows the command starts inside
+    a :class:`WindowsJob`; on timeout the whole tree is terminated and :class:`TreeTimeoutExpired`
+    is raised within ``timeout + TEARDOWN_SECONDS``.
+    """
+    options = dict(cwd=cwd, env=env, text=True, encoding="utf-8", errors="replace")
+    if os.name != "nt":
+        return subprocess.run(command, capture_output=True, timeout=timeout, check=False, **options)
+    with WindowsJob() as job:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
+        try:
+            job.assign(process.pid)
+        except ProcessOwnershipError:
+            if process.poll() is None:  # still running, unowned: fail closed
+                process.kill()
+                release_pipes(process, TEARDOWN_SECONDS)
+                raise
+            # Windows also refuses to assign a process that has already exited. Only a command failing
+            # within microseconds of its creation can get here; its own result is what to report.
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise TreeTimeoutExpired(command, timeout, terminate_tree(job, process)) from None
+        except BaseException:
+            job.terminate()  # e.g. Ctrl-C: the tree goes down with the bootstrap, as `subprocess.run` kills its child
+            raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 # --- docker wrappers ----------------------------------------------------------------------------
 
 class Compose:
-    def __init__(self, project, env_file, environ, secret_values, verbose=False, compose_file=COMPOSE_FILE):
+    def __init__(self, project, env_file, environ, secret_values, verbose=False, compose_file=COMPOSE_FILE,
+                 docker_command=DOCKER_COMMAND):
         self.project, self.env_file, self.environ = project, Path(env_file), dict(environ)
         self.secret_values, self.verbose, self.compose_file = tuple(secret_values), verbose, compose_file
+        self.docker_command = tuple(docker_command)
 
     def redact(self, text):
         return smoke_infra.redact(text, self.secret_values)
 
     def docker(self, *args, timeout=DOCKER_TIMEOUT):
-        command = ["docker", *args]
+        command = [*self.docker_command, *args]
+        label = " ".join(command[:3])
         try:
-            result = subprocess.run(
-                command, cwd=ROOT, env=self.environ, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=timeout, check=False,
-            )
+            result = run_docker(command, cwd=ROOT, env=self.environ, timeout=timeout)
         except FileNotFoundError as error:
             raise BootstrapError("docker_missing", "The `docker` command is not installed or not on PATH.") from error
-        except subprocess.TimeoutExpired as error:
+        except ProcessOwnershipError as error:
             raise BootstrapError(
-                "docker_timeout", f"`{' '.join(command[:3])}` did not finish within {timeout}s.",
+                "io_error",
+                f"Windows refused to place `{label}` under this bootstrap's process ownership ({error}). The command"
+                " was terminated immediately and nothing ran. Typically the bootstrap itself is running inside a job"
+                " object that forbids nested jobs (an old-style sandbox); re-run it from a plain terminal.",
             ) from error
+        except subprocess.TimeoutExpired as error:
+            message = f"`{label}` did not finish within {timeout}s."
+            if isinstance(error, TreeTimeoutExpired):  # Windows: the tree was owned; say what became of it
+                raise BootstrapError("docker_timeout", f"{message} {error.cleanup}", cleanup=error.cleanup) from error
+            raise BootstrapError("docker_timeout", message) from error
         if self.verbose and result.stderr.strip():
             log(self.redact(result.stderr.rstrip()))
         return result

@@ -101,6 +101,22 @@ On failure `ok` is `false`, the exit code is 1, and `error.kind` is one of `port
 `interrupted` (Ctrl-C) exits 130. `error.message` is human-readable and redacted;
 `port_conflict` also carries `error.ports`.
 
+Every `docker` command the bootstrap runs has its own time limit (`docker compose up`: 600 s or
+`--timeout`, whichever is larger, so a slow first image pull is not cut short; `--down` and
+`--reset`: 180 s; the read-only commands: 30-60 s), and `docker_timeout` names the command that
+overran it. On Windows, `docker.exe` runs `docker compose` as a child process,
+`docker-compose.exe`, which keeps the command's output open and keeps working after `docker.exe`
+alone is killed. The bootstrap therefore runs each `docker` command inside a Windows job object
+and, on a timeout, terminates docker and every process it started together: the error is raised
+within the time limit plus at most 5 s, and `error.cleanup` states whether the whole tree was
+confirmed gone. On Linux and macOS only `docker` itself is killed, as before; a compose plugin
+that is still working may finish on its own. Either way the containers belong to the Docker
+Engine, not to the bootstrap, so a timed-out `up` can leave a partly created stack behind; the
+next `python scripts/bootstrap.py` converges it (or `--down` removes it). If Windows refuses to
+create or use that job object, the command is stopped at once and the run fails with `io_error`
+naming the Windows error; in practice that means the bootstrap itself is running inside a job
+object that forbids nested jobs, so re-run it from a plain terminal.
+
 Plain Compose also works once `.env` exists: `docker compose up -d --wait`.
 
 ## Health and status
@@ -283,7 +299,13 @@ python -m unittest discover -s scripts/tests
 servers and decoy listeners on free loopback ports, and check the RFC 7677 SCRAM vector, the
 refusal of every weaker Postgres authentication method (the decoy must never receive the
 password), the env-file contract, the loopback refusals, credential redaction, the real
-Docker bind-failure texts and the named-port diagnostic.
+Docker bind-failure texts and the named-port diagnostic. They also cover the command time
+limit with a harmless fake `docker` (a Python script standing in for `docker.exe`, never the
+real one): it starts a child that outlives a 2 s limit while inheriting or redirecting the
+captured output, and the bootstrap must report `docker_timeout` within the limit plus 5 s on
+every platform and, on Windows, leave that child dead; three further Windows-only tests exercise
+the job object directly, the fail-closed path when Windows refuses the assignment, and a command
+that exits before it can be assigned.
 `test_integration_stack.py` runs the real stack in a uniquely named project
 (`pennilogic-test-<random>`) on free loopback ports and removes only that project afterwards;
 it is skipped with the reason when Docker is unreachable or `PENNILOGIC_SKIP_DOCKER_TESTS=1`.
