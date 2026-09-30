@@ -23,6 +23,17 @@ checker = load("repository_checker", HERE / "templates/check_repository.py")
 
 UV_INSTALL = ("printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n'"
               " | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin")
+# Generated-setup request for the contracts scaffold: PenniLogic/contracts#2 comment 5905425858.
+CONTRACTS_COMMANDS = [
+    "python scripts/check_repository.py", "npm ci --no-audit --no-fund", "python scripts/toolchain.py install",
+    "python scripts/lint_spec.py", "python scripts/check_breaking_changes.py",
+    "python scripts/generate_clients.py --verify", "python scripts/smoke.py python",
+    "python scripts/smoke.py typescript", "python scripts/smoke.py kotlin",
+    'python -m unittest discover -s scripts/tests -p "test_*.py"',
+]
+CONTRACTS_STATE = ("Repository foundation plus the OpenAPI lint, deterministic client-generation, breaking-change "
+                   "and tag-publication scaffold from PenniLogic/contracts#2; no product endpoints, registry "
+                   "publication credentials or published version tags are implemented.")
 
 
 class BaselineTests(unittest.TestCase):
@@ -45,20 +56,25 @@ class BaselineTests(unittest.TestCase):
             self.assertEqual(["core"], policy["review_floor"])
             self.assertEqual(["qa"], policy["behavior_changes_add"])
 
-    def test_api_build_is_real_and_foundations_do_not_invent_builds(self):
+    def test_api_build_is_real_and_no_profile_gets_an_invented_step(self):
         api = json.loads(generator.workflow("api"))["jobs"]["ci"]["steps"]
         self.assertIn("python scripts/quality.py build", api[-2]["run"])
         self.assertIn("coverage --base", api[-1]["run"])
         contracts = json.loads(generator.workflow("contracts"))["jobs"]["ci"]["steps"]
-        self.assertEqual("python scripts/check_repository.py", contracts[-1]["run"])
-        self.assertFalse(any("uses" in step and "setup-node" in step["uses"] for step in contracts))
+        self.assertEqual(["Checkout", "Python", "Node", "JDK", "Run checks"], [step["name"] for step in contracts])
+        self.assertEqual("\n".join(CONTRACTS_COMMANDS), contracts[-1]["run"])
+        # Only api's explicit-base coverage follows the requested commands; the generator never
+        # appends a build, test or publication step that a profile did not ask for.
+        for repo in generator.PROFILES["repositories"]:
+            if repo != "api":
+                self.assertEqual("Run checks", json.loads(generator.workflow(repo))["jobs"]["ci"]["steps"][-1]["name"])
 
     def test_profiles_run_exactly_their_requested_commands(self):
         expected = {
             ".github": ["python scripts/check_agent_profiles.py", "python -m unittest discover -s scripts/tests"],
             "docs": ["python scripts/check_docs.py", "python scripts/check_test_strategy.py",
                      "python -m unittest discover -s scripts/tests"],
-            "contracts": [],
+            "contracts": CONTRACTS_COMMANDS[1:],
             "api": ["python scripts/quality.py build", "python -m unittest discover -s scripts/tests"],
             "web": ["npm ci", "npm run lint", "npm run format:check", "npm run typecheck", "npm test",
                     "npm run build", "npm run check:bundle", "npm run report:build",
@@ -129,7 +145,7 @@ class BaselineTests(unittest.TestCase):
                             self.assertNotIn(key, jdk[0]["with"])
                     else:
                         self.assertEqual([], jdk)
-        self.assertEqual({"api", "android"}, {
+        self.assertEqual({"api", "android", "contracts"}, {
             repo for repo, profile in generator.PROFILES["repositories"].items() if "java" in profile
         })
 
@@ -148,7 +164,7 @@ class BaselineTests(unittest.TestCase):
                         self.assertEqual("Python", steps[steps.index(node[0]) - 1]["name"])
                     else:
                         self.assertEqual([], node)
-        self.assertEqual({"web", "admin"}, {
+        self.assertEqual({"web", "admin", "contracts"}, {
             repo for repo, profile in generator.PROFILES["repositories"].items() if "node" in profile
         })
 
@@ -174,6 +190,7 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual({"NEXT_TELEMETRY_DISABLED": "1"}, generator.PROFILES["repositories"]["web"]["env"])
         self.assertEqual(30, generator.PROFILES["repositories"]["api"]["timeout_minutes"])
         self.assertEqual(30, generator.PROFILES["repositories"]["android"]["timeout_minutes"])
+        self.assertEqual(30, generator.PROFILES["repositories"]["contracts"]["timeout_minutes"])
 
     def test_ignore_attributes_and_guide_render_from_profile(self):
         for repo, profile in generator.PROFILES["repositories"].items():
@@ -195,8 +212,13 @@ class BaselineTests(unittest.TestCase):
         self.assertIn("Install Python 3.14, Git, and Node 24.14.0 (see `.nvmrc`), then run:", web["CONTRIBUTING.md"])
         self.assertIn("Install Python 3.14, Git, and JDK 21, then run:", generator.artifacts("api")["CONTRIBUTING.md"])
         self.assertIn("Install Python 3.14, Git, then run:", generator.artifacts("infra")["CONTRIBUTING.md"])
+        contracts = generator.artifacts("contracts")
+        self.assertIn("Install Python 3.14, Git, Node 24.14.0 (see `.nvmrc`), and JDK 21, then run:",
+                      contracts["CONTRIBUTING.md"])
         self.assertTrue(web[".gitignore"].endswith("next-env.d.ts\n*.tsbuildinfo\n"))
+        self.assertTrue(contracts[".gitignore"].endswith(".DS_Store\n.toolchain/\n.kotlin/\n.mypy_cache/\n*.tsbuildinfo\n"))
         self.assertTrue(generator.artifacts("android")[".gitattributes"].endswith("gradlew.bat text eol=crlf\n"))
+        self.assertTrue(contracts[".gitattributes"].endswith("*.jar binary\nsmoke/kotlin/gradlew.bat text eol=crlf\n"))
 
     def test_android_sdk_and_wrapper_steps_only_for_android(self):
         for repo, profile in generator.PROFILES["repositories"].items():
@@ -343,6 +365,29 @@ class BaselineTests(unittest.TestCase):
                 self.assertEqual(("set", "crlf") if crlf and ignorecase == "true" else ("auto", "lf"),
                                  (attributes["GRADLEW.BAT", "text"], attributes["GRADLEW.BAT", "eol"]))
 
+    def test_contracts_attribute_line_applies_only_to_its_literal_path(self):
+        # A pattern containing a slash is anchored to the repository root, so the requested
+        # `smoke/kotlin/gradlew.bat text eol=crlf` cannot reach a root or nested gradlew.bat, and the
+        # shared jar rule still covers the smoke consumer's wrapper jar.
+        paths = ["smoke/kotlin/gradlew.bat", "gradlew.bat", "other/smoke/kotlin/gradlew.bat",
+                 "smoke/kotlin/gradlew", "smoke/kotlin/gradle/wrapper/gradle-wrapper.jar", "spec/openapi.yaml"]
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            (Path(tmp) / ".gitattributes").write_text(generator.artifacts("contracts")[".gitattributes"], encoding="utf-8")
+            result = subprocess.run(
+                ["git", "-C", tmp, "check-attr", "text", "eol", "binary", "--", *paths],
+                capture_output=True, text=True, encoding="utf-8", check=True)
+            attributes = {}
+            for line in result.stdout.splitlines():
+                path, attribute, value = line.rsplit(": ", 2)
+                attributes[path, attribute] = value
+        names = ("text", "eol", "binary")
+        self.assertEqual(("set", "crlf", "unspecified"), tuple(attributes["smoke/kotlin/gradlew.bat", n] for n in names))
+        for path in ("gradlew.bat", "other/smoke/kotlin/gradlew.bat", "smoke/kotlin/gradlew", "spec/openapi.yaml"):
+            self.assertEqual(("auto", "lf", "unspecified"), tuple(attributes[path, n] for n in names), path)
+        self.assertEqual(("unset", "lf", "set"),
+                         tuple(attributes["smoke/kotlin/gradle/wrapper/gradle-wrapper.jar", n] for n in names))
+
     def test_expression_opener_never_reaches_a_generated_workflow(self):
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):
@@ -371,7 +416,7 @@ class BaselineTests(unittest.TestCase):
                 self.assertEqual([], generated_checker.check(files))
 
     def test_generator_drift_and_determinism(self):
-        for repo in ("web", "android"):
+        for repo in ("web", "android", "contracts"):
             with self.subTest(repo=repo), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 generator.generate(repo, root)
@@ -527,18 +572,17 @@ class BaselineTests(unittest.TestCase):
         self.assertFalse(any("Sensitive file" in item for item in checker.check({"README.md": b"x", ".env.example": b"x"})))
 
     def test_unimplemented_repositories_are_explicit(self):
-        self.assertIn("foundation only", generator.PROFILES["repositories"]["contracts"]["state"])
         # Words that would turn a scope statement into an acceptance or release claim.
         claims = re.compile(
             r"\b(accept(?:ed|s)?|approv(?:ed|al)|production[- ]ready|complete[ds]?|finished|"
             r"released?|shipped|live|verified|passe[sd]|done|stable|ready)\b", re.IGNORECASE)
-        # Every application repository names the origin of its scaffold: the Sprint 01 issue, or
-        # for api the reviewed initial import recorded in PUBLIC_SETUP.md. The state may describe
-        # the scaffold but must still say what is not implemented and must not read as acceptance.
+        # Every repository with a scaffold names its origin: the Sprint 01 issue, or for api the
+        # reviewed initial import recorded in PUBLIC_SETUP.md. The state may describe the scaffold
+        # but must still say what is not implemented and must not read as acceptance.
         scaffolds = {"admin": "PenniLogic/admin#1", "ai-service": "PenniLogic/ai-service#1",
                      "android": "PenniLogic/android#1", "web": "PenniLogic/web#1",
-                     "api": "from the reviewed initial import"}
-        other = {".github", "contracts", "docs", "infra"}
+                     "contracts": "PenniLogic/contracts#2", "api": "from the reviewed initial import"}
+        other = {".github", "docs", "infra"}
         self.assertEqual(set(generator.PROFILES["repositories"]), set(scaffolds) | other)
         for repo, origin in scaffolds.items():
             state = generator.PROFILES["repositories"][repo]["state"]
@@ -566,6 +610,52 @@ class BaselineTests(unittest.TestCase):
         self.assertTrue(steps[-1]["run"].endswith("\npython -m unittest discover -s scripts/tests"))
         self.assertTrue((HERE.parent / "LOCAL_INFRASTRUCTURE.md").is_file())
         self.assertTrue((HERE.parent / "scripts/tests").is_dir())
+
+    def test_contracts_profile_matches_its_generated_setup_request(self):
+        # Every value is copied from PenniLogic/contracts#2 comment 5905425858; nothing is added.
+        profile = generator.PROFILES["repositories"]["contracts"]
+        self.assertEqual({
+            "id": 1394134505, "purpose": "Versioned API contracts and shared schemas", "state": CONTRACTS_STATE,
+            "node": "24.14.0", "java": "21", "timeout_minutes": 30, "developer_guide": "docs/development.md",
+            "ignore": [".toolchain/", ".kotlin/", ".mypy_cache/", "*.tsbuildinfo"],
+            "attributes": ["smoke/kotlin/gradlew.bat text eol=crlf"],
+            "install": ["npm ci --no-audit --no-fund", "python scripts/toolchain.py install"],
+            "commands": CONTRACTS_COMMANDS,
+        }, profile)
+        # Publication is versioned git tags plus consumer-side generation, performed outside CI: no
+        # publish, release, registry or federated-credential step enters the profile, and the token
+        # stays read-only.
+        for line in profile["commands"] + profile["install"]:
+            self.assertNotRegex(line, r"(?i)publish|release|registry|id-token|oidc|docker push|gh ")
+        # Kotlin, TypeScript and Python are generated together, then smoke-tested in the requested order.
+        smoke = [line for line in profile["commands"] if line.startswith("python scripts/smoke.py ")]
+        self.assertEqual(["python scripts/smoke.py python", "python scripts/smoke.py typescript",
+                          "python scripts/smoke.py kotlin"], smoke)
+        self.assertLess(profile["commands"].index("python scripts/generate_clients.py --verify"),
+                        profile["commands"].index(smoke[0]))
+        for setup, job_name in ((False, "ci"), (True, "copilot-setup-steps")):
+            workflow = json.loads(generator.workflow("contracts", setup=setup))
+            self.assertEqual({"contents": "read"}, workflow["permissions"])
+            job = workflow["jobs"][job_name]
+            self.assertNotIn("permissions", job)
+            self.assertNotIn("env", job)
+            self.assertEqual(30, job["timeout-minutes"])
+            names = [step["name"] for step in job["steps"]]
+            if setup:
+                self.assertEqual(["Checkout", "Python", "Node", "JDK", "Verify repository", "Install dependencies",
+                                  "Install managed hook"], names)
+                self.assertEqual("npm ci --no-audit --no-fund\npython scripts/toolchain.py install", job["steps"][5]["run"])
+            else:
+                self.assertEqual(["Checkout", "Python", "Node", "JDK", "Run checks"], names)
+            # The breaking-change baseline is read from already-fetched v* tags, so the full history stays.
+            self.assertEqual({"persist-credentials": False, "fetch-depth": 0}, job["steps"][0]["with"])
+            self.assertEqual({"node-version-file": ".nvmrc"}, job["steps"][2]["with"])
+            self.assertEqual({"distribution": "temurin", "java-version": "21"}, job["steps"][3]["with"])
+        output = generator.artifacts("contracts")
+        self.assertEqual(CONTRACTS_COMMANDS, json.loads(output[".github/agent-policy.json"])["commands"])
+        for name in ("README.md", "AGENTS.md", "CONTRIBUTING.md"):
+            self.assertIn(CONTRACTS_STATE, output[name])
+            self.assertIn("[docs/development.md](docs/development.md)", output[name])
 
 
 if __name__ == "__main__":

@@ -28,8 +28,26 @@
     "contracts": {
       "id": 1394134505,
       "purpose": "Versioned API contracts and shared schemas",
-      "state": "Repository foundation only. Contract generation and publishing are not implemented.",
-      "commands": ["python scripts/check_repository.py"]
+      "state": "Repository foundation plus the OpenAPI lint, deterministic client-generation, breaking-change and tag-publication scaffold from PenniLogic/contracts#2; no product endpoints, registry publication credentials or published version tags are implemented.",
+      "node": "24.14.0",
+      "java": "21",
+      "timeout_minutes": 30,
+      "developer_guide": "docs/development.md",
+      "ignore": [".toolchain/", ".kotlin/", ".mypy_cache/", "*.tsbuildinfo"],
+      "attributes": ["smoke/kotlin/gradlew.bat text eol=crlf"],
+      "install": ["npm ci --no-audit --no-fund", "python scripts/toolchain.py install"],
+      "commands": [
+        "python scripts/check_repository.py",
+        "npm ci --no-audit --no-fund",
+        "python scripts/toolchain.py install",
+        "python scripts/lint_spec.py",
+        "python scripts/check_breaking_changes.py",
+        "python scripts/generate_clients.py --verify",
+        "python scripts/smoke.py python",
+        "python scripts/smoke.py typescript",
+        "python scripts/smoke.py kotlin",
+        "python -m unittest discover -s scripts/tests -p \"test_*.py\""
+      ]
     },
     "api": {
       "id": 1394134582,
