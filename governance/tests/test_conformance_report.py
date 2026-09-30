@@ -464,6 +464,21 @@ class OrchestratorTests(support.ConsumerCase):
         self.assertIn("RuntimeError: unexpected", document["failures"][0])
         self.assertTrue((output / "conformance-summary.md").is_file())
 
+    def test_unconfirmed_probe_exit_aborts_repository_inspection_before_any_later_execution(self):
+        head = support.git(self.root, "rev-parse", "HEAD").strip()
+        client = support.fake_client_for(self.profile_name, self.profile["id"], head)
+        registry_document = run.registry_module.load_registry()
+        calls = []
+
+        def unsafe(command, cwd):
+            calls.append(command)
+            raise defects.UnsafeProcessTreeError("synthetic teardown not confirmed")
+
+        with self.assertRaisesRegex(defects.UnsafeProcessTreeError, "teardown not confirmed"):
+            run.inspect_repository(self.profile_name, self.profile, support.generator, client, registry_document,
+                                   self.scratch, support.GOVERNANCE.parent, unsafe, ("python",))
+        self.assertEqual(1, len(calls), "do not run another checker or plant a defect after unsafe teardown")
+
 
 if __name__ == "__main__":
     unittest.main()

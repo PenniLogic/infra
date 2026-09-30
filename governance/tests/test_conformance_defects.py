@@ -6,6 +6,7 @@ toolchains are recorded as not exercised, and probe processes never inherit cred
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 import conformance_support as support
-from conformance import defects
+from conformance import defects, report
 
 
 def context_for(case):
@@ -104,6 +105,58 @@ class PlanterTests(support.ConsumerCase):
         self.assertIsNone(planter._aside)
         self.assertEqual([], planter._undo)
         self.assertEqual([], defects.git_status(self.root))
+
+    def test_backup_cleanup_failure_retains_its_location_and_the_first_undo_error(self):
+        before = support.tree_digest(self.root)
+        planter = defects.Planter(self.root)
+        planter.move_aside("README.md")
+        aside = planter._aside
+        first = PermissionError("first undo failure")
+        planter._undo.append(mock.Mock(side_effect=first))
+        original = shutil.rmtree
+
+        def locked(path, *args, **kwargs):
+            if str(path) == aside:
+                if kwargs.get("ignore_errors"):
+                    return None
+                raise PermissionError("backup directory locked")
+            return original(path, *args, **kwargs)
+
+        try:
+            with mock.patch.object(defects.shutil, "rmtree", locked):
+                with self.assertRaises(PermissionError) as caught:
+                    planter.restore()
+            self.assertIs(first, caught.exception)
+            self.assertEqual(before, support.tree_digest(self.root))
+            self.assertEqual(aside, planter._aside)
+            self.assertIsInstance(planter.cleanup_error, PermissionError)
+            self.assertTrue(Path(aside).is_dir())
+            self.assertEqual([], planter._undo)
+            planter.restore()
+            self.assertIsNone(planter._aside)
+            self.assertIsNone(planter.cleanup_error)
+        finally:
+            if Path(aside).exists():
+                original(aside)
+
+    def test_a_failed_file_undo_never_deletes_its_only_backup_copy(self):
+        planter = defects.Planter(self.root)
+        original = (self.root / "README.md").read_bytes()
+        planter.move_aside("README.md")
+        aside = Path(planter._aside)
+        try:
+            with mock.patch.object(defects.shutil, "move", side_effect=PermissionError("restore locked")):
+                with self.assertRaisesRegex(PermissionError, "restore locked"):
+                    planter.restore()
+            self.assertFalse((self.root / "README.md").exists())
+            backup = next(aside.iterdir())
+            self.assertEqual(original, backup.read_bytes())
+            self.assertEqual([{"file": backup.name, "restore_to": "README.md"}],
+                             planter.cleanup_state("restore failed")["backups"])
+            self.assertIsNotNone(planter.cleanup_error)
+            shutil.move(str(backup), str(self.root / "README.md"))
+        finally:
+            shutil.rmtree(aside)
 
 
 class RealFixtureTests(unittest.TestCase):
@@ -222,6 +275,97 @@ class FakeRunnerTests(support.ConsumerCase):
         # The planted file is still there because the (patched) restore never ran; clean it for the case teardown.
         self.assertTrue(record.get("unrestored_paths"))
         (self.root / "scripts/tests/test_planted_conformance_defect.py").unlink()
+
+    def test_backup_cleanup_failure_is_an_error_even_when_the_consumer_tree_is_restored(self):
+        before = support.tree_digest(self.root)
+        owned = {}
+        original = shutil.rmtree
+
+        def plant(context, planter):
+            planter.move_aside("README.md")
+            owned["aside"] = planter._aside
+
+        def locked(path, *args, **kwargs):
+            if str(path) == owned.get("aside"):
+                if kwargs.get("ignore_errors"):
+                    return None
+                raise PermissionError("backup directory locked")
+            return original(path, *args, **kwargs)
+
+        item = defects.Fixture("cleanup-failure", "python", "python", "synthetic cleanup refusal",
+                               lambda context: True, plant,
+                               lambda context: [defects.Probe("refusal", "unused", expect_text="refused")])
+        try:
+            with mock.patch.object(defects.shutil, "rmtree", locked):
+                records = defects.run_fixtures(context_for(self), fixtures=(item, fixture("python-test-failing")),
+                                               runner=lambda command, cwd: defects.Result(1, "refused"))
+            self.assertEqual(before, support.tree_digest(self.root))
+            self.assertEqual([], defects.git_status(self.root))
+            self.assertEqual(1, len(records), "cleanup failure stops further planting")
+            record = records[0]
+            self.assertEqual("error", record["outcome"])
+            self.assertIn("backup cleanup failed: PermissionError", record["reason"])
+            self.assertEqual({"directory": owned["aside"], "error": "PermissionError"}, record["cleanup"])
+            self.assertTrue(Path(owned["aside"]).is_dir())
+            replacements = report.path_replacements(self.scratch, support.GOVERNANCE.parent)
+            redacted = report.redact(record, replacements)
+            self.assertEqual([], report.redaction_survivors(redacted, replacements))
+            self.assertIn("<tmp>", redacted["cleanup"]["directory"])
+        finally:
+            if owned.get("aside") and Path(owned["aside"]).exists():
+                original(owned["aside"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows file sharing")
+    def test_a_real_locked_backup_directory_cannot_be_reported_as_proved(self):
+        before = support.tree_digest(self.root)
+        owned = {}
+
+        def plant(context, planter):
+            planter.move_aside("README.md")
+            owned["aside"] = Path(planter._aside)
+            owned["lock"] = (owned["aside"] / "locked.tmp").open("w+b")
+
+        item = defects.Fixture("real-locked-backup", "python", "python", "real Windows cleanup refusal",
+                               lambda context: True, plant,
+                               lambda context: [defects.Probe("refusal", "unused", expect_text="refused")])
+        try:
+            record = defects.run_fixture(item, context_for(self), runner=lambda command, cwd: defects.Result(1, "refused"))
+            self.assertEqual(before, support.tree_digest(self.root))
+            self.assertEqual([], defects.git_status(self.root))
+            self.assertEqual("error", record["outcome"])
+            self.assertIn("backup cleanup failed: PermissionError", record["reason"])
+            self.assertEqual(str(owned["aside"]), record["cleanup"]["directory"])
+            self.assertTrue(owned["aside"].exists())
+        finally:
+            if owned.get("lock") is not None:
+                owned["lock"].close()
+            if owned.get("aside") is not None:
+                shutil.rmtree(owned["aside"])
+
+    def test_unconfirmed_process_exit_defers_restore_and_stops_further_fixtures(self):
+        owned = {}
+
+        def plant(context, planter):
+            owned["planter"] = planter
+            planter.move_aside("README.md")
+
+        def unsafe(command, cwd):
+            raise defects.UnsafeProcessTreeError("synthetic teardown not confirmed")
+
+        item = defects.Fixture("unsafe-lifetime", "python", "python", "synthetic unconfirmed process exit",
+                               lambda context: True, plant, lambda context: [defects.Probe("refusal", "unused")])
+        try:
+            records = defects.run_fixtures(context_for(self), fixtures=(item, fixture("python-test-failing")), runner=unsafe)
+            self.assertEqual(1, len(records))
+            self.assertEqual("error", records[0]["outcome"])
+            self.assertIn("synthetic teardown not confirmed", records[0]["reason"])
+            self.assertTrue(records[0]["restoration_deferred"])
+            self.assertFalse((self.root / "README.md").exists(), "never restore while an owned consumer may still run")
+            self.assertEqual("README.md", records[0]["cleanup"]["backups"][0]["restore_to"])
+            self.assertTrue(owned["planter"]._undo)
+        finally:
+            owned["planter"].restore()
+        self.assertEqual([], defects.git_status(self.root))
 
     def test_consumer_self_test_is_recorded_as_consumer_evidence_never_as_proved(self):
         """Q7: the android self-test is a consumer-owned command; its exit 0 is the consumer's claim."""

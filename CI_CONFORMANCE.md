@@ -47,7 +47,28 @@ Do not reintroduce reusable-workflow adoption.
 
 It never pushes, comments, or writes to any repository. The harness refuses to plant into a tree that
 `git status` does not report clean, and a tree that is not clean again after restoration is an `error`,
-which fails the job and stops further planting in that repository.
+which fails the job and stops further planting in that repository. Backup-directory cleanup is checked
+separately from restoring consumer files: all filesystem undos are attempted, the first error is
+preserved, and a failed backup deletion is an `error` even when the consumer tree is byte-identical and
+clean. The record's `cleanup` names the redacted backup location and error; any file whose undo failed
+is retained there with a `file` / `restore_to` recovery mapping, never deleted as leftover scratch.
+Cleanup failure stops further planting in that repository.
+
+On Windows each probe reuses infra's `scripts/bootstrap.py` Job Object, process-object exit waits and
+bounded pipe-release helpers. An isolated trusted Python launcher (`-I -S`) waits for one release byte
+on stdin; the parent assigns it to the kill-on-close job **before** releasing any consumer command. The
+consumer and all descendants are therefore job members from birth. A timeout terminates the whole job,
+then allows at most five seconds for process-object exit confirmation and captured-pipe release.
+Successful commands also end and confirm the owned lifetime, including background descendants whose
+output was redirected. Probe stdin is closed; the reviewed profile commands are non-interactive.
+
+If ownership cannot be established, no consumer command is released and the idle launcher is stopped.
+If tree exit, job membership or pipe release cannot be confirmed, the probe fails explicitly instead of
+claiming a bounded successful teardown. Repository inspection stops; a planted fixture records
+`restoration_deferred` and retains its backups rather than restoring files a consumer might still hold.
+The JSON includes the redacted failure/recovery details. Confirm process exit before recovering or
+discarding that scratch checkout. POSIX keeps the existing `subprocess.run` behavior and makes no
+Windows process-tree ownership claim.
 
 Every probe, and every git command on a scratch checkout, runs with `probe_environment()`
 (`governance/conformance/defects.py`): an explicit deny-list of variable names and prefixes is removed
@@ -117,6 +138,8 @@ Per repository the JSON carries `identity`, `main_sha`, `generated_baseline` (`w
 `required_checks` (`produced`, `required`, `missing`, `strict_up_to_date`, `branch_rules`, `rulesets` with
 bypass actors), `registry`, `last_main_run` (`wall_clock_seconds`, `within_budget`, `head_sha`),
 `planted_defects`, `language_coverage`, then `failures`, `warnings` and `result`.
+Probe `error` details, fixture `cleanup` locations/recovery mappings and `restoration_deferred` are
+included when applicable; all strings pass the same whole-document redaction and final self-scan.
 
 Failures (any one fails the repository and the job): repository id mismatch or unreadable API; scratch
 checkout unavailable; a generated workflow file that differs from the generator; the consumer's own
@@ -124,7 +147,8 @@ checker failing; no test step detected; no required status check on `main`; a re
 producing workflow job; no registry entry, a registry check name the workflow does not produce, or a
 `workflow_ref` that does not render the workflow on `main`; a planted defect `not_proved` or `error`; a
 red last `main` CI run; a run over the ten-minute budget for a profile whose reviewed timeout is the
-default ten minutes.
+default ten minutes. Failed backup cleanup and unconfirmed Windows probe teardown fail the row too;
+a restored consumer tree alone is not enough to prove cleanup succeeded.
 
 Warnings (recorded, not failing): stale non-workflow generated files; a ruleset that does not require an
 up-to-date branch; planted defects of a toolchain not exercised in this run; no completed `main` run

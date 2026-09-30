@@ -20,13 +20,16 @@ to a remote.
 
 import atexit
 import dataclasses
+import importlib.util
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 from conformance import steps
@@ -56,6 +59,22 @@ DENIED_PREFIXES = (
 # Tripwire behind the deny-list: a name that looks like a credential is removed even when unlisted.
 CREDENTIAL_VARIABLE = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY|_KEY$", re.IGNORECASE)
 _ISOLATION = None
+_WINDOWS_HELPERS = None
+WINDOWS_GATE = """import json
+import subprocess
+import sys
+
+if sys.stdin.buffer.read(1) != b"1":
+    sys.exit(2)
+command = json.loads(sys.argv[1])
+try:
+    result = subprocess.run(command, shell=isinstance(command, str), check=False,
+                            stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stdout)
+except OSError as error:
+    json.dump({"error": error.__class__.__name__}, sys.stderr)
+else:
+    json.dump({"exit_code": result.returncode}, sys.stderr)
+"""
 PLANTED_PYTHON_TEST = '''"""Planted by the PenniLogic conformance job; never committed."""
 
 import unittest
@@ -98,6 +117,12 @@ class Result:
     exit_code: object
     output: str
     timed_out: bool = False
+    error: str = None
+    restoration_safe: bool = True
+
+
+class UnsafeProcessTreeError(RuntimeError):
+    """The caller must retain the planted tree because process exit could not be confirmed."""
 
 
 @dataclasses.dataclass
@@ -177,9 +202,120 @@ def probe_environment(environ=None):
     return cleaned
 
 
-def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS):
-    """Run one probe command in ``cwd`` with merged output; a shell line uses the platform shell."""
+def windows_helpers():
+    """Load only infra's process-lifetime helpers, never a module from the consumer checkout."""
+    global _WINDOWS_HELPERS
+    if _WINDOWS_HELPERS is None:
+        path = Path(__file__).resolve().parents[2] / "scripts" / "bootstrap.py"
+        spec = importlib.util.spec_from_file_location("conformance_bootstrap", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _WINDOWS_HELPERS = module
+    return _WINDOWS_HELPERS
+
+
+def _stop_unowned_gate(helpers, process):
+    deadline = time.monotonic() + helpers.TEARDOWN_SECONDS
     try:
+        process.kill()
+        released = helpers.release_pipes(process, max(0.0, deadline - time.monotonic()))
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        return released
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _finish_windows_tree(helpers, job, process):
+    deadline = time.monotonic() + helpers.TEARDOWN_SECONDS
+    fallback_seconds = min(0.25, helpers.TEARDOWN_SECONDS / 2)
+    try:
+        helpers.terminate_tree(job, process, deadline - fallback_seconds,
+                               require_exit=True, label="probe")
+    except helpers.ProcessTeardownError as error:
+        detail = str(error)
+    except (OSError, RuntimeError) as error:
+        detail = f"Windows process-tree teardown failed: {error.__class__.__name__}"
+    else:
+        return None
+    # Kill-on-close is the last resort, not confirmation; reserve time to reap the launcher without
+    # extending the same teardown deadline or blocking on a reader whose pipe was not released.
+    job.close()
+    try:
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        helpers.release_pipes(process, max(0.0, deadline - time.monotonic()))
+    except (OSError, subprocess.TimeoutExpired):
+        detail += "; launcher exit or pipe release still unconfirmed"
+    return detail
+
+
+def _windows_runner(command, cwd, environ, timeout):
+    helpers = windows_helpers()
+    try:
+        job = helpers.WindowsJob()
+    except helpers.ProcessOwnershipError as error:
+        detail = f"Windows process ownership failed: {error}; no consumer was started"
+        return Result(None, detail, error=detail)
+    with job:
+        process, owned = None, False
+        try:
+            # Isolated trusted Python waits for input; consumer code cannot start until job assignment.
+            process = subprocess.Popen([sys.executable, "-I", "-S", "-u", "-c", WINDOWS_GATE, json.dumps(command)],
+                                       cwd=str(cwd), env=environ, stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            job.assign(process.pid)
+            owned = True
+            output, control = process.communicate(b"1", timeout=timeout)
+        except helpers.ProcessOwnershipError as error:
+            stopped = process is None or _stop_unowned_gate(helpers, process)
+            detail = f"Windows process ownership failed: {error}"
+            if not stopped:
+                detail += "; idle launcher exit or pipe release not confirmed"
+            return Result(None, detail, error=detail, restoration_safe=stopped)
+        except subprocess.TimeoutExpired as expired:
+            detail = _finish_windows_tree(helpers, job, process)
+            # Windows reader threads populate their buffers only at EOF; after confirmed release,
+            # collect the cached output without an additional drain wait.
+            output = process.communicate(timeout=0)[0] if detail is None else expired.output or b""
+            output = output.decode("utf-8", errors="replace")
+            return Result(None, output[-OUTPUT_TAIL:], timed_out=True, error=detail,
+                          restoration_safe=detail is None)
+        except OSError as error:
+            stopped = (_finish_windows_tree(helpers, job, process) is None if owned else
+                       process is None or _stop_unowned_gate(helpers, process))
+            detail = f"{error.__class__.__name__}: command could not start"
+            if not stopped:
+                detail += "; process-tree teardown not confirmed"
+            return Result(None, detail, error=detail, restoration_safe=stopped)
+        except BaseException:
+            stopped = (_finish_windows_tree(helpers, job, process) is None if owned else
+                       process is None or _stop_unowned_gate(helpers, process))
+            if not stopped:
+                raise UnsafeProcessTreeError("interrupted probe process-tree exit not confirmed") from None
+            raise
+        detail = _finish_windows_tree(helpers, job, process)
+        output = output.decode("utf-8", errors="replace")[-OUTPUT_TAIL:]
+        if detail is not None:
+            return Result(None, output, error=detail, restoration_safe=False)
+        try:
+            status = json.loads(control.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return Result(None, output, error="isolated probe gate returned an invalid status")
+        if not isinstance(status, dict) or ("error" not in status and type(status.get("exit_code")) is not int):
+            return Result(None, output, error="isolated probe gate returned an invalid status")
+        if "error" in status:
+            detail = f"{status['error']}: command could not start"
+            return Result(None, detail, error=detail)
+        return Result(status["exit_code"], output)
+
+
+def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS):
+    """Run a probe with merged output; on Windows own its lifetime before releasing consumer code."""
+    try:
+        if os.name == "nt":
+            result = _windows_runner(command, cwd, probe_environment(), timeout)
+            if not result.restoration_safe:
+                raise UnsafeProcessTreeError(result.error or "probe process-tree exit not confirmed")
+            return result
         completed = subprocess.run(
             command, cwd=str(cwd), shell=isinstance(command, str), env=probe_environment(), check=False,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout,
@@ -188,7 +324,8 @@ def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS):
         output = (expired.output or b"").decode("utf-8", errors="replace")
         return Result(None, output[-OUTPUT_TAIL:], timed_out=True)
     except OSError as error:
-        return Result(None, f"{error.__class__.__name__}: command could not start")
+        detail = f"{error.__class__.__name__}: command could not start"
+        return Result(None, detail, error=detail)
     return Result(completed.returncode, completed.stdout.decode("utf-8", errors="replace")[-OUTPUT_TAIL:])
 
 
@@ -207,6 +344,8 @@ class Planter:
         self.root = root
         self._undo = []
         self._aside = None
+        self._backups = {}
+        self.cleanup_error = None
 
     def _path(self, relative):
         path = self.root / relative
@@ -228,7 +367,7 @@ class Planter:
                 parent = parent.parent
             for directory in reversed(created):
                 directory.mkdir()
-                self._undo.append(lambda d=directory: shutil.rmtree(d, ignore_errors=True))
+                self._undo.append(lambda d=directory: shutil.rmtree(d))
         path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
 
     def create(self, relative, content):
@@ -258,13 +397,27 @@ class Planter:
             self._aside = tempfile.mkdtemp(prefix="pennilogic-conformance-aside-")
         target = os.path.join(self._aside, uuid.uuid4().hex)
         shutil.move(str(path), target)
-        self._undo.append(lambda: shutil.move(target, str(path)))
+        self._backups[target] = relative
+
+        def undo():
+            shutil.move(target, str(path))
+            del self._backups[target]
+
+        self._undo.append(undo)
+
+    def cleanup_state(self, error):
+        state = {"directory": self._aside, "error": error}
+        if self._backups:
+            state["backups"] = [{"file": Path(path).name, "restore_to": str(relative)}
+                                for path, relative in self._backups.items()]
+        return state
 
     def restore(self):
         """Undo every recorded change in reverse order; a step that raises does not stop the others,
-        the aside directory is removed either way, and the first error is re-raised afterwards so the
-        harness records the fixture as ``error`` with the paths ``git status`` still reports."""
+        backup cleanup is attempted without suppressing errors, and the first error is re-raised.
+        A failed cleanup retains its location and error independently of consumer-file restoration."""
         first = None
+        self.cleanup_error = None
         while self._undo:
             step = self._undo.pop()
             try:
@@ -272,8 +425,16 @@ class Planter:
             except OSError as error:
                 first = first if first is not None else error
         if self._aside is not None:
-            shutil.rmtree(self._aside, ignore_errors=True)
-            self._aside = None
+            try:
+                if self._backups:
+                    os.rmdir(self._aside)  # never delete the only copy of a file whose undo failed
+                else:
+                    shutil.rmtree(self._aside)
+            except OSError as error:
+                self.cleanup_error = error
+                first = first if first is not None else error
+            else:
+                self._aside = None
         if first is not None:
             raise first
 
@@ -576,7 +737,7 @@ def applicable_fixtures(context, fixtures=FIXTURES):
 
 def probe_outcome(probe, result):
     """``as_expected``/``unexpected`` for a required probe, ``detected``/``not_detected`` for an observation."""
-    if result.timed_out or result.exit_code is None:
+    if result.error or not result.restoration_safe or result.timed_out or result.exit_code is None:
         return "error"
     failed = result.exit_code != 0
     matched = probe.expect_text is None or probe.expect_text in result.output
@@ -588,13 +749,18 @@ def probe_outcome(probe, result):
 
 
 def _probe_record(probe, result):
-    return {
+    record = {
         "label": probe.label, "command": probe.command, "expect": probe.expect,
         "expect_text": probe.expect_text, "detail_text": probe.detail_text, "note": probe.note,
         "exit_code": result.exit_code, "timed_out": result.timed_out, "outcome": probe_outcome(probe, result),
         "detail_surfaced": None if probe.detail_text is None else probe.detail_text in result.output,
         "output_tail": result.output[-RECORDED_TAIL:],
     }
+    if result.error:
+        record["error"] = result.error
+    if not result.restoration_safe:
+        record["restoration_safe"] = False
+    return record
 
 
 def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXERCISE, status=git_status):
@@ -624,22 +790,44 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
     for command in (fixture.prepare(context) if fixture.prepare else []):
         result = runner(command, context.root)
         record["probes"].append(_probe_record(Probe(f"prepare: {command}", command, expect="pass"), result))
-        if result.exit_code != 0:
-            record["outcome"], record["reason"] = "error", "prepare command failed"
+        if result.error or not result.restoration_safe or result.exit_code != 0:
+            record["outcome"], record["reason"] = "error", result.error or "prepare command failed"
+            if not result.restoration_safe:
+                record["restoration_deferred"] = True
             return record
     planter = Planter(context.root)
+    restoration_safe = True
     try:
         fixture.plant(context, planter)
         for probe in fixture.probes(context):
-            record["probes"].append(_probe_record(probe, runner(probe.command, context.root)))
+            result = runner(probe.command, context.root)
+            record["probes"].append(_probe_record(probe, result))
+            restoration_safe = result.restoration_safe
+            if not restoration_safe or result.error or result.exit_code is None:
+                break
+    except UnsafeProcessTreeError as error:
+        restoration_safe = False
+        record["outcome"], record["reason"] = "error", str(error)
     except (OSError, ValueError, KeyError, TypeError) as error:
         record["outcome"], record["reason"] = "error", f"planting failed: {error.__class__.__name__}: {error}"
     finally:
-        try:
-            planter.restore()
-        except OSError as error:
-            # The status check below then reports the paths that are still wrong.
-            record["outcome"], record["reason"] = "error", f"restore failed: {error.__class__.__name__}"
+        if restoration_safe:
+            try:
+                planter.restore()
+            except OSError as error:
+                record["outcome"], record["reason"] = "error", f"restore failed: {error.__class__.__name__}"
+                if planter.cleanup_error is not None:
+                    record["reason"] += f"; backup cleanup failed: {planter.cleanup_error.__class__.__name__}"
+                    record["cleanup"] = planter.cleanup_state(planter.cleanup_error.__class__.__name__)
+        else:
+            errors = [probe["error"] for probe in record["probes"] if probe.get("error")]
+            detail = record["reason"] or "; ".join(errors) or "probe process-tree exit not confirmed"
+            record["outcome"], record["reason"] = "error", detail + "; scratch restoration deferred"
+            record["restoration_deferred"] = True
+            if planter._aside is not None:
+                record["cleanup"] = planter.cleanup_state("restoration deferred")
+    if record.get("restoration_deferred"):
+        return record
     try:
         after = status(context.root)
     except RuntimeError as error:
@@ -655,7 +843,8 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
         return record
     required = [probe for probe in record["probes"] if probe["expect"] in ("fail", "pass", "consumer")]
     if any(probe["outcome"] == "error" for probe in record["probes"]):
-        record["outcome"], record["reason"] = "error", "a probe timed out or could not start"
+        errors = [probe["error"] for probe in record["probes"] if probe.get("error")]
+        record["outcome"], record["reason"] = "error", "; ".join(errors) or "a probe timed out or could not start"
     elif required and all(probe["outcome"] == "as_expected" for probe in required):
         # A fixture whose only required probes are consumer-owned commands proves nothing by itself.
         planted = any(probe["expect"] in ("fail", "pass") for probe in required)
@@ -673,8 +862,8 @@ def run_fixtures(context, runner=subprocess_runner, exercise=DEFAULT_EXERCISE, f
     for fixture in applicable_fixtures(context, fixtures):
         record = run_fixture(fixture, context, runner, exercise, status)
         records.append(record)
-        if record.get("unrestored_paths"):
-            break  # the tree is no longer trustworthy; later fixtures would plant on top of the damage
+        if record.get("unrestored_paths") or record.get("cleanup") or record.get("restoration_deferred"):
+            break
     return records
 
 
