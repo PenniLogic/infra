@@ -331,6 +331,10 @@ class ProcessOwnershipError(OSError):
     command_started = False
 
 
+class ProcessTeardownError(OSError):
+    """An owned command tree or its captured pipes could not be confirmed released."""
+
+
 if os.name == "nt":
     import ctypes
     from ctypes import wintypes
@@ -558,22 +562,28 @@ def release_pipes(process, timeout):
         return False
 
 
-def terminate_tree(job, process, deadline):
+def terminate_tree(job, process, deadline, *, require_exit=False, label="docker"):
     """After a timeout: terminate the whole tree, then wait until ``deadline`` (TEARDOWN_SECONDS after the
     timeout) for every process that was in the job to exit (its process object is signaled, see
     :class:`ProcessExits`) and for the output pipes to be released. Returns a sentence for the error
-    message saying exactly what was confirmed. The teardown wait only observes the exit; it is never
+    message saying exactly what was confirmed. With ``require_exit`` an incomplete teardown raises
+    instead, so a caller cannot restore files while a consumer may still hold them. The teardown wait
+    only observes the exit; it is never
     extra command time (the return lands a fraction of a second after the deadline: process start-up,
     the ``communicate`` join and the wait granularity)."""
     with ProcessExits() as exits:  # the pins are released on every exit from this block, including a failing kill
-        exits.add(job.process_ids() or [])  # pin the members before the kill so their exit can be awaited
+        members = job.process_ids()
+        observed = members is not None
+        exits.add(members or [])  # pin the members before the kill so their exit can be awaited
         terminated = job.terminate()
         if not terminated:
             process.kill()  # at least docker itself, as `subprocess.run` would
         # A process created in the microseconds between the snapshot and the kill was terminated too;
         # await it as well while the job still lists it.
         while time.monotonic() < deadline:
-            late = [pid for pid in job.process_ids() or [] if pid not in exits.handles and pid not in exits.gone
+            members = job.process_ids()
+            observed = observed and members is not None
+            late = [pid for pid in members or [] if pid not in exits.handles and pid not in exits.gone
                     and pid not in exits.unopenable]
             if not late:
                 break
@@ -582,20 +592,25 @@ def terminate_tree(job, process, deadline):
         seen = exits.seen
         exited = exits.wait(max(0.0, deadline - time.monotonic()))
     active = job.active_processes()
-    if terminated and released and seen and exited == seen and active == 0:
+    observable = observed or not require_exit
+    if observable and terminated and released and seen and exited == seen and active == 0:
         return (f"Its whole process tree was terminated and has exited ({seen} process{'' if seen == 1 else 'es'},"
                 " output released).")
-    if terminated and released and not seen and active == 0:
+    if observable and terminated and released and not seen and active == 0:
         # Only possible when the last member exited in the moment between the timeout and the snapshot.
         return ("Its whole process tree was terminated; the job listed no process any more at the timeout,"
                 " nothing is active and the output was released.")
     awaited = f"{exited} of {seen}" if seen else "none awaited (the job listed no process at the timeout)"
-    return (
-        f"Warning: docker was terminated, but its process tree could not be confirmed gone within {TEARDOWN_SECONDS}s"
+    message = (
+        f"Warning: {label} was terminated, but its process tree could not be confirmed gone within {TEARDOWN_SECONDS}s"
         f" (job termination {'accepted' if terminated else 'refused'}; output released: {released};"
         f" processes exited: {awaited}; processes still active: {'unknown' if active is None else active});"
-        " a descendant may still be running."
+        + ("" if observed else " process list unavailable;")
+        + " a descendant may still be running."
     )
+    if require_exit:
+        raise ProcessTeardownError(message)
+    return message
 
 
 def run_docker(command, cwd, env, timeout):

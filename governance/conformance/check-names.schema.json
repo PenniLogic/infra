@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PenniLogic/infra/governance/conformance/check-names.schema.json",
+  "title": "PenniLogic required check-name registry",
+  "description": "One entry per repository of the PenniLogic organization: the native check name its generated CI workflow produces and its branch ruleset requires, the PenniLogic/infra generator commit that rendered the workflow currently on main, and the stack whose build, test and lint the workflow runs. Validated by governance/conformance/registry.py with the standard library only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "entries"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "pennilogic.infra.check-names/1"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["repo", "check_name", "workflow_ref", "language"],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Full repository name, owner/name.",
+            "pattern": "PenniLogic/[A-Za-z0-9._-]+"
+          },
+          "check_name": {
+            "type": "string",
+            "description": "The status-check context the workflow produces (the job name) and the ruleset requires.",
+            "minLength": 1,
+            "pattern": "[A-Za-z0-9][A-Za-z0-9 ._-]*"
+          },
+          "workflow_ref": {
+            "type": "string",
+            "description": "Full commit SHA of PenniLogic/infra whose generator rendered the workflow currently on the repository's main.",
+            "pattern": "[0-9a-f]{40}"
+          },
+          "language": {
+            "type": "string",
+            "description": "Stack whose real build, test and lint the generated workflow runs: kotlin (Gradle), typescript (npm), python (unittest/pytest), documentation (docs checks) or openapi (contract lint and generated-client verification).",
+            "enum": ["kotlin", "typescript", "python", "documentation", "openapi"]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "schema": "pennilogic.infra.check-names/1",
+  "entries": [
+    {
+      "repo": "PenniLogic/.github",
+      "check_name": "CI",
+      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "language": "python"
+    },
+    {
+      "repo": "PenniLogic/docs",
+      "check_name": "CI",
+      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "language": "documentation"
+    },
+    {
+      "repo": "PenniLogic/contracts",
+      "check_name": "CI",
+      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "language": "openapi"
+    },
+    {
+      "repo": "PenniLogic/api",
+      "check_name": "CI",
+      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "language": "kotlin"
+    },
+    {
+      "repo": "PenniLogic/ai-service",
+      "check_name": "CI",
+      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "language": "python"
+    },
+    {
+      "repo": "PenniLogic/android",
+      "check_name": "CI",
+      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "language": "kotlin"
+    },
+    {
+      "repo": "PenniLogic/web",
+      "check_name": "CI",
+      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "language": "typescript"
+    },
+    {
+      "repo": "PenniLogic/admin",
+      "check_name": "CI",
+      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "language": "typescript"
+    },
+    {
+      "repo": "PenniLogic/infra",
+      "check_name": "CI",
+      "workflow_ref": "56d78eebf34e368d14e6c60158a95f5b9f3ba09f",
+      "language": "python"
+    }
+  ]
+}
