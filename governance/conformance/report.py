@@ -69,6 +69,12 @@ def evaluate_repository(record, budget_minutes=10):
     """Fill ``failures``, ``warnings`` and ``result`` of one repository record in place."""
     failures, warnings = [], []
     identity = record.get("identity") or {}
+    if record.get("job_error"):
+        # Nothing else was inspected; one line says why instead of a cascade of missing sections.
+        record["failures"] = [f"the conformance job itself failed for this repository: {record['job_error']}"]
+        record["warnings"] = []
+        record["result"] = "fail"
+        return record
     if record.get("api_error"):
         failures.append(f"read-only API unavailable: {record['api_error']}")
     if identity.get("verified") is False:

@@ -242,10 +242,16 @@ def main(argv=None):
     records = []
     for name in names:
         print(f"conformance: {name}", file=sys.stderr)
-        records.append(inspect_repository(
-            name, generator.PROFILES["repositories"][name], generator, client, registry_document,
-            args.scratch, infra_root, runner, args.exercise, args.refresh,
-        ))
+        profile = generator.PROFILES["repositories"][name]
+        try:
+            record = inspect_repository(name, profile, generator, client, registry_document,
+                                        args.scratch, infra_root, runner, args.exercise, args.refresh)
+        except Exception as error:  # noqa: BLE001 - one broken repository must not lose the report of the others
+            record = {"repository": f"{generator.PROFILES['organization']}/{name}", "profile": name,
+                      "repository_id": profile["id"], "language": registry_module.expected_language(name, profile),
+                      "profile_timeout_minutes": profile.get("timeout_minutes", generator.DEFAULT_TIMEOUT_MINUTES),
+                      "job_error": f"{error.__class__.__name__}: {error}", "planted_defects": [], "language_coverage": {}}
+        records.append(record)
     not_run = []
     for toolchain in defects.TOOLCHAINS:
         if toolchain in args.exercise:

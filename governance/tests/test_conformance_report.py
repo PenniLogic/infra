@@ -68,6 +68,15 @@ class EvaluationTests(unittest.TestCase):
                 self.assertEqual("fail", record["result"])
                 self.assertTrue(any(expected in failure for failure in record["failures"]), record["failures"])
 
+    def test_a_job_error_fails_the_repository_with_one_line(self):
+        record = report.evaluate_repository({"repository": "PenniLogic/example", "profile": "example",
+                                             "job_error": "RuntimeError: boom", "planted_defects": [], "language_coverage": {}})
+        self.assertEqual("fail", record["result"])
+        self.assertEqual(["the conformance job itself failed for this repository: RuntimeError: boom"], record["failures"])
+        self.assertEqual([], record["warnings"])
+        markdown = report.render_markdown(report.build_report([record], None, "anonymous", ()))
+        self.assertIn("| PenniLogic/example |", markdown)
+
     def test_warnings_do_not_fail_the_repository(self):
         record = report.evaluate_repository(passing_record(
             profile_timeout_minutes=30,
@@ -262,6 +271,23 @@ class OrchestratorTests(support.ConsumerCase):
         self.assertEqual([], document["not_run"])  # no non-python fixture applies to the .github profile
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(2, run.main(["--scratch", str(self.scratch), "--output", str(output), "--repository", "nope"]))
+
+    def test_main_still_writes_the_report_when_one_repository_inspection_crashes(self):
+        output = self.scratch / "crash"
+
+        def crash(*args, **kwargs):
+            raise RuntimeError("unexpected")
+
+        with mock.patch.object(run.github_api, "choose_client", lambda mode: support.FakeClient({})), \
+                mock.patch.object(run, "inspect_repository", crash), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = run.main(["--scratch", str(self.scratch), "--output", str(output), "--repository", self.profile_name,
+                             "--github-client", "anonymous"])
+        self.assertEqual(1, code)
+        document = json.loads((output / "conformance-report.json").read_text(encoding="utf-8"))
+        self.assertEqual("fail", document["result"])
+        self.assertIn("RuntimeError: unexpected", document["failures"][0])
+        self.assertTrue((output / "conformance-summary.md").is_file())
 
 
 if __name__ == "__main__":

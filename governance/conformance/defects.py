@@ -569,14 +569,20 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
     except (OSError, ValueError, KeyError, TypeError) as error:
         record["outcome"], record["reason"] = "error", f"planting failed: {error.__class__.__name__}: {error}"
     finally:
-        planter.restore()
+        try:
+            planter.restore()
+        except OSError as error:
+            # The status check below then reports the paths that are still wrong.
+            record["outcome"], record["reason"] = "error", f"restore failed: {error.__class__.__name__}"
     try:
         after = status(context.root)
     except RuntimeError as error:
         record["outcome"], record["reason"] = "error", str(error)
         return record
     if after:
-        record["outcome"], record["reason"] = "error", "scratch checkout was not restored after planting"
+        detail = "scratch checkout was not restored after planting"
+        record["reason"] = f"{record['reason']}; {detail}" if record["outcome"] == "error" and record["reason"] else detail
+        record["outcome"] = "error"
         record["unrestored_paths"] = after
         return record
     if record["outcome"] == "error":

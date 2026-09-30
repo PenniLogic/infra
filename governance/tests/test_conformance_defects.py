@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import conformance_support as support
 from conformance import defects
@@ -189,6 +190,16 @@ class FakeRunnerTests(support.ConsumerCase):
                                        status=lambda root: next(statuses))
         self.assertEqual(1, len(records))
         self.assertTrue(records[0].get("unrestored_paths"))
+
+    def test_a_restore_that_raises_is_an_error_not_a_crash(self):
+        with mock.patch.object(defects.Planter, "restore", side_effect=PermissionError("locked")):
+            record = defects.run_fixture(fixture("python-test-failing"), context_for(self),
+                                         runner=lambda command, cwd: defects.Result(1, "test_planted_defect_must_fail"))
+        self.assertEqual("error", record["outcome"])
+        self.assertIn("restore failed: PermissionError", record["reason"])
+        # The planted file is still there because the (patched) restore never ran; clean it for the case teardown.
+        self.assertTrue(record.get("unrestored_paths"))
+        (self.root / "scripts/tests/test_planted_conformance_defect.py").unlink()
 
     def test_prepare_commands_run_before_planting_and_their_failure_is_an_error(self):
         web = support.generator.PROFILES["repositories"]["web"]
