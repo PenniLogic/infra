@@ -738,11 +738,20 @@ class DockerCommandTests(unittest.TestCase):
         still_referenced.close()
         finished = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True,
                                   text=True, check=True)
-        gc.collect()  # the run()'s Popen and its process handle are gone: the object is deleted, the PID free
+        gc.collect()  # the run()'s Popen and its process handle are gone: nothing of ours keeps the object alive
         released = bootstrap.ProcessExits()
         released.add([int(finished.stdout)])  # counts as exited, never as unopenable
-        self.assertEqual((0, 1, 0), (len(released.handles), len(released.gone), len(released.unopenable)))
-        self.assertEqual(1, released.wait(0))
+        # Usually the PID is `gone` (OpenProcess fails with ERROR_INVALID_PARAMETER). But an unrelated component
+        # on the host (endpoint protection, an ETW/WMI consumer) may still hold a handle to the just-exited
+        # child: its object then outlives it, OpenProcess succeeds and the PID lands in `handles` instead (about
+        # 1/300 without synthetic load, about half the rounds under a synthetic handle-holding load; infra#47).
+        # The bootstrap relies on neither classification, only on what holds in both: a released PID is never
+        # `unopenable`, and `wait` counts it as exited (a `gone` PID by definition, a pinned one because its
+        # object is signaled). A process still running would be pinned but not signaled and fail the wait.
+        classified = (len(released.handles), len(released.gone), len(released.unopenable))
+        self.assertEqual(0, len(released.unopenable), classified)
+        self.assertEqual(1, released.wait(0), classified)
+        released.close()  # drops the pin taken in the `handles` case
 
 
 class CommandLineEnvelopeTests(unittest.TestCase):
