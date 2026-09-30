@@ -512,6 +512,8 @@ class DockerCommandTests(unittest.TestCase):
         pid = self.child_pid()
         if pid and pid_alive(pid):
             terminate_pid(pid)
+            if os.name == "nt":  # let Windows release the held file before the directory is removed
+                self.wait_until(lambda: not pid_alive(pid), 2.0)
 
     def wait_until(self, predicate, seconds):
         deadline = time.monotonic() + seconds
