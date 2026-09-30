@@ -1,14 +1,20 @@
-"""Docker-free tests for scripts/bootstrap.py: env generation, validation, port diagnostics, envelope."""
+"""Docker-free tests for scripts/bootstrap.py: env generation, validation, port diagnostics, envelope,
+and the timeout regression for a `docker` command whose child outlives it (infra#37)."""
 
+import gc
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import support
 import bootstrap
@@ -291,8 +297,6 @@ class ReadinessTests(unittest.TestCase):
     def test_project_lock_three_overlapping_holders_never_overlap(self):
         # Regression for the round-2 finding: with the lock file unlinked on release, a waiter polling
         # the old inode and a newcomer locking a fresh inode could both hold the lock at once.
-        import subprocess
-        import sys
         program = r"""
 import sys, time, json, os
 sys.path.insert(0, sys.argv[1]); import bootstrap
@@ -404,6 +408,341 @@ with bootstrap.ProjectLock(project, wait_seconds=60):
         ], bootstrap.service_records(FakeCompose(), stopped))
         self.assertEqual({"pg-id", "redis-id"}, bootstrap.healthy_ids(records))
         self.assertEqual(set(), bootstrap.healthy_ids(stopped))
+
+
+FAKE_DOCKER = r'''"""Harmless stand-in for docker.exe (infra#37 regression fixture; never touches Docker).
+
+argv: <stdio: inherit|redirect> <state dir> <lifetime seconds>. Like docker.exe starting
+docker-compose.exe, it starts a child process that either inherits this process's stdout/stderr
+(the bootstrap's captured pipes) or has its own, and both outlive the bootstrap's timeout. The
+child records its PID in <state>/child.pid and keeps <state>/held.txt open while it lives (on
+Windows that file cannot be deleted until the child is gone).
+"""
+import subprocess
+import sys
+import time
+
+stdio, state, lifetime = sys.argv[1], sys.argv[2], sys.argv[3]
+child_code = (
+    "import os, sys, time\n"
+    "state, lifetime = sys.argv[1], float(sys.argv[2])\n"
+    "with open(os.path.join(state, 'held.txt'), 'w') as held:\n"
+    "    with open(os.path.join(state, 'child.pid'), 'w') as handle:\n"
+    "        handle.write(str(os.getpid()))\n"
+    "    time.sleep(lifetime)\n"
+)
+streams = ({"stdout": sys.stdout, "stderr": sys.stderr} if stdio == "inherit"
+           else {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
+child = subprocess.Popen([sys.executable, "-c", child_code, state, lifetime], **streams)
+print(f"fake docker: started child {child.pid} ({stdio})", flush=True)
+time.sleep(float(lifetime))
+'''
+
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _k32.OpenProcess.restype = wintypes.HANDLE
+    _k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _k32.WaitForSingleObject.restype = wintypes.DWORD
+    _k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    _k32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _k32.GetProcessHandleCount.argtypes = (wintypes.HANDLE, wintypes.LPDWORD)
+    _k32.GetCurrentProcess.restype = wintypes.HANDLE
+    _SYNCHRONIZE, _PROCESS_TERMINATE, _PROCESS_QUERY_LIMITED_INFORMATION, _WAIT_OBJECT_0 = 0x100000, 0x1, 0x1000, 0
+
+    def own_handle_count():
+        count = wintypes.DWORD()
+        _k32.GetProcessHandleCount(_k32.GetCurrentProcess(), ctypes.byref(count))
+        return count.value
+
+
+def wait_for_exit(pid, seconds):
+    """True once the process has fully exited (Windows: its process object is signaled, which happens
+    only after the kernel has released the process's handles; `GetExitCodeProcess` turns non-running
+    milliseconds earlier and would let a following unlink race the handle rundown)."""
+    if os.name != "nt":
+        deadline = time.monotonic() + seconds
+        while True:  # at least one check, so a zero wait still answers
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+    handle = _k32.OpenProcess(_SYNCHRONIZE | _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return True  # no such process object any more: torn down completely
+    try:
+        return _k32.WaitForSingleObject(handle, int(seconds * 1000)) == _WAIT_OBJECT_0
+    finally:
+        _k32.CloseHandle(handle)
+
+
+def stop_process(pid):
+    """Fixture hygiene only: stop a test child that outlived its test and wait for its exit
+    (never used by the bootstrap). Returns True once the process is gone."""
+    if os.name != "nt":
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return True  # an open file never blocks the directory removal on POSIX; no wait needed
+    handle = _k32.OpenProcess(_SYNCHRONIZE | _PROCESS_TERMINATE, False, pid)
+    if not handle:
+        return True
+    try:
+        _k32.TerminateProcess(handle, 1)
+        return _k32.WaitForSingleObject(handle, 2000) == _WAIT_OBJECT_0
+    finally:
+        _k32.CloseHandle(handle)
+
+
+class DockerCommandTests(unittest.TestCase):
+    """`Compose.docker()` with a harmless fake docker (infra#37).
+
+    A timed-out `docker` command must raise `docker_timeout` about `timeout + TEARDOWN_SECONDS` after
+    it started (a healthy Windows teardown takes ~0.1 s; the bound below adds half a second of slack
+    for the start-up and wait overhead measured when a tree does not exit) even when the command
+    started a child that outlives it, as docker.exe's compose plugin does on Windows. There the whole
+    tree is owned by a job object and the child must be gone when the error is raised. On POSIX only
+    docker itself is killed (unchanged by infra#37): the child is left to the operating system, no
+    ownership is claimed in the error, and this test stops it. The fixture directory is removed
+    without `ignore_errors`: a child that still held a file in it would fail the test loudly instead
+    of leaving the directory behind.
+    """
+
+    TIMEOUT, LIFETIME = 2.0, 20.0  # seconds; the fake and its child outlive TIMEOUT + TEARDOWN_SECONDS widely
+    TEARDOWN_SLACK = 0.5  # seconds of start-up/wait overhead tolerated on top of TIMEOUT + TEARDOWN_SECONDS
+    TREE_EXITED = "Its whole process tree was terminated and has exited (2 processes, output released)."
+
+    def setUp(self):
+        self.state = Path(tempfile.mkdtemp(prefix="pennilogic-fake-docker-"))
+        self.addCleanup(shutil.rmtree, self.state)
+        self.addCleanup(self.stop_child)
+        self.fake = self.state / "fake_docker.py"
+        self.fake.write_text(FAKE_DOCKER, encoding="utf-8")
+        environ = {k: v for k, v in os.environ.items() if not k.startswith("PENNILOGIC_")}
+        environ.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        self.compose = bootstrap.Compose("pennilogic-unit-fake", self.state / ".env", environ, (),
+                                         docker_command=(sys.executable, str(self.fake)))
+
+    def child_pid(self):
+        pid_file = self.state / "child.pid"
+        return int(pid_file.read_text()) if pid_file.is_file() else None
+
+    def stop_child(self):
+        pid = self.child_pid()
+        if pid and not wait_for_exit(pid, 0):
+            self.assertTrue(stop_process(pid), f"fixture child {pid} could not be stopped")
+
+    def wait_until(self, predicate, seconds):
+        deadline = time.monotonic() + seconds
+        while not predicate() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return predicate()
+
+    def test_missing_docker_is_reported(self):
+        compose = bootstrap.Compose("p", self.state / ".env", os.environ, (),
+                                    docker_command=("pennilogic-no-such-docker",))
+        with self.assertRaises(bootstrap.BootstrapError) as ctx:
+            compose.docker("version")
+        self.assertEqual("docker_missing", ctx.exception.kind)
+
+    def test_timed_out_docker_returns_within_bound_whatever_its_child_does_with_the_pipes(self):
+        bound = self.TIMEOUT + bootstrap.TEARDOWN_SECONDS + self.TEARDOWN_SLACK
+        for stdio in ("inherit", "redirect"):
+            with self.subTest(stdio=stdio):
+                for leftover in ("child.pid", "held.txt"):
+                    (self.state / leftover).unlink(missing_ok=True)
+                started = time.monotonic()
+                with self.assertRaises(bootstrap.BootstrapError) as ctx:
+                    self.compose.docker(stdio, str(self.state), str(self.LIFETIME), timeout=self.TIMEOUT)
+                elapsed = time.monotonic() - started
+                error = ctx.exception
+                self.assertEqual("docker_timeout", error.kind)
+                self.assertIn(f"did not finish within {self.TIMEOUT}s", str(error))
+                self.assertLess(elapsed, bound,
+                                f"a child that {stdio}s the output pipes delayed the timeout return to {elapsed:.2f}s")
+                pid = self.child_pid()
+                self.assertIsNotNone(pid, "the fake docker did not start its child within the timeout; the machine"
+                                          f" was too slow to start two interpreters in {self.TIMEOUT}s")
+                if os.name == "nt":
+                    self.assertTrue(wait_for_exit(pid, 2.0),
+                                    f"the child {pid} of the timed-out command survived ({stdio})")
+                    (self.state / "held.txt").unlink()  # PermissionError here would mean the child still held it
+                    self.assertEqual(self.TREE_EXITED, error.details.get("cleanup"))
+                    self.assertIn(error.details["cleanup"], str(error))
+                else:
+                    self.assertNotIn("cleanup", error.details, "POSIX makes no ownership claim (unchanged path)")
+                    self.stop_child()
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_failed_job_assignment_fails_closed_and_stops_the_command(self):
+        refusal = bootstrap.ProcessOwnershipError(13, "AssignProcessToJobObject failed: Access is denied.", None, 5)
+        started = time.monotonic()
+        with mock.patch.object(bootstrap.WindowsJob, "assign", side_effect=refusal):
+            with self.assertRaises(bootstrap.BootstrapError) as ctx:
+                self.compose.docker("redirect", str(self.state), str(self.LIFETIME), timeout=self.TIMEOUT)
+        elapsed = time.monotonic() - started
+        self.assertEqual("io_error", ctx.exception.kind)
+        self.assertIn("refused to own the process tree", str(ctx.exception))
+        self.assertIn("AssignProcessToJobObject failed: Access is denied", str(ctx.exception))
+        self.assertIn("had already been started and was terminated immediately", str(ctx.exception))
+        self.assertNotIn("was not started", str(ctx.exception))
+        self.assertLess(elapsed, self.TIMEOUT, "the command must be stopped at once, not run out its timeout")
+        self.assertIsNone(self.child_pid(), "the command was terminated before it could start anything")
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_refused_job_creation_fails_closed_before_anything_starts(self):
+        refusal = bootstrap.ProcessOwnershipError(13, "CreateJobObject failed: Access is denied.", None, 5)
+        with mock.patch.object(bootstrap.WindowsJob, "__init__", side_effect=refusal):
+            with self.assertRaises(bootstrap.BootstrapError) as ctx:
+                self.compose.docker("redirect", str(self.state), str(self.LIFETIME), timeout=self.TIMEOUT)
+        self.assertEqual("io_error", ctx.exception.kind)
+        self.assertIn("CreateJobObject failed: Access is denied", str(ctx.exception))
+        self.assertIn("The command was not started.", str(ctx.exception))
+        self.assertNotIn("terminated", str(ctx.exception))
+        self.assertEqual({"fake_docker.py"}, {p.name for p in self.state.iterdir()},
+                         "nothing ran, so the fake docker wrote nothing")
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_failing_cleanup_keeps_the_timeout_primary_and_kill_on_close_still_applies(self):
+        with mock.patch.object(bootstrap, "terminate_tree", side_effect=RuntimeError("probe: cleanup broke")):
+            with self.assertRaises(bootstrap.BootstrapError) as ctx:
+                self.compose.docker("redirect", str(self.state), str(self.LIFETIME), timeout=self.TIMEOUT)
+        error = ctx.exception
+        self.assertEqual("docker_timeout", error.kind, "a failing cleanup never replaces the timeout error")
+        self.assertIn(f"did not finish within {self.TIMEOUT}s", str(error))
+        self.assertIn("could not be cleaned up (RuntimeError: probe: cleanup broke)", error.details["cleanup"])
+        self.assertIn("terminated without confirmation", error.details["cleanup"])
+        pid = self.child_pid()
+        self.assertIsNotNone(pid)
+        self.assertTrue(wait_for_exit(pid, 2.0), "closing the job object must still terminate the child")
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_refused_termination_with_failing_kill_releases_the_pinned_handles(self):
+        # Reliability finding R3: when TerminateJobObject is refused and the fallback kill raises, the
+        # SYNCHRONIZE pins taken before the kill must still be closed (two handles leaked per event before).
+        sleeper = "import time; time.sleep(30)"
+
+        def one_round():
+            with bootstrap.WindowsJob() as job:
+                process = subprocess.Popen([sys.executable, "-c", sleeper],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                job.assign(process.pid)
+                self.assertTrue(self.wait_until(lambda: job.active_processes() == 1, 10.0))
+                with mock.patch.object(bootstrap.WindowsJob, "terminate", return_value=False), \
+                        mock.patch.object(subprocess.Popen, "kill", side_effect=OSError("probe: kill refused")):
+                    with self.assertRaises(OSError):
+                        bootstrap.terminate_tree(job, process, time.monotonic() + 1.0)
+                # leaving the block closes the job: kill-on-close ends the sleeper
+            process.wait(timeout=bootstrap.TEARDOWN_SECONDS)
+            del process  # the Popen's own process handle goes with it
+            gc.collect()
+
+        one_round()  # warm-up: lazily created interpreter/mock objects settle before the baseline
+        before = own_handle_count()
+        for _ in range(5):
+            one_round()
+        after = own_handle_count()
+        self.assertLessEqual(after, before, f"process handle count grew from {before} to {after} over five"
+                                            " refused-termination rounds (the leak was +2 per round)")
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_interrupt_inside_the_unowned_window_kills_the_started_command(self):
+        # Reliability finding R2: between Popen returning and the assignment the command is unowned;
+        # an interrupt there must not leave it behind. The command records its PID, the interrupt is
+        # raised in place of the assignment once that PID is known.
+        pid_file = self.state / "self.pid"
+        code = f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(30)"
+        compose = bootstrap.Compose("p", self.state / ".env", os.environ, (), docker_command=(sys.executable, "-c"))
+
+        def interrupted_assign(job, pid):
+            self.assertTrue(self.wait_until(lambda: pid_file.is_file() and pid_file.read_text(), 10.0))
+            raise KeyboardInterrupt
+
+        with mock.patch.object(bootstrap.WindowsJob, "assign", interrupted_assign):
+            with self.assertRaises(KeyboardInterrupt):
+                compose.docker(code, timeout=self.TIMEOUT)
+        pid = int(pid_file.read_text())
+        self.assertTrue(wait_for_exit(pid, 2.0), f"the unowned command {pid} survived the interrupt")
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_command_that_exits_before_it_can_be_owned_is_reported_with_its_result(self):
+        # Windows refuses to assign an exited process; a command that failed within microseconds must not
+        # be turned into an ownership error. The delayed assignment stands in for that window.
+        original = bootstrap.WindowsJob.assign
+
+        def late_assign(job, pid):
+            time.sleep(1.0)
+            return original(job, pid)
+
+        compose = bootstrap.Compose("p", self.state / ".env", os.environ, (), docker_command=(sys.executable, "-c"))
+        with mock.patch.object(bootstrap.WindowsJob, "assign", late_assign):
+            result = compose.docker("import sys; print('done'); sys.exit(3)")
+        self.assertEqual((3, "done\n"), (result.returncode, result.stdout))
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_windows_job_owns_the_whole_tree_and_terminates_it(self):
+        tree = ("import subprocess, sys, time;"
+                " subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); time.sleep(30)")
+        with bootstrap.WindowsJob() as job:
+            process = subprocess.Popen([sys.executable, "-c", tree],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                job.assign(process.pid)  # works nested when the test runner itself is inside a job
+                self.assertTrue(self.wait_until(lambda: len(job.process_ids() or []) == 2, 10.0),
+                                f"child and grandchild are both members of the job: {job.process_ids()}")
+                members = job.process_ids()
+                self.assertIn(process.pid, members)
+                grandchild = next(pid for pid in members if pid != process.pid)
+                self.assertTrue(job.terminate())
+                self.assertIsNotNone(process.wait(timeout=bootstrap.TEARDOWN_SECONDS))
+                self.assertTrue(wait_for_exit(grandchild, bootstrap.TEARDOWN_SECONDS),
+                                "the grandchild's process object must be signaled, not just the accounting")
+                self.assertEqual(0, job.active_processes())
+                self.assertEqual([], job.process_ids())
+            finally:
+                process.kill()
+        self.assertIsNone(job.handle, "the job handle is closed with the context")
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_process_exits_awaits_the_process_objects_not_the_job_accounting(self):
+        # The job's counter reads 0 well before a terminated process has released its handles; the
+        # "has exited" claim must come from the process objects (a held file is deletable right after).
+        held = self.state / "held-by-tree.txt"
+        code = f"import time; f = open({str(held)!r}, 'w'); time.sleep(30)"
+        with bootstrap.WindowsJob() as job:
+            process = subprocess.Popen([sys.executable, "-c", code],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            job.assign(process.pid)
+            self.assertTrue(self.wait_until(held.exists, 10.0))
+            exits = bootstrap.ProcessExits()
+            exits.add(job.process_ids())
+            self.assertEqual(1, exits.seen)
+            self.assertTrue(job.terminate())
+            self.assertEqual(1, exits.wait(bootstrap.TEARDOWN_SECONDS))
+            exits.close()
+            held.unlink()  # PermissionError here would mean "exited" was claimed before the handle rundown
+            process.wait(timeout=bootstrap.TEARDOWN_SECONDS)
+        still_referenced = bootstrap.ProcessExits()
+        still_referenced.add([process.pid])  # the Popen still holds a handle: the object exists and is signaled
+        self.assertEqual((1, 0, 0), (len(still_referenced.handles), len(still_referenced.gone),
+                                     len(still_referenced.unopenable)))
+        self.assertEqual(1, still_referenced.wait(0))
+        still_referenced.close()
+        finished = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True,
+                                  text=True, check=True)
+        gc.collect()  # the run()'s Popen and its process handle are gone: the object is deleted, the PID free
+        released = bootstrap.ProcessExits()
+        released.add([int(finished.stdout)])  # counts as exited, never as unopenable
+        self.assertEqual((0, 1, 0), (len(released.handles), len(released.gone), len(released.unopenable)))
+        self.assertEqual(1, released.wait(0))
 
 
 class CommandLineEnvelopeTests(unittest.TestCase):
