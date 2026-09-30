@@ -143,19 +143,21 @@ report, and the warning says so explicitly. The python fixtures still run for ap
 
 `governance/conformance/check-names.json` (schema `governance/conformance/check-names.schema.json`) has
 one entry per repository: `repo` (`PenniLogic/<name>`), `check_name` (the context the workflow produces and
-the ruleset requires; `CI` everywhere), `workflow_ref` (the full `PenniLogic/infra` commit whose generator
-rendered the workflow on the repository's `main`) and `language` (`kotlin`, `typescript`, `python`,
-`documentation`, `openapi`). `registry.py` validates it with the stdlib schema validator
-(`conformance/schema.py`, a reviewed subset that refuses unknown keywords) and cross-checks it against the
-profiles: exactly one entry per profile, the check name produced by the rendered `ci.yml` and equal to the
-policy's `required_native_check`, the language derived from the profile toolchain. The tests reject an
-entry missing any required field, an unknown field, a short `workflow_ref`, an unknown language and a
-duplicate repository, and verify that every `workflow_ref` renders the current workflow from Git history.
+the ruleset requires; `CI` everywhere), `workflow_ref` (a full `PenniLogic/infra` commit whose generator
+renders the workflow on the repository's `main` byte for byte — by convention the commit that last changed
+that rendering, so a consumer regenerating for a non-workflow change keeps its entry) and `language`
+(`kotlin`, `typescript`, `python`, `documentation`, `openapi`). `registry.py` validates it with the stdlib
+schema validator (`conformance/schema.py`, a reviewed subset that refuses unknown keywords) and
+cross-checks it against the profiles: exactly one entry per profile, the check name produced by the
+rendered `ci.yml` and equal to the policy's `required_native_check`, the language derived from the
+profile toolchain. The tests reject an entry missing any required field, an unknown field, a short
+`workflow_ref`, an unknown language and a duplicate repository, and verify that every `workflow_ref`
+renders the current workflow from Git history; the job verifies the same against each consumer's `main`.
 
 Update the registry in the same PR as a profile change that alters a workflow: set `workflow_ref` to the
-merged generator commit the consumer regenerates from (the eight consumers currently record
-`4e6e749fd849ae58f2b13c21215022c1bc410b9f`, the wave they regenerated from; infra records
-`56d78eebf34e368d14e6c60158a95f5b9f3ba09f`, the commit that last changed its own `ci.yml`).
+merged generator commit the consumer regenerates from (the eight consumers record
+`4e6e749fd849ae58f2b13c21215022c1bc410b9f`, the last commit that changed their rendered `ci.yml`; infra
+records `56d78eebf34e368d14e6c60158a95f5b9f3ba09f`, the commit that last changed its own `ci.yml`).
 
 ## Onboarding a new repository
 
@@ -179,8 +181,12 @@ A repository adopts the baseline by adding a generator profile, never by copying
 
 The live run's redacted output is committed as evidence in `governance/conformance/evidence/`
 (`conformance-report-2026-09-30.json`, `conformance-summary-2026-09-30.md`): produced locally by the
-implementer with `--github-client anonymous --exercise python,node,uv --refresh`, so it is a reproducible
+implementer at generator commit `66b0fc12` with `--github-client anonymous --exercise python,node,uv
+--refresh` (45 anonymous reads, about 20 minutes including `npm ci` and `uv sync`), so it is a reproducible
 claim, not a workflow artifact; once the generated workflow exists, its uploaded artifact supersedes it.
+An earlier attempt during a network outage is not committed: the job failed closed on the two reads that
+raised `URLError` and on the one scratch refresh that failed, and still wrote the complete report for the
+other seven repositories.
 
 Every one of the nine repositories has exactly one ruleset, `Protect main` (active, target `branch`,
 `~DEFAULT_BRANCH`), with rule types `deletion`, `non_fast_forward`, `required_linear_history`,
@@ -297,13 +303,17 @@ without it.
 - `check_docs.py` detects a broken ADR index link and a dangling `supersedes` reference; it does not check
   arbitrary Markdown links (`documentation-body-link-broken` records `not_detected`). A general link
   checker is a docs decision, not added here (the addendum asked for no second checker).
-- Consumers regenerated at `4e6e749f` run the pre-PR E checker: it refuses the planted workflow defects
-  with the same exit code but without the rule text, and it does not refuse a step-level
-  `continue-on-error` (only the current template does, proved here by copying the template over the
-  scratch checkout). The drift check catches all of them. The stale-file warnings in the report are the
-  regeneration wave still to run.
-- The wall-clock figure is the run's own duration; queue time is excluded. android's last `main` run took
-  9 min 33 s, inside the ten-minute budget but close; its reviewed profile timeout is 30 minutes.
+- A consumer whose checker predates the current template refuses the planted workflow defects with the
+  same exit code but may lack a newer rule (before PR E: no rule text and no step-level
+  `continue-on-error` refusal). The harness therefore requires only the refusal line from the consumer's
+  checker, records `detail_surfaced`, and proves the newest rule by copying the current template over the
+  scratch checkout; the drift check catches every planted workflow defect regardless. In the committed
+  evidence all nine consumers run the PR E checker (rule text surfaced) and eight still carry the pre-PR F
+  `scripts/check_repository.py` — the stale-file warning is that regeneration wave.
+- The wall-clock figure is the run's own duration; queue time is excluded. android's last `main` runs took
+  9 min 28 s and 9 min 33 s in the two live runs, inside the ten-minute budget but close; its reviewed
+  profile timeout is 30 minutes, so an overrun would be a warning, not a failure, until the budget is
+  reviewed.
 - Kotlin planted defects are not exercised by the Python-only job (evidence: last `main` runs). Node and uv
   planted defects were exercised in the local live run because those toolchains were present; the
   scheduled job would run `--exercise python` until the generator adds Node and uv to the conformance

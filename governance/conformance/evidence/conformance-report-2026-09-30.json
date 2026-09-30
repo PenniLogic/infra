@@ -1,0 +1,4502 @@
+{
+  "schema": "pennilogic.infra.conformance/1",
+  "generated_at": "2026-09-30T14:53:28+00:00",
+  "generator_commit": "66b0fc12cdc62fed1b34ad139522b7443c5859ba",
+  "github_client": "anonymous",
+  "api_requests": 45,
+  "api_rate_limit_remaining": 15,
+  "exercised_toolchains": [
+    "node",
+    "python",
+    "uv"
+  ],
+  "budget_minutes": 10,
+  "repository_count": 9,
+  "result": "pass",
+  "failures": [],
+  "not_run": [
+    "java planted defects not exercised for: api",
+    "android planted defects not exercised for: android"
+  ],
+  "repositories": [
+    {
+      "repository": "PenniLogic/.github",
+      "profile": ".github",
+      "repository_id": 1394134381,
+      "language": "python",
+      "profile_timeout_minutes": 10,
+      "identity": {
+        "id": 1394134381,
+        "full_name": "PenniLogic/.github",
+        "default_branch": "main",
+        "expected_id": 1394134381,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "58972bab7f25bde860ae4118d7754971345fa24e",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 1,
+        "output_tail": "Generated setup differs: scripts/check_repository.py\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": [
+          "scripts/check_repository.py"
+        ]
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (41 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py"
+        ],
+        "install": [],
+        "build": [],
+        "test": [
+          "python -m unittest discover -s scripts/tests"
+        ],
+        "lint": [
+          "python scripts/check_agent_profiles.py"
+        ],
+        "other": [],
+        "consumer_self_tests": []
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154819,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/.github",
+          "check_name": "CI",
+          "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+          "language": "python"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36725800786,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "58972bab7f25bde860ae4118d7754971345fa24e",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T14:00:14Z",
+        "updated_at": "2026-09-30T14:00:30Z",
+        "html_url": "https://github.com/PenniLogic/.github/actions/runs/36725800786",
+        "wall_clock_seconds": 16,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                ".github",
+                "--root",
+                "<scratch>\\.github",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (41 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                ".github",
+                "--root",
+                "<scratch>\\.github",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (41 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                ".github",
+                "--root",
+                "<scratch>\\.github",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                ".github",
+                "--root",
+                "<scratch>\\.github",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                ".github",
+                "--root",
+                "<scratch>\\.github",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                ".github",
+                "--root",
+                "<scratch>\\.github",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-tests-removed",
+          "language": "python",
+          "toolchain": "python",
+          "description": "every test module of each unittest start directory is removed; unittest exits 5 (NO TESTS RAN)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests",
+              "command": "python -m unittest discover -s scripts/tests",
+              "expect": "fail",
+              "expect_text": "NO TESTS RAN",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 5,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\r\n----------------------------------------------------------------------\r\nRan 0 tests in 0.000s\r\n\r\nNO TESTS RAN\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-test-failing",
+          "language": "python",
+          "toolchain": "python",
+          "description": "a failing unittest module is planted in each unittest start directory and must be counted as a failure",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests",
+              "command": "python -m unittest discover -s scripts/tests",
+              "expect": "fail",
+              "expect_text": "test_planted_defect_must_fail",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "----------------------\r\nTraceback (most recent call last):\r\n  File \"<scratch>\\.github\\scripts\\tests\\test_planted_conformance_defect.py\", line 8, in test_planted_defect_must_fail\r\n    self.fail(\"planted defect\")\r\n    ~~~~~~~~~^^^^^^^^^^^^^^^^^^\r\nAssertionError: planted defect\r\n\r\n----------------------------------------------------------------------\r\nRan 104 tests in 26.083s\r\n\r\nFAILED (failures=1)\r\n"
+            }
+          ]
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "python": "proved"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [
+        "generated non-workflow files predate the current generator: scripts/check_repository.py"
+      ],
+      "result": "pass"
+    },
+    {
+      "repository": "PenniLogic/docs",
+      "profile": "docs",
+      "repository_id": 1394134442,
+      "language": "documentation",
+      "profile_timeout_minutes": 10,
+      "identity": {
+        "id": 1394134442,
+        "full_name": "PenniLogic/docs",
+        "default_branch": "main",
+        "expected_id": 1394134442,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "c2726e6322a72c55255e5cbca589be16600e224b",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 1,
+        "output_tail": "Generated setup differs: scripts/check_repository.py\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": [
+          "scripts/check_repository.py"
+        ]
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (188 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py"
+        ],
+        "install": [],
+        "build": [],
+        "test": [
+          "python -m unittest discover -s scripts/tests"
+        ],
+        "lint": [
+          "python scripts/check_docs.py",
+          "python scripts/check_test_strategy.py"
+        ],
+        "other": [],
+        "consumer_self_tests": []
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154845,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/docs",
+          "check_name": "CI",
+          "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+          "language": "documentation"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36730448288,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "679057ec67d2eeaedbc63175ba72bf59b0947b9a",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T14:36:56Z",
+        "updated_at": "2026-09-30T14:37:15Z",
+        "html_url": "https://github.com/PenniLogic/docs/actions/runs/36730448288",
+        "wall_clock_seconds": 19,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "docs",
+                "--root",
+                "<scratch>\\docs",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (188 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "docs",
+                "--root",
+                "<scratch>\\docs",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (188 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "docs",
+                "--root",
+                "<scratch>\\docs",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "docs",
+                "--root",
+                "<scratch>\\docs",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "docs",
+                "--root",
+                "<scratch>\\docs",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "docs",
+                "--root",
+                "<scratch>\\docs",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-tests-removed",
+          "language": "python",
+          "toolchain": "python",
+          "description": "every test module of each unittest start directory is removed; unittest exits 5 (NO TESTS RAN)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests",
+              "command": "python -m unittest discover -s scripts/tests",
+              "expect": "fail",
+              "expect_text": "NO TESTS RAN",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 5,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\r\n----------------------------------------------------------------------\r\nRan 0 tests in 0.000s\r\n\r\nNO TESTS RAN\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-test-failing",
+          "language": "python",
+          "toolchain": "python",
+          "description": "a failing unittest module is planted in each unittest start directory and must be counted as a failure",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests",
+              "command": "python -m unittest discover -s scripts/tests",
+              "expect": "fail",
+              "expect_text": "test_planted_defect_must_fail",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "ient state taxonomy 1.0.0 valid: 8 states, 13 conceptual contract conditions, 3 worked examples; no client coverage implied.\r\nTest strategy 1.1.1 valid: 37 categories owned by 51 public issues across 8 repositories, 33 packages with floors (11 money-path, 0 recorded mutation enforcement gap(s)), inventory of 408 issues snapshotted 2026-09-30T01:15:16Z; no harness, coverage or acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "documentation-index-link-broken",
+          "language": "documentation",
+          "toolchain": "python",
+          "description": "an ADR index link in adr/README.md points at a file that does not exist",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python scripts/check_docs.py",
+              "command": "python scripts/check_docs.py",
+              "expect": "fail",
+              "expect_text": "generated slot ADR-001 differs",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Documentation check failed: adr/README.md does not match the rendered layout: generated slot ADR-001 differs from the rendered projection (hand edit or stale render)\r\n"
+            }
+          ]
+        },
+        {
+          "id": "documentation-dangling-supersedes",
+          "language": "documentation",
+          "toolchain": "python",
+          "description": "ADR-015 claims to supersede ADR-099, a record that does not exist",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python scripts/check_docs.py",
+              "command": "python scripts/check_docs.py",
+              "expect": "fail",
+              "expect_text": "supersedes ADR-099, which has no source record",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Documentation check failed: adr/ADR-015.md: supersedes ADR-099, which has no source record\r\n"
+            }
+          ]
+        },
+        {
+          "id": "documentation-body-link-broken",
+          "language": "documentation",
+          "toolchain": "python",
+          "description": "a relative Markdown link outside the ADR graph points at a missing file; recorded to show what check_docs.py does not cover",
+          "outcome": "recorded",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python scripts/check_docs.py",
+              "command": "python scripts/check_docs.py",
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "check_docs.py validates the ADR graph, index and inventories, not arbitrary Markdown links; a general link checker is a separate docs decision",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Docs inventory valid: 14 carried-forward ADRs, 9 published reserved records, 1 pending reservations, client state taxonomy 1.0.0 with 8 states.\r\n"
+            }
+          ]
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "python": "proved",
+        "documentation": "proved"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [
+        "generated non-workflow files predate the current generator: scripts/check_repository.py",
+        "main moved since the last completed CI run; results describe the cloned commit"
+      ],
+      "result": "pass"
+    },
+    {
+      "repository": "PenniLogic/contracts",
+      "profile": "contracts",
+      "repository_id": 1394134505,
+      "language": "openapi",
+      "profile_timeout_minutes": 30,
+      "identity": {
+        "id": 1394134505,
+        "full_name": "PenniLogic/contracts",
+        "default_branch": "main",
+        "expected_id": 1394134505,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "cff371179a7065422e51ece75d5d276f587c9755",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 1,
+        "output_tail": "Generated setup differs: scripts/check_repository.py\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": [
+          "scripts/check_repository.py"
+        ]
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (104 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py"
+        ],
+        "install": [
+          "npm ci --no-audit --no-fund",
+          "python scripts/toolchain.py install"
+        ],
+        "build": [
+          "python scripts/generate_clients.py --verify"
+        ],
+        "test": [
+          "python scripts/smoke.py python",
+          "python scripts/smoke.py typescript",
+          "python scripts/smoke.py kotlin",
+          "python -m unittest discover -s scripts/tests -p \"test_*.py\""
+        ],
+        "lint": [
+          "python scripts/lint_spec.py",
+          "python scripts/check_breaking_changes.py"
+        ],
+        "other": [],
+        "consumer_self_tests": []
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154846,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/contracts",
+          "check_name": "CI",
+          "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+          "language": "openapi"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36725005449,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "cff371179a7065422e51ece75d5d276f587c9755",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T13:53:49Z",
+        "updated_at": "2026-09-30T13:55:39Z",
+        "html_url": "https://github.com/PenniLogic/contracts/actions/runs/36725005449",
+        "wall_clock_seconds": 110,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "contracts",
+                "--root",
+                "<scratch>\\contracts",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (104 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "contracts",
+                "--root",
+                "<scratch>\\contracts",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (104 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "contracts",
+                "--root",
+                "<scratch>\\contracts",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "contracts",
+                "--root",
+                "<scratch>\\contracts",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "contracts",
+                "--root",
+                "<scratch>\\contracts",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "contracts",
+                "--root",
+                "<scratch>\\contracts",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-tests-removed",
+          "language": "python",
+          "toolchain": "python",
+          "description": "every test module of each unittest start directory is removed; unittest exits 5 (NO TESTS RAN)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests -p \"test_*.py\"",
+              "command": "python -m unittest discover -s scripts/tests -p \"test_*.py\"",
+              "expect": "fail",
+              "expect_text": "NO TESTS RAN",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 5,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\r\n----------------------------------------------------------------------\r\nRan 0 tests in 0.000s\r\n\r\nNO TESTS RAN\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-test-failing",
+          "language": "python",
+          "toolchain": "python",
+          "description": "a failing unittest module is planted in each unittest start directory and must be counted as a failure",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests -p \"test_*.py\"",
+              "command": "python -m unittest discover -s scripts/tests -p \"test_*.py\"",
+              "expect": "fail",
+              "expect_text": "test_planted_defect_must_fail",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "---------\r\nTraceback (most recent call last):\r\n  File \"<scratch>\\contracts\\scripts\\tests\\test_planted_conformance_defect.py\", line 8, in test_planted_defect_must_fail\r\n    self.fail(\"planted defect\")\r\n    ~~~~~~~~~^^^^^^^^^^^^^^^^^^\r\nAssertionError: planted defect\r\n\r\n----------------------------------------------------------------------\r\nRan 74 tests in 85.782s\r\n\r\nFAILED (failures=22, skipped=1)\r\n"
+            }
+          ]
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "python": "proved"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [
+        "generated non-workflow files predate the current generator: scripts/check_repository.py"
+      ],
+      "result": "pass"
+    },
+    {
+      "repository": "PenniLogic/api",
+      "profile": "api",
+      "repository_id": 1394134582,
+      "language": "kotlin",
+      "profile_timeout_minutes": 30,
+      "identity": {
+        "id": 1394134582,
+        "full_name": "PenniLogic/api",
+        "default_branch": "main",
+        "expected_id": 1394134582,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "68341c0a92462875f3a303f67f355a1f776d8cda",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 1,
+        "output_tail": "Generated setup differs: scripts/check_repository.py\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": [
+          "scripts/check_repository.py"
+        ]
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (65 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py"
+        ],
+        "install": [],
+        "build": [
+          "python scripts/quality.py build"
+        ],
+        "test": [
+          "python scripts/quality.py build",
+          "python -m unittest discover -s scripts/tests"
+        ],
+        "lint": [
+          "python scripts/quality.py build"
+        ],
+        "other": [],
+        "consumer_self_tests": []
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154849,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/api",
+          "check_name": "CI",
+          "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+          "language": "kotlin"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36722802208,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "68341c0a92462875f3a303f67f355a1f776d8cda",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T13:35:58Z",
+        "updated_at": "2026-09-30T13:37:41Z",
+        "html_url": "https://github.com/PenniLogic/api/actions/runs/36722802208",
+        "wall_clock_seconds": 103,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "api",
+                "--root",
+                "<scratch>\\api",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (65 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "api",
+                "--root",
+                "<scratch>\\api",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (65 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "api",
+                "--root",
+                "<scratch>\\api",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "api",
+                "--root",
+                "<scratch>\\api",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "api",
+                "--root",
+                "<scratch>\\api",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "api",
+                "--root",
+                "<scratch>\\api",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-tests-removed",
+          "language": "python",
+          "toolchain": "python",
+          "description": "every test module of each unittest start directory is removed; unittest exits 5 (NO TESTS RAN)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests",
+              "command": "python -m unittest discover -s scripts/tests",
+              "expect": "fail",
+              "expect_text": "NO TESTS RAN",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 5,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\r\n----------------------------------------------------------------------\r\nRan 0 tests in 0.000s\r\n\r\nNO TESTS RAN\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-test-failing",
+          "language": "python",
+          "toolchain": "python",
+          "description": "a failing unittest module is planted in each unittest start directory and must be counted as a failure",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests",
+              "command": "python -m unittest discover -s scripts/tests",
+              "expect": "fail",
+              "expect_text": "test_planted_defect_must_fail",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "----------------------------\r\nTraceback (most recent call last):\r\n  File \"<scratch>\\api\\scripts\\tests\\test_planted_conformance_defect.py\", line 8, in test_planted_defect_must_fail\r\n    self.fail(\"planted defect\")\r\n    ~~~~~~~~~^^^^^^^^^^^^^^^^^^\r\nAssertionError: planted defect\r\n\r\n----------------------------------------------------------------------\r\nRan 14 tests in 0.050s\r\n\r\nFAILED (failures=1)\r\n"
+            }
+          ]
+        },
+        {
+          "id": "kotlin-test-failing",
+          "language": "kotlin",
+          "toolchain": "java",
+          "description": "a failing JUnit 5 test is planted under src/test/kotlin and the Gradle test gate must fail",
+          "outcome": "not_exercised",
+          "reason": "toolchain java not exercised in this run",
+          "probes": []
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "python": "proved",
+        "kotlin": "not_exercised"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [
+        "generated non-workflow files predate the current generator: scripts/check_repository.py",
+        "kotlin planted defects not exercised in this run; evidence is the consumer's last main CI run"
+      ],
+      "result": "pass"
+    },
+    {
+      "repository": "PenniLogic/ai-service",
+      "profile": "ai-service",
+      "repository_id": 1394134652,
+      "language": "python",
+      "profile_timeout_minutes": 10,
+      "identity": {
+        "id": 1394134652,
+        "full_name": "PenniLogic/ai-service",
+        "default_branch": "main",
+        "expected_id": 1394134652,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "1c3d5aa3c914fe943f90d0816d061e98941ec4f9",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 1,
+        "output_tail": "Generated setup differs: scripts/check_repository.py\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": [
+          "scripts/check_repository.py"
+        ]
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (42 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py"
+        ],
+        "install": [
+          "printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n' | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin",
+          "uv sync --locked"
+        ],
+        "build": [],
+        "test": [
+          "uv run --locked pytest"
+        ],
+        "lint": [
+          "uv run --locked ruff check .",
+          "uv run --locked ruff format --check .",
+          "uv run --locked mypy"
+        ],
+        "other": [],
+        "consumer_self_tests": []
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154850,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/ai-service",
+          "check_name": "CI",
+          "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+          "language": "python"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36723102714,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "1c3d5aa3c914fe943f90d0816d061e98941ec4f9",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T13:38:25Z",
+        "updated_at": "2026-09-30T13:38:52Z",
+        "html_url": "https://github.com/PenniLogic/ai-service/actions/runs/36723102714",
+        "wall_clock_seconds": 27,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "ai-service",
+                "--root",
+                "<scratch>\\ai-service",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (42 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "ai-service",
+                "--root",
+                "<scratch>\\ai-service",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (42 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "ai-service",
+                "--root",
+                "<scratch>\\ai-service",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "ai-service",
+                "--root",
+                "<scratch>\\ai-service",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "ai-service",
+                "--root",
+                "<scratch>\\ai-service",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "ai-service",
+                "--root",
+                "<scratch>\\ai-service",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-pytest-failing",
+          "language": "python",
+          "toolchain": "uv",
+          "description": "a failing pytest module is planted under tests/ and the locked uv pytest command must fail",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "prepare: uv sync --locked",
+              "command": "uv sync --locked",
+              "expect": "pass",
+              "expect_text": null,
+              "detail_text": null,
+              "note": null,
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Resolved 29 packages in 4ms\nChecked 28 packages in 11ms\n"
+            },
+            {
+              "label": "profile command: uv run --locked pytest",
+              "command": "uv run --locked pytest",
+              "expect": "fail",
+              "expect_text": "test_planted_defect_must_fail",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "ror(\"planted defect\")\r\nE       AssertionError: planted defect\r\n\r\ntests\\test_planted_conformance_defect.py:5: AssertionError\r\n=========================== short test summary info ===========================\r\nFAILED tests/test_planted_conformance_defect.py::test_planted_defect_must_fail - AssertionError: planted defect\r\n======================= 1 failed, 100 passed in 24.23s ========================\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-pytest-removed",
+          "language": "python",
+          "toolchain": "uv",
+          "description": "every pytest module under tests/ is removed; pytest exits 5 (no tests collected)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "prepare: uv sync --locked",
+              "command": "uv sync --locked",
+              "expect": "pass",
+              "expect_text": null,
+              "detail_text": null,
+              "note": null,
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Resolved 29 packages in 5ms\nChecked 28 packages in 13ms\n"
+            },
+            {
+              "label": "profile command: uv run --locked pytest",
+              "command": "uv run --locked pytest",
+              "expect": "fail",
+              "expect_text": "no tests ran",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 5,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "============================= test session starts =============================\r\nplatform win32 -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0\r\nrootdir: <scratch>\\ai-service\r\nconfigfile: pyproject.toml\r\ntestpaths: tests\r\nplugins: anyio-4.15.1\r\ncollected 0 items\r\n\r\n============================ no tests ran in 0.04s ============================\r\n"
+            }
+          ]
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "python": "proved"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [
+        "generated non-workflow files predate the current generator: scripts/check_repository.py"
+      ],
+      "result": "pass"
+    },
+    {
+      "repository": "PenniLogic/android",
+      "profile": "android",
+      "repository_id": 1394134737,
+      "language": "kotlin",
+      "profile_timeout_minutes": 30,
+      "identity": {
+        "id": 1394134737,
+        "full_name": "PenniLogic/android",
+        "default_branch": "main",
+        "expected_id": 1394134737,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "14394cf966bfd1e417721bded7e2d52f6a432946",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 1,
+        "output_tail": "Generated setup differs: scripts/check_repository.py\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": [
+          "scripts/check_repository.py"
+        ]
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (122 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py"
+        ],
+        "install": [],
+        "build": [
+          "python scripts/quality_gates.py build"
+        ],
+        "test": [
+          "python scripts/quality_gates.py test",
+          "python scripts/quality_gates.py coverage",
+          "python scripts/quality_gates.py self-test",
+          "python -m unittest discover -s scripts/tests -p \"test_*.py\""
+        ],
+        "lint": [
+          "python scripts/quality_gates.py lint"
+        ],
+        "other": [],
+        "consumer_self_tests": [
+          "python scripts/quality_gates.py self-test"
+        ]
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154855,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/android",
+          "check_name": "CI",
+          "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+          "language": "kotlin"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36723724924,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "14394cf966bfd1e417721bded7e2d52f6a432946",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T13:43:26Z",
+        "updated_at": "2026-09-30T13:52:54Z",
+        "html_url": "https://github.com/PenniLogic/android/actions/runs/36723724924",
+        "wall_clock_seconds": 568,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "android",
+                "--root",
+                "<scratch>\\android",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (122 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "android",
+                "--root",
+                "<scratch>\\android",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (122 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "android",
+                "--root",
+                "<scratch>\\android",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "android",
+                "--root",
+                "<scratch>\\android",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "android",
+                "--root",
+                "<scratch>\\android",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "android",
+                "--root",
+                "<scratch>\\android",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-tests-removed",
+          "language": "python",
+          "toolchain": "python",
+          "description": "every test module of each unittest start directory is removed; unittest exits 5 (NO TESTS RAN)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests -p \"test_*.py\"",
+              "command": "python -m unittest discover -s scripts/tests -p \"test_*.py\"",
+              "expect": "fail",
+              "expect_text": "NO TESTS RAN",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 5,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\r\n----------------------------------------------------------------------\r\nRan 0 tests in 0.000s\r\n\r\nNO TESTS RAN\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-test-failing",
+          "language": "python",
+          "toolchain": "python",
+          "description": "a failing unittest module is planted in each unittest start directory and must be counted as a failure",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests -p \"test_*.py\"",
+              "command": "python -m unittest discover -s scripts/tests -p \"test_*.py\"",
+              "expect": "fail",
+              "expect_text": "test_planted_defect_must_fail",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "------------------------\r\nTraceback (most recent call last):\r\n  File \"<scratch>\\android\\scripts\\tests\\test_planted_conformance_defect.py\", line 8, in test_planted_defect_must_fail\r\n    self.fail(\"planted defect\")\r\n    ~~~~~~~~~^^^^^^^^^^^^^^^^^^\r\nAssertionError: planted defect\r\n\r\n----------------------------------------------------------------------\r\nRan 66 tests in 1.235s\r\n\r\nFAILED (failures=1)\r\n"
+            }
+          ]
+        },
+        {
+          "id": "kotlin-android-self-test",
+          "language": "kotlin",
+          "toolchain": "android",
+          "description": "the consumer-owned quality_gates.py self-test plants a failing test, spotless and lint defects and reused results on every CI run",
+          "outcome": "not_exercised",
+          "reason": "toolchain android not exercised in this run",
+          "probes": []
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "python": "proved",
+        "kotlin": "not_exercised"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [
+        "generated non-workflow files predate the current generator: scripts/check_repository.py",
+        "kotlin planted defects not exercised in this run; evidence is the consumer's last main CI run"
+      ],
+      "result": "pass"
+    },
+    {
+      "repository": "PenniLogic/web",
+      "profile": "web",
+      "repository_id": 1394134850,
+      "language": "typescript",
+      "profile_timeout_minutes": 10,
+      "identity": {
+        "id": 1394134850,
+        "full_name": "PenniLogic/web",
+        "default_branch": "main",
+        "expected_id": 1394134850,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "4b63423a87622ff2a5e6b8aa3b30090f4b73adf9",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 1,
+        "output_tail": "Generated setup differs: scripts/check_repository.py\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": [
+          "scripts/check_repository.py"
+        ]
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (56 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py"
+        ],
+        "install": [
+          "npm ci"
+        ],
+        "build": [
+          "npm run build"
+        ],
+        "test": [
+          "npm test",
+          "npm run check:bundle:planted"
+        ],
+        "lint": [
+          "npm run lint",
+          "npm run format:check",
+          "npm run typecheck",
+          "npm run check:bundle",
+          "npm run check:bundle:planted"
+        ],
+        "other": [
+          "npm run report:build"
+        ],
+        "consumer_self_tests": [
+          "npm run check:bundle:planted"
+        ]
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154857,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/web",
+          "check_name": "CI",
+          "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+          "language": "typescript"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36723299794,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "4b63423a87622ff2a5e6b8aa3b30090f4b73adf9",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T13:40:03Z",
+        "updated_at": "2026-09-30T13:40:41Z",
+        "html_url": "https://github.com/PenniLogic/web/actions/runs/36723299794",
+        "wall_clock_seconds": 38,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "web",
+                "--root",
+                "<scratch>\\web",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (56 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "web",
+                "--root",
+                "<scratch>\\web",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (56 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "web",
+                "--root",
+                "<scratch>\\web",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "web",
+                "--root",
+                "<scratch>\\web",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "web",
+                "--root",
+                "<scratch>\\web",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "web",
+                "--root",
+                "<scratch>\\web",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "typescript-test-failing",
+          "language": "typescript",
+          "toolchain": "node",
+          "description": "a failing vitest module is planted under the tests directory and npm test must fail",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "prepare: npm ci",
+              "command": "npm ci",
+              "expect": "pass",
+              "expect_text": null,
+              "detail_text": null,
+              "note": null,
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.\n\nadded 377 packages, and audited 378 packages in 2m\n\nfound 0 vulnerabilities\n"
+            },
+            {
+              "label": "profile command: npm test",
+              "command": "npm test",
+              "expect": "fail",
+              "expect_text": "planted defect",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "mance-defect.test.ts:5:28\n      3|\n      4| test('planted defect must fail', () => {\n      5|   expect('planted defect').toBe('refused');\n       |                            ^\n      6| });\n      7|\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n\n Test Files  1 failed | 6 passed (7)\n      Tests  1 failed | 95 passed (96)\n   Start at  20:14:47\n   Duration  1.30s (import 55%, transform 24%, tests 19%, worker 3%)\n\n"
+            }
+          ]
+        },
+        {
+          "id": "typescript-tests-removed",
+          "language": "typescript",
+          "toolchain": "node",
+          "description": "every vitest module under tests/ is removed; vitest exits non-zero with no test files",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "prepare: npm ci",
+              "command": "npm ci",
+              "expect": "pass",
+              "expect_text": null,
+              "detail_text": null,
+              "note": null,
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "npm warn deprecated eslint@9.39.5: This version is no longer supported. Please see https://eslint.org/version-support for other options.\n\nadded 377 packages, and audited 378 packages in 2m\n\nfound 0 vulnerabilities\n"
+            },
+            {
+              "label": "profile command: npm test",
+              "command": "npm test",
+              "expect": "fail",
+              "expect_text": "No test files found",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\n> @pennilogic/web@0.1.0 test\n> vitest run\n\n\n RUN  v5.0.2 <scratch>/web\n\nNo test files found, exiting with code 1\n\ninclude: tests/**/*.test.{ts,tsx}\nexclude:  **/node_modules/**, **/.git/**\n\n"
+            }
+          ]
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "typescript": "proved"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [
+        "generated non-workflow files predate the current generator: scripts/check_repository.py"
+      ],
+      "result": "pass"
+    },
+    {
+      "repository": "PenniLogic/admin",
+      "profile": "admin",
+      "repository_id": 1394135000,
+      "language": "typescript",
+      "profile_timeout_minutes": 10,
+      "identity": {
+        "id": 1394135000,
+        "full_name": "PenniLogic/admin",
+        "default_branch": "main",
+        "expected_id": 1394135000,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "302c7b593600718e8d7fe59c111f8e9a5cd48514",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 1,
+        "output_tail": "Generated setup differs: scripts/check_repository.py\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": [
+          "scripts/check_repository.py"
+        ]
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (146 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py"
+        ],
+        "install": [
+          "npm ci --no-audit --no-fund"
+        ],
+        "build": [
+          "npm run build"
+        ],
+        "test": [
+          "npm test",
+          "npm run smoke"
+        ],
+        "lint": [
+          "npm run lint",
+          "npm run typecheck",
+          "npm run check:imports"
+        ],
+        "other": [],
+        "consumer_self_tests": []
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154858,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/admin",
+          "check_name": "CI",
+          "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+          "language": "typescript"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36723508295,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "302c7b593600718e8d7fe59c111f8e9a5cd48514",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T13:41:42Z",
+        "updated_at": "2026-09-30T13:42:38Z",
+        "html_url": "https://github.com/PenniLogic/admin/actions/runs/36723508295",
+        "wall_clock_seconds": 56,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "admin",
+                "--root",
+                "<scratch>\\admin",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (146 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "admin",
+                "--root",
+                "<scratch>\\admin",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (146 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "admin",
+                "--root",
+                "<scratch>\\admin",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "admin",
+                "--root",
+                "<scratch>\\admin",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "admin",
+                "--root",
+                "<scratch>\\admin",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml, scripts/check_repository.py\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "admin",
+                "--root",
+                "<scratch>\\admin",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "typescript-test-failing",
+          "language": "typescript",
+          "toolchain": "node",
+          "description": "a failing vitest module is planted under the tests directory and npm test must fail",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "prepare: npm ci --no-audit --no-fund",
+              "command": "npm ci --no-audit --no-fund",
+              "expect": "pass",
+              "expect_text": null,
+              "detail_text": null,
+              "note": null,
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\nadded 184 packages in 1m\n"
+            },
+            {
+              "label": "profile command: npm test",
+              "command": "npm test",
+              "expect": "fail",
+              "expect_text": "planted defect",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "nce-defect.test.ts:5:28\n      3|\n      4| test('planted defect must fail', () => {\n      5|   expect('planted defect').toBe('refused');\n       |                            ^\n      6| });\n      7|\n\n\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af\u23af[1/1]\u23af\n\n\n Test Files  1 failed | 6 passed (7)\n      Tests  1 failed | 281 passed (282)\n   Start at  20:18:19\n   Duration  27.66s (transform 65%, tests 32%, import 3%, worker 1%)\n\n"
+            }
+          ]
+        },
+        {
+          "id": "typescript-tests-removed",
+          "language": "typescript",
+          "toolchain": "node",
+          "description": "every vitest module under tests/ is removed; vitest exits non-zero with no test files",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "prepare: npm ci --no-audit --no-fund",
+              "command": "npm ci --no-audit --no-fund",
+              "expect": "pass",
+              "expect_text": null,
+              "detail_text": null,
+              "note": null,
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\nadded 184 packages in 1m\n"
+            },
+            {
+              "label": "profile command: npm test",
+              "command": "npm test",
+              "expect": "fail",
+              "expect_text": "No test files found",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": " )\nLines        : 0% ( 0/397 )\n================================================================================\nERROR: Coverage for lines (0%) does not meet global threshold (100%)\nERROR: Coverage for functions (0%) does not meet global threshold (100%)\nERROR: Coverage for statements (0%) does not meet global threshold (100%)\nERROR: Coverage for branches (0%) does not meet global threshold (100%)\n"
+            }
+          ]
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "typescript": "proved"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [
+        "generated non-workflow files predate the current generator: scripts/check_repository.py"
+      ],
+      "result": "pass"
+    },
+    {
+      "repository": "PenniLogic/infra",
+      "profile": "infra",
+      "repository_id": 1394135059,
+      "language": "python",
+      "profile_timeout_minutes": 10,
+      "identity": {
+        "id": 1394135059,
+        "full_name": "PenniLogic/infra",
+        "default_branch": "main",
+        "expected_id": 1394135059,
+        "verified": true
+      },
+      "api_error": null,
+      "clone_error": null,
+      "reused_existing_clone": true,
+      "main_sha": "8f605422f6688af514a0b205d635677f73f3df12",
+      "generated_baseline": {
+        "command": "python governance/generate.py --repository <profile> --root <scratch>/<profile> --check",
+        "exit_code": 0,
+        "output_tail": "Public repository baseline verified.\r\n",
+        "workflow_files_identical": true,
+        "workflow_differences": [],
+        "stale_files": []
+      },
+      "repository_check": {
+        "command": "python scripts/check_repository.py",
+        "exit_code": 0,
+        "output_tail": "Repository checks passed (43 files); no application acceptance implied.\r\n"
+      },
+      "detected_steps": {
+        "checker": [
+          "python scripts/check_repository.py",
+          "python governance/generate.py --repository infra --check"
+        ],
+        "install": [],
+        "build": [],
+        "test": [
+          "python -m unittest discover -s governance/tests",
+          "python -m unittest discover -s scripts/tests"
+        ],
+        "lint": [
+          "docker compose -f docker-compose.yml config --quiet"
+        ],
+        "other": [],
+        "consumer_self_tests": []
+      },
+      "required_checks": {
+        "produced": [
+          "CI"
+        ],
+        "required": [
+          {
+            "context": "CI",
+            "integration_id": 15368
+          }
+        ],
+        "missing": [],
+        "strict_up_to_date": true,
+        "branch_rules": {
+          "rule_types": [
+            "deletion",
+            "non_fast_forward",
+            "pull_request",
+            "required_linear_history",
+            "required_status_checks"
+          ],
+          "required_status_checks": [
+            {
+              "context": "CI",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "required_linear_history": true,
+          "non_fast_forward": true,
+          "deletion": true,
+          "pull_request": true
+        },
+        "rulesets": [
+          {
+            "id": 24154862,
+            "name": "Protect main",
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "ref_include": [
+              "~DEFAULT_BRANCH"
+            ],
+            "ref_exclude": [],
+            "rule_types": [
+              "deletion",
+              "non_fast_forward",
+              "pull_request",
+              "required_linear_history",
+              "required_status_checks"
+            ]
+          }
+        ]
+      },
+      "registry": {
+        "entry": {
+          "repo": "PenniLogic/infra",
+          "check_name": "CI",
+          "workflow_ref": "56d78eebf34e368d14e6c60158a95f5b9f3ba09f",
+          "language": "python"
+        },
+        "check_name_produced": true,
+        "workflow_ref_renders_current_workflow": true
+      },
+      "last_main_run": {
+        "id": 36721358414,
+        "name": "CI",
+        "conclusion": "success",
+        "head_sha": "8f605422f6688af514a0b205d635677f73f3df12",
+        "run_attempt": 1,
+        "run_started_at": "2026-09-30T13:24:04Z",
+        "updated_at": "2026-09-30T13:25:32Z",
+        "html_url": "https://github.com/PenniLogic/infra/actions/runs/36721358414",
+        "wall_clock_seconds": 88,
+        "budget_minutes": 10,
+        "within_budget": true
+      },
+      "planted_defects": [
+        {
+          "id": "workflow-test-step-removed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "every test command is deleted from the Run checks step of the rendered ci.yml",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "infra",
+                "--root",
+                "<scratch>\\infra",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "the checker validates shape and token boundaries, not which commands run; the drift check is the tripwire for a removed command",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (43 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-test-step-stubbed",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "the Run checks step is replaced by an echo that always succeeds",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "infra",
+                "--root",
+                "<scratch>\\infra",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "observe",
+              "expect_text": null,
+              "detail_text": null,
+              "note": "a stubbed command is caught by the drift check, not by the checker",
+              "exit_code": 0,
+              "timed_out": false,
+              "outcome": "not_detected",
+              "detail_surfaced": null,
+              "output_tail": "Repository checks passed (43 files); no application acceptance implied.\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-skipped-by-condition",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "an `if: false` condition is added to the Run checks step",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "infra",
+                "--root",
+                "<scratch>\\infra",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "conditions are not part of the generated workflows",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: conditions are not part of the generated workflows\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-unpinned-action",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "actions/checkout is referenced by the moving tag v4 instead of a commit",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "infra",
+                "--root",
+                "<scratch>\\infra",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-reusable-workflow-job",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "a job consumes a reusable workflow through jobs.<id>.uses (the adoption model PR D refused)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "infra",
+                "--root",
+                "<scratch>\\infra",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "consumer scripts/check_repository.py",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "Invalid or unsafe workflow",
+              "detail_text": "action must be immutable",
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": true,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: action must be immutable and one of the generated GitHub-owned actions\r\n"
+            }
+          ]
+        },
+        {
+          "id": "workflow-step-continue-on-error",
+          "language": "workflow",
+          "toolchain": "python",
+          "description": "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+              "command": [
+                "python",
+                "<infra>\\governance\\generate.py",
+                "--repository",
+                "infra",
+                "--root",
+                "<scratch>\\infra",
+                "--check"
+              ],
+              "expect": "fail",
+              "expect_text": ".github/workflows/ci.yml",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Generated setup differs: .github/workflows/ci.yml\r\n"
+            },
+            {
+              "label": "current infra template check_repository.py over the scratch tree",
+              "command": [
+                "python",
+                "scripts/check_repository.py"
+              ],
+              "expect": "fail",
+              "expect_text": "step-level key outside the generated step keys",
+              "detail_text": null,
+              "note": "the template of the generator running this job is copied over scripts/check_repository.py for this probe",
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "Invalid or unsafe workflow: .github/workflows/ci.yml: step-level key outside the generated step keys name, uses, with, run, env\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-tests-removed",
+          "language": "python",
+          "toolchain": "python",
+          "description": "every test module of each unittest start directory is removed; unittest exits 5 (NO TESTS RAN)",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s governance/tests",
+              "command": "python -m unittest discover -s governance/tests",
+              "expect": "fail",
+              "expect_text": "NO TESTS RAN",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 5,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\r\n----------------------------------------------------------------------\r\nRan 0 tests in 0.000s\r\n\r\nNO TESTS RAN\r\n"
+            },
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests",
+              "command": "python -m unittest discover -s scripts/tests",
+              "expect": "fail",
+              "expect_text": "NO TESTS RAN",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 5,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "\r\n----------------------------------------------------------------------\r\nRan 0 tests in 0.000s\r\n\r\nNO TESTS RAN\r\n"
+            }
+          ]
+        },
+        {
+          "id": "python-test-failing",
+          "language": "python",
+          "toolchain": "python",
+          "description": "a failing unittest module is planted in each unittest start directory and must be counted as a failure",
+          "outcome": "proved",
+          "reason": null,
+          "probes": [
+            {
+              "label": "profile command: python -m unittest discover -s governance/tests",
+              "command": "python -m unittest discover -s governance/tests",
+              "expect": "fail",
+              "expect_text": "test_planted_defect_must_fail",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "----------------------\r\nTraceback (most recent call last):\r\n  File \"<scratch>\\infra\\governance\\tests\\test_planted_conformance_defect.py\", line 8, in test_planted_defect_must_fail\r\n    self.fail(\"planted defect\")\r\n    ~~~~~~~~~^^^^^^^^^^^^^^^^^^\r\nAssertionError: planted defect\r\n\r\n----------------------------------------------------------------------\r\nRan 88 tests in 19.281s\r\n\r\nFAILED (failures=1)\r\n"
+            },
+            {
+              "label": "profile command: python -m unittest discover -s scripts/tests",
+              "command": "python -m unittest discover -s scripts/tests",
+              "expect": "fail",
+              "expect_text": "test_planted_defect_must_fail",
+              "detail_text": null,
+              "note": null,
+              "exit_code": 1,
+              "timed_out": false,
+              "outcome": "as_expected",
+              "detail_surfaced": null,
+              "output_tail": "-------------\r\nTraceback (most recent call last):\r\n  File \"<scratch>\\infra\\scripts\\tests\\test_planted_conformance_defect.py\", line 8, in test_planted_defect_must_fail\r\n    self.fail(\"planted defect\")\r\n    ~~~~~~~~~^^^^^^^^^^^^^^^^^^\r\nAssertionError: planted defect\r\n\r\n----------------------------------------------------------------------\r\nRan 73 tests in 143.318s\r\n\r\nFAILED (failures=1, skipped=1)\r\n"
+            }
+          ]
+        }
+      ],
+      "language_coverage": {
+        "workflow": "proved",
+        "python": "proved"
+      },
+      "produced_check_names": [
+        "CI"
+      ],
+      "failures": [],
+      "warnings": [],
+      "result": "pass"
+    }
+  ]
+}

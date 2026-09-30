@@ -266,8 +266,8 @@ def main(argv=None):
         api_requests=client.requests, rate_limit_remaining=client.rate_limit_remaining, not_run=not_run,
     )
     document = report_module.redact(document, replacements)
-    (args.output / "conformance-report.json").write_text(report_module.to_json(document), encoding="utf-8")
-    (args.output / "conformance-summary.md").write_text(report_module.render_markdown(document), encoding="utf-8")
+    (args.output / "conformance-report.json").write_text(report_module.to_json(document), encoding="utf-8", newline="\n")
+    (args.output / "conformance-summary.md").write_text(report_module.render_markdown(document), encoding="utf-8", newline="\n")
     print(f"Conformance {document['result'].upper()}: {document['repository_count']} repositories, "
           f"{len(document['failures'])} failure(s); report written to {args.output.name}/conformance-report.json")
     for failure in document["failures"]:
