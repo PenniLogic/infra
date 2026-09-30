@@ -17,13 +17,13 @@
       "id": 1394134381,
       "purpose": "Shared contributor guidance and independent AI agent profiles",
       "state": "Shared setup; not an application.",
-      "commands": ["python scripts/check_repository.py"]
+      "commands": ["python scripts/check_repository.py", "python scripts/check_agent_profiles.py", "python -m unittest discover -s scripts/tests"]
     },
     "docs": {
       "id": 1394134442,
       "purpose": "Product specifications, architecture decisions and delivery backlog",
       "state": "Product/design source and historical planning evidence; not a release approval.",
-      "commands": ["python scripts/check_repository.py", "python scripts/check_docs.py", "python -m unittest discover -s scripts/tests"]
+      "commands": ["python scripts/check_repository.py", "python scripts/check_docs.py", "python scripts/check_test_strategy.py", "python -m unittest discover -s scripts/tests"]
     },
     "contracts": {
       "id": 1394134505,
@@ -34,7 +34,7 @@
     "api": {
       "id": 1394134582,
       "purpose": "Kotlin/Ktor core API with deterministic server-authoritative money",
-      "state": "Accepted health-service scaffold only. Authentication, ledger and product APIs are not implemented.",
+      "state": "Kotlin/Ktor health-service scaffold from the reviewed initial import only; no authentication, ledger or product APIs are implemented.",
       "java": "21",
       "timeout_minutes": 30,
       "commands": ["python scripts/check_repository.py", "python scripts/quality.py build", "python -m unittest discover -s scripts/tests"]
