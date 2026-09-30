@@ -189,8 +189,10 @@ class ConditionTests(unittest.TestCase):
                 with self.subTest(level=level, condition=condition):
                     with self.assertRaisesRegex(ValueError, "secrets"):
                         validate(placed(level, condition))
-        # The snapshot mapping is otherwise not a condition: without `if` only its strings matter.
-        validate(placed("snapshot-image-name", "ubuntu-custom"))
+        # The snapshot mapping is not a condition; the job-key allowlist refuses it as a key, and a
+        # token inside it is still reported by the tripwire first.
+        with self.assertRaisesRegex(ValueError, "job-level key"):
+            validate(placed("snapshot-image-name", "ubuntu-custom"))
         with self.assertRaisesRegex(ValueError, "secrets"):
             validate(placed("snapshot-image-name", "github\n.token"))
 
@@ -343,7 +345,9 @@ class ActionAllowlistTests(unittest.TestCase):
             validate(workflow)
         workflow = json.loads(generator.workflow("web"))
         workflow["jobs"]["reuse"] = {"uses": f"actions/checkout@{SHA}", "with": {"persist-credentials": False}}
-        with self.assertRaisesRegex(ValueError, "only the standard hosted Ubuntu runner"):
+        # A listed action as a reusable-workflow job passes the action rule; the job-key allowlist
+        # then refuses `uses`/`with` at job level before the runner rule is reached.
+        with self.assertRaisesRegex(ValueError, "job-level key"):
             validate(workflow)
         # Any other nesting of `uses` is held to the same rule.
         for path in (("jobs", "ci", "container"), ("jobs", "ci", "steps", -1, "env"), ("jobs", "ci", "env")):
