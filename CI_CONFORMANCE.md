@@ -1,0 +1,312 @@
+# CI conformance across the nine PenniLogic repositories
+
+Owner ticket: [PenniLogic/infra#24](https://github.com/PenniLogic/infra/issues/24) (T-SCA-INF-01) with the
+coordinator addendum of 2026-09-30. This document is maintained by hand; nothing in it is generated.
+
+The "one workflow set adopted by all eight repositories" is the governance generator
+(`governance/generate.py` + `governance/repository-profiles.json`): every consumer's
+`.github/workflows/ci.yml`, `scripts/check_repository.py`, `AGENTS.md` and the rest of the baseline are
+rendered from one source and regenerated from a pinned infra commit. Adoption is proven by byte-identical
+generation plus the drift tripwire, **not** by `workflow_call` reusable workflows: generator PR D
+([#48](https://github.com/PenniLogic/infra/pull/48)) makes the checker refuse `jobs.<id>.uses` because a
+reusable workflow reached through `uses:` carries the caller's token into code the caller does not review.
+Do not reintroduce reusable-workflow adoption.
+
+## What the conformance job does
+
+`python governance/conformance/run.py` is a standard-library-only, read-only job. For every profile in
+`repository-profiles.json` it:
+
+1. clones the repository's `main` shallowly into a scratch directory (or reuses a clean clone of the same
+   origin; `--refresh` advances it) and records the cloned commit;
+2. asserts the numeric repository id through the read-only REST API against the profile's `id`;
+3. compares every generated artifact byte for byte with the current generator rendering: a differing
+   **workflow** file fails the repository, differing non-workflow files (a consumer that has not
+   regenerated since the last generator PR) are a warning listing the stale files;
+4. runs the consumer's own `python scripts/check_repository.py` on its `main`;
+5. classifies the profile's commands into build, test and lint steps with a reviewed pattern table
+   (`conformance/steps.py`); a profile with no recognisable test command fails;
+6. plants defects in the scratch tree, runs the profile's real command, restores the tree byte for byte
+   and records whether the command refused the defect (`conformance/defects.py`, see the catalogue below);
+7. reads the repository's rulesets and the effective rules on `main`, and fails when a required
+   status-check context is not produced by a job of the workflow on `main` (or is bound to an integration
+   other than GitHub Actions, app id 15368);
+8. checks the check-name registry entry (`conformance/check-names.json`) and verifies that the recorded
+   `workflow_ref` generator commit renders the workflow currently on the consumer's `main`;
+9. records the last completed push run of the `CI` workflow on `main`, its conclusion and wall-clock
+   (`run_started_at` to `updated_at`, queue time excluded) against the ten-minute budget;
+10. writes `conformance-report.json` (schema `pennilogic.infra.conformance/1`) and
+    `conformance-summary.md` with every local path and credential-shaped string redacted, and exits 1 when
+    any repository fails.
+
+It never pushes, comments, or writes to any repository. Probe processes run with an environment stripped
+of every variable whose name looks like a credential. The harness refuses to plant into a tree that
+`git status` does not report clean, and a tree that is not clean again after restoration is an `error`,
+which fails the job and stops further planting in that repository.
+
+Trust boundary: proving that a consumer's real command refuses a defect means executing that consumer's
+code (`scripts/check_repository.py`, `check_docs.py`, `npm ci` lifecycle scripts, `uv sync`, Gradle). Run
+the job on a disposable runner with `contents: read` and no token, as the requested workflow does, or
+locally only against the organization's own repositories. The fixtures prove the honest failure modes
+(a removed, stubbed or skipped test step, an empty suite, a failing test that is really executed); a
+consumer whose maintainers deliberately rewrite their own test runner to fake those outputs is a review
+finding, not something a probe can prove from outside. Do not share one scratch directory between
+concurrent runs.
+
+### Running it
+
+```text
+python governance/conformance/registry.py                       # validate the check-name registry alone
+python governance/conformance/run.py --scratch <dir> --output <dir> --github-client anonymous
+python governance/conformance/run.py --scratch <dir> --output <dir> --exercise python,node,uv --refresh
+python -m unittest discover -s governance/tests -p "test_conformance_*.py"
+```
+
+Options: `--repository <profile>` (repeatable) limits the run; `--github-client auto|gh|anonymous`
+(`auto` uses the `gh` CLI's stored credential when it is installed and authenticated, else anonymous);
+`--exercise` names the toolchains whose planted defects run (`python` by default; `node`, `uv`, `java`,
+`android` need the matching toolchain on the machine and a network for `npm ci` / `uv sync`);
+`--command-timeout`, `--budget-minutes`, `--generated-at`. Exit status: 0 pass, 1 at least one
+repository failed, 2 the job itself could not run (registry invalid, unknown profile, `gh` requested but
+absent).
+
+The anonymous client is the design the scheduled job uses (generated workflows never receive a token):
+five GET requests per repository (identity, ruleset list, ruleset detail, branch rules, runs), 45 for nine
+repositories, against GitHub's limit of 60 unauthenticated requests per hour per address. A second run
+within the hour from the same address can exhaust the limit; the job then fails closed with
+`read-only API unavailable` for the repositories it could not read.
+
+A run that is killed while a defect is planted cannot restore the tree (the process never reaches its
+restore step); the next run refuses to plant into that clone (`scratch checkout is not clean`) and fails
+that repository. Delete the scratch directory, or the clone, and run again. The scheduled job always
+starts from an empty scratch directory.
+
+### Reading the report
+
+Per repository the JSON carries `identity`, `main_sha`, `generated_baseline` (`workflow_files_identical`,
+`workflow_differences`, `stale_files`, the generator's own `--check` exit code), `repository_check`,
+`detected_steps` (`build`, `test`, `lint`, `checker`, `install`, `other`, `consumer_self_tests`),
+`required_checks` (`produced`, `required`, `missing`, `strict_up_to_date`, `branch_rules`, `rulesets` with
+bypass actors), `registry`, `last_main_run` (`wall_clock_seconds`, `within_budget`, `head_sha`),
+`planted_defects`, `language_coverage`, then `failures`, `warnings` and `result`.
+
+Failures (any one fails the repository and the job): repository id mismatch or unreadable API; scratch
+checkout unavailable; a generated workflow file that differs from the generator; the consumer's own
+checker failing; no test step detected; no required status check on `main`; a required context without a
+producing workflow job; no registry entry, a registry check name the workflow does not produce, or a
+`workflow_ref` that does not render the workflow on `main`; a planted defect `not_proved` or `error`; a
+red last `main` CI run; a run over the ten-minute budget for a profile whose reviewed timeout is the
+default ten minutes.
+
+Warnings (recorded, not failing): stale non-workflow generated files; a ruleset that does not require an
+up-to-date branch; planted defects of a toolchain not exercised in this run; no completed `main` run
+found; a run over ten minutes for a profile with a larger reviewed `timeout_minutes` (contracts, api,
+android run with 30); `main` moved since the last completed run.
+
+Planted-defect outcomes: `proved` (every required probe behaved as required), `not_proved`, `recorded`
+(observation-only fixture), `not_exercised` (toolchain excluded from the run), `error` (timeout, could not
+start, tree not clean or not restored). Probe outcomes: `as_expected` / `unexpected` for required probes,
+`detected` / `not_detected` for observations; `detail_surfaced` records whether the consumer's checker
+printed its rule text (only checkers regenerated after PR E, [#50](https://github.com/PenniLogic/infra/pull/50),
+do; older ones refuse with the same exit code and the line `Invalid or unsafe workflow: <file>`).
+
+A passing report is a repository-foundation result. It is not product, release, accessibility, load or
+security acceptance.
+
+## Planted-defect catalogue
+
+| Fixture | Language | Toolchain | Applies to | Required probe(s) |
+| --- | --- | --- | --- | --- |
+| `workflow-test-step-removed` | workflow | python | every profile | generator drift check names `ci.yml`; the consumer checker is observed (it validates shape, not which commands run) |
+| `workflow-test-step-stubbed` | workflow | python | every profile | drift check names `ci.yml` after the Run checks step becomes `echo tests skipped` |
+| `workflow-step-skipped-by-condition` | workflow | python | every profile | drift check; consumer checker refuses (`if` rule) |
+| `workflow-unpinned-action` | workflow | python | every profile | drift check; consumer checker refuses `actions/checkout@v4` (pinned-action rule) |
+| `workflow-reusable-workflow-job` | workflow | python | every profile | drift check; consumer checker refuses `jobs.reuse.uses` |
+| `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current infra template copied over the scratch checker refuses (PR E rule 16) |
+| `python-tests-removed` | python | python | profiles with `unittest discover` | the exact profile command exits 5, `NO TESTS RAN` |
+| `python-test-failing` | python | python | profiles with `unittest discover` | the exact profile command exits 1 naming `test_planted_defect_must_fail` |
+| `python-pytest-failing` / `python-pytest-removed` | python | uv | ai-service | `uv sync --locked` then `uv run --locked pytest` exits 1 / 5 |
+| `documentation-index-link-broken` | documentation | python | docs | `check_docs.py` fails: `generated slot ADR-001 differs` |
+| `documentation-dangling-supersedes` | documentation | python | docs | `check_docs.py` fails: `supersedes ADR-099, which has no source record` |
+| `documentation-body-link-broken` | documentation | python | docs | observation: a broken relative link outside the ADR graph is **not** detected (see limitations) |
+| `typescript-test-failing` / `typescript-tests-removed` | typescript | node | web, admin | `npm ci` then `npm test` exits non-zero (`planted defect` / `No test files found`) |
+| `kotlin-test-failing` | kotlin | java | api | `python scripts/quality.py test` must fail on a planted JUnit 5 test |
+| `kotlin-android-self-test` | kotlin | android | android | the consumer-owned `quality_gates.py self-test` (plants a failing test, spotless and lint defects, UP-TO-DATE and FROM-CACHE results) must exit 0; needs the Android SDK |
+
+Kotlin fixtures are not exercised by the Python-only job; their evidence is the consumer's last `main`
+CI run (api runs `quality.py build`, android runs its own `self-test` on every run) recorded in the
+report, and the warning says so explicitly. The python fixtures still run for api and android
+(`scripts/tests`). Consumer-owned planted-defect commands present in the profiles are listed under
+`detected_steps.consumer_self_tests` (android `quality_gates.py self-test`, web `check:bundle:planted`).
+
+## Check-name registry
+
+`governance/conformance/check-names.json` (schema `governance/conformance/check-names.schema.json`) has
+one entry per repository: `repo` (`PenniLogic/<name>`), `check_name` (the context the workflow produces and
+the ruleset requires; `CI` everywhere), `workflow_ref` (the full `PenniLogic/infra` commit whose generator
+rendered the workflow on the repository's `main`) and `language` (`kotlin`, `typescript`, `python`,
+`documentation`, `openapi`). `registry.py` validates it with the stdlib schema validator
+(`conformance/schema.py`, a reviewed subset that refuses unknown keywords) and cross-checks it against the
+profiles: exactly one entry per profile, the check name produced by the rendered `ci.yml` and equal to the
+policy's `required_native_check`, the language derived from the profile toolchain. The tests reject an
+entry missing any required field, an unknown field, a short `workflow_ref`, an unknown language and a
+duplicate repository, and verify that every `workflow_ref` renders the current workflow from Git history.
+
+Update the registry in the same PR as a profile change that alters a workflow: set `workflow_ref` to the
+merged generator commit the consumer regenerates from (the eight consumers currently record
+`4e6e749fd849ae58f2b13c21215022c1bc410b9f`, the wave they regenerated from; infra records
+`56d78eebf34e368d14e6c60158a95f5b9f3ba09f`, the commit that last changed its own `ci.yml`).
+
+## Onboarding a new repository
+
+A repository adopts the baseline by adding a generator profile, never by copying steps:
+
+1. Add the repository to `governance/repository-profiles.json` with its numeric `id`, `purpose`, `state`,
+   toolchain fields (`node`, `java`, `android_sdk`, ...), `install` and `commands` (the first command is
+   always `python scripts/check_repository.py`; every command is one printable line without `${{`), as a
+   reviewed generator PR. Precedent: the contracts profile from the contracts#2 generated-setup request,
+   [PenniLogic/infra#49](https://github.com/PenniLogic/infra/pull/49) (merged as `4e6e749f`).
+2. Add the registry entry (`repo`, `check_name` = `CI`, `workflow_ref` = the merged generator commit,
+   `language`) in the same PR; `test_conformance_registry.py` fails until every profile has exactly one.
+3. After the merge, regenerate in the consumer's own PR
+   (`python <infra>/governance/generate.py --repository <name> --root .`), commit the generated files
+   unchanged, and let the native `CI` job run.
+4. Ask the owner to apply the `Protect main` ruleset (PR-only squash, required `CI` from app 15368,
+   up-to-date branch, resolved threads, linear history, empty bypass) — rulesets are owner-administered.
+5. Run the conformance job; the new row must pass, including its planted defects.
+
+## Ruleset state (read-only, live run of 2026-09-30) and proposals
+
+The live run's redacted output is committed as evidence in `governance/conformance/evidence/`
+(`conformance-report-2026-09-30.json`, `conformance-summary-2026-09-30.md`): produced locally by the
+implementer with `--github-client anonymous --exercise python,node,uv --refresh`, so it is a reproducible
+claim, not a workflow artifact; once the generated workflow exists, its uploaded artifact supersedes it.
+
+Every one of the nine repositories has exactly one ruleset, `Protect main` (active, target `branch`,
+`~DEFAULT_BRANCH`), with rule types `deletion`, `non_fast_forward`, `required_linear_history`,
+`pull_request` (required approving reviews 0, thread resolution required, squash merges) and
+`required_status_checks` requiring `CI` from integration 15368 with `strict_required_status_checks_policy`
+true, and an empty bypass-actor list. The registry, the rendered workflows and the rulesets agree: the
+required context `CI` is produced by the single generated job on every repository. Direct pushes to `main`
+are refused by the `pull_request` rule with an empty bypass list; the merge history consists of squash
+merges of reviewed PRs. This was read, not tested by pushing.
+
+Proposed changes (text only; an agent session does not apply ruleset changes):
+
+- **Make the conformance job a required check?** Not yet. It runs against the other repositories'
+  `main`, not against the PR under review, so it cannot gate a PR on its own content; it stays a
+  scheduled, report-only job whose failure is a finding for the coordinator. If the owner wants a
+  blocking signal, the honest option is a required `CI` step in infra that validates the registry
+  (`python governance/conformance/registry.py`) — a generator profile change for infra.
+- **Stack check names.** The original specification asked for per-stack contexts. With one generated
+  job per repository the standardised context is `CI` everywhere; splitting into `build`/`test`/`lint`
+  jobs would add contexts to require but also three checkouts per run. No change proposed now; if a
+  profile later renders more than one job, add each job name to the registry and to the ruleset.
+- **Rulesets keep requiring `CI` from integration 15368 only**; the report fails if a context appears that
+  no workflow produces, which protects against a stale required context after a rename.
+
+## Generated-setup request: the scheduled workflow
+
+`.github/workflows/conformance.yml` cannot be added by this PR. Every workflow file is validated by the
+generated `scripts/check_repository.py`, which runs first in CI, and its rules refuse the file regardless of
+content (verified with the template's `validate_workflow` on 2026-09-30):
+
+| Candidate | Refusing rule |
+| --- | --- |
+| any third workflow file (single job `conformance`) | 22 `Copilot setup must contain its documented single job` |
+| `on.schedule` | 17 `unreviewed workflow trigger` |
+| `actions/upload-artifact@<sha>` | 8 `action must be immutable and one of the generated GitHub-owned actions` |
+| `env: GH_TOKEN: ${{ github.token }}` | 5 `unreviewed workflow expression; public jobs must not receive secrets` (rule 6 behind it) |
+
+The checker is not weakened here and no generated file is hand-edited. The request to the generator
+owner (PR F, [#54](https://github.com/PenniLogic/infra/pull/54), or a sibling) is:
+
+1. **A third generated workflow for the infra profile only**, `.github/workflows/conformance.yml`, rendered
+   by `generate.py` in JSON syntax exactly as below (action SHAs are the generator's `actions` table; the
+   upload-artifact SHA is `v7.0.1`, resolved read-only on 2026-09-30, to be reviewed before adoption):
+
+   ```json
+   {
+     "name": "Conformance",
+     "on": {
+       "workflow_dispatch": {},
+       "schedule": [{"cron": "17 5 * * 1"}]
+     },
+     "permissions": {"contents": "read"},
+     "concurrency": {"group": "${{ github.workflow }}", "cancel-in-progress": true},
+     "jobs": {
+       "conformance": {
+         "name": "Conformance",
+         "runs-on": "ubuntu-24.04",
+         "timeout-minutes": 60,
+         "steps": [
+           {"name": "Checkout", "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {"persist-credentials": false, "fetch-depth": 0}},
+           {"name": "Python", "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+            "with": {"python-version": "3.14"}},
+           {"name": "Run conformance",
+            "run": "mkdir -p conformance-report\npython governance/conformance/run.py --scratch \"$RUNNER_TEMP/conformance-scratch\" --output conformance-report --github-client anonymous --exercise python || touch conformance-report/FAILED"},
+           {"name": "Upload report", "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            "with": {"name": "conformance-report", "path": "conformance-report"}},
+           {"name": "Fail on findings", "run": "test ! -f conformance-report/FAILED"}
+         ]
+       }
+     }
+   }
+   ```
+
+   The report is uploaded before the job fails, without an `if: always()` condition (rule 7 refuses `if`),
+   by recording the failure in a file and failing in the last step. `fetch-depth: 0` is needed so the
+   registry's `workflow_ref` commits can be rendered from history.
+2. **Rule 22**: accept `conformance.yml` whose job set is exactly `{"conformance"}` named `Conformance`
+   (name-scoped, like the existing `ci.yml` / `copilot-setup-steps.yml` rules), so no consumer surface
+   changes.
+3. **Rule 17**: accept `schedule` only in `conformance.yml`, as a list of `{"cron": "<string>"}` mappings;
+   `push`/`pull_request` stay refused there so the job never runs on PR content it did not review.
+4. **Rules 8/9**: add `actions/upload-artifact` at the reviewed commit with inputs `name` and `path` to
+   `WORKFLOW_ACTIONS`; `test_workflow_shape.py` derives the allowlists from the rendered profiles, so the
+   template and the generator change land in the same PR. `contents: read` suffices; upload-artifact uses
+   the runtime artifact token, not the repository token.
+5. **No token channel** (preferred): the job reads with the anonymous client and public clones. Consequence:
+   60 requests per hour per runner address, of which the job uses 45; a manual dispatch within an hour of
+   the scheduled run from the same address may fail closed. If a token ever becomes unavoidable, it would
+   need a reviewed exception to rules 5 and 6 for exactly `GH_TOKEN: ${{ github.token }}` on the run
+   step; this document does not request it.
+6. **Phase 2 (separate request, after the workflow exists)**: exercise the TypeScript and pytest fixtures
+   on the runner as well, with `actions/setup-node` (needs an `.nvmrc` with `24.14.0` in infra, a profile
+   `node` field) and the ai-service `uv` install line, then `--exercise python,node,uv`. Until then the
+   scheduled job proves refusal for the workflow, python and documentation fixtures, and the TypeScript
+   and pytest refusals rest on the local live run recorded in the PR plus the consumers' own `main` runs.
+
+Rollout: report-only (this PR provides the job, the registry and the local evidence; the workflow lands
+through the generator). Making it blocking is an owner decision recorded above. Rollback: remove the
+generated workflow from the infra profile and regenerate; the registry and the job code are inert
+without it.
+
+## Limitations recorded honestly
+
+- A test body that is trivially passing but keeps the count above zero is not detectable by this job:
+  the runner reports success. The job proves that removed tests (`NO TESTS RAN` / `no tests ran` /
+  `No test files found`), a removed or stubbed test step (drift) and an executed failing test are all
+  refused. Semantic emptiness is left to review and to the consumers' own coverage/mutation gates
+  (admin's 100 % thresholds, the docs test strategy).
+- `check_docs.py` detects a broken ADR index link and a dangling `supersedes` reference; it does not check
+  arbitrary Markdown links (`documentation-body-link-broken` records `not_detected`). A general link
+  checker is a docs decision, not added here (the addendum asked for no second checker).
+- Consumers regenerated at `4e6e749f` run the pre-PR E checker: it refuses the planted workflow defects
+  with the same exit code but without the rule text, and it does not refuse a step-level
+  `continue-on-error` (only the current template does, proved here by copying the template over the
+  scratch checkout). The drift check catches all of them. The stale-file warnings in the report are the
+  regeneration wave still to run.
+- The wall-clock figure is the run's own duration; queue time is excluded. android's last `main` run took
+  9 min 33 s, inside the ten-minute budget but close; its reviewed profile timeout is 30 minutes.
+- Kotlin planted defects are not exercised by the Python-only job (evidence: last `main` runs). Node and uv
+  planted defects were exercised in the local live run because those toolchains were present; the
+  scheduled job would run `--exercise python` until the generator adds Node and uv to the conformance
+  workflow (phase 2 above). A consumer that stubs `npm test` in `package.json` or `pytest` in its lock
+  file therefore is not caught by the Python-only scheduled job — its own `main` run stays green — until
+  phase 2 or a local run with those toolchains.
+- The job reads consumers' `main`, never the pull request under review, so it cannot gate a consumer PR;
+  it reports the state of what was merged.
+- The registry `workflow_ref` verification needs the commit in local history; a shallow infra checkout
+  records `unverifiable` instead of failing.
