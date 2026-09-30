@@ -39,12 +39,12 @@ WORKFLOW_SECRET_ACCESS = re.compile(
     r"\bsecrets\b|\bgithub\b\s*(?:\.\s*token\b|\[)|\btojson\s*\(\s*github\b", re.IGNORECASE
 )
 # Generated workflows use exactly these GitHub-owned actions with exactly these
-# inputs, each action pinned to a commit. Every other `uses` or input is refused
-# wherever it appears: an unlisted action such as actions/github-script receives
-# `github.token` through a default input without any visible expression, an
-# unlisted input such as checkout's github-server-url would send that default
-# token to another host, and a job-level `uses` would hand the token to a
-# reusable workflow this check never sees.
+# inputs, each action pinned to exactly the generated commit. Every other `uses`
+# or input is refused wherever it appears: an unlisted action such as
+# actions/github-script receives `github.token` through a default input without
+# any visible expression, an unlisted input such as checkout's github-server-url
+# would send that default token to another host, and a job-level `uses` would
+# hand the token to a reusable workflow this check never sees.
 WORKFLOW_ACTIONS = {
     "actions/checkout": {"persist-credentials", "fetch-depth"},
     "actions/setup-python": {"python-version"},
@@ -52,6 +52,20 @@ WORKFLOW_ACTIONS = {
     "actions/setup-java": {"distribution", "java-version"},
 }
 ACTION_COMMIT = re.compile(r"[0-9a-f]{40}")
+# The commit each listed action is pinned to. generate.py renders this mapping
+# from the `actions` pins of repository-profiles.json whenever it copies this
+# template into a consumer, so one pin bump changes ci.yml and this checker in
+# the same regeneration; the template carries the current pins too so that it can
+# be imported and tested unrendered, and a governance test fails when the two
+# differ. A listed action at any other commit, including a fork's commit that is
+# reachable by SHA through the upstream repository, is refused before its inputs
+# are read, because it would run foreign code holding the default input token.
+WORKFLOW_ACTION_PINS = {
+    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-java": "de7274f081f381c8f8158605e0321c36c376e2e6",
+    "actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
+    "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+}
 # Generated workflows use exactly these keys at the top level, in a job and in a
 # step; every other key at these placements is refused, so nothing is accepted by
 # omission. A job-level `container` would run the generated JavaScript actions,
@@ -111,6 +125,10 @@ def json_document(content):
     encoding detection, so the document this checker validates could differ
     from the bytes GitHub reads; decoding here keeps both views identical.
     """
+    text = content.decode("utf-8")
+    if text.startswith("\ufeff"):
+        raise Refused("UTF-8 byte order mark before the JSON document")
+
     def unique(pairs):
         value = {}
         for key, item in pairs:
@@ -118,9 +136,6 @@ def json_document(content):
                 raise Refused("Duplicate JSON key")
             value[key] = item
         return value
-    text = content.decode("utf-8")
-    if text.startswith("\ufeff"):
-        raise Refused("UTF-8 byte order mark before the JSON document")
     return json.loads(text, object_pairs_hook=unique)
 
 
@@ -167,6 +182,10 @@ def validate_mappings(value):
             action, _, commit = str(mapping["uses"]).partition("@")
             if action not in WORKFLOW_ACTIONS or ACTION_COMMIT.fullmatch(commit) is None:
                 raise Refused("action must be immutable and one of the generated GitHub-owned actions")
+            # Exact, case-sensitive comparison with the rendered pin: a differently cased
+            # or otherwise foreign 40-hex commit is drift from the generated file.
+            if commit != WORKFLOW_ACTION_PINS.get(action):
+                raise Refused("action commit differs from the generated pin; regenerate instead of editing it")
             inputs = mapping.get("with", {})
             if not isinstance(inputs, dict) or set(inputs) - WORKFLOW_ACTIONS[action]:
                 raise Refused("unreviewed action input; only the generated inputs are accepted")
@@ -217,14 +236,23 @@ def validate_workflow(name, data):
         # writable job credentials stay refused even if JOB_KEYS is ever widened by mistake.
         if job.get("permissions", {"contents": "read"}) != {"contents": "read"}:
             raise Refused("writable job credentials are not permitted")
-    if name.endswith("/ci.yml"):
-        if not {"push", "pull_request"} <= set(events):
-            raise Refused("CI must run on both main pushes and pull requests")
-        if jobs.get("ci", {}).get("name") != "CI":
+    # The generator emits exactly two workflow files, each with exactly one job and its own
+    # trigger set. A third file, an added plain job, a dropped manual dispatch or a setup
+    # workflow that gained push/pull_request is drift the key allowlists above cannot see.
+    if name == ".github/workflows/ci.yml":
+        if set(events) != {"push", "pull_request", "workflow_dispatch"}:
+            raise Refused("CI must run on exactly main pushes, pull requests and manual dispatch")
+        if set(jobs) != {"ci"}:
+            raise Refused("CI must contain its documented single job")
+        if jobs["ci"].get("name") != "CI":
             raise Refused("Keep the required native CI job name stable")
-    else:
+    elif name == ".github/workflows/copilot-setup-steps.yml":
+        if set(events) != {"workflow_dispatch"}:
+            raise Refused("Copilot setup must run on manual dispatch only")
         if set(jobs) != {"copilot-setup-steps"}:
             raise Refused("Copilot setup must contain its documented single job")
+    else:
+        raise Refused("workflow file outside the generated pair ci.yml and copilot-setup-steps.yml")
 
 
 def check(files):

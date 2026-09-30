@@ -22,6 +22,10 @@ PATTERNS = {
     "gradle_wrapper_jar_sha256": re.compile(r"[0-9a-f]{64}"),
     "sdk_package": re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(;[A-Za-z0-9][A-Za-z0-9._-]*)*"),
 }
+# Every generated action is pinned to a lowercase 40-hex commit, never a tag or branch; the
+# same pins are rendered into the consumer checker, which compares them exactly.
+ACTION_PIN = re.compile(r"[0-9a-f]{40}")
+ACTION_PINS_BLOCK = re.compile(r'^WORKFLOW_ACTION_PINS = \{\n(?:    "[^"\n]*": "[^"\n]*",\n)*\}\n', re.MULTILINE)
 # Job-level env applies to every step, including the JS actions and package
 # installs, so only reviewed telemetry opt-outs are accepted; extend by generator change.
 ENV_KEYS = {"NEXT_TELEMETRY_DISABLED"}
@@ -137,6 +141,33 @@ def profile_for(repo):
     profile = PROFILES["repositories"][repo]
     validate_profile(repo, profile)
     return profile
+
+
+def action_pins():
+    """Return {action: commit} for every generated action, refusing anything but a commit pin."""
+    pins = {}
+    for name, pin in PROFILES["actions"].items():
+        if not (isinstance(pin, str) and ACTION_PIN.fullmatch(pin)):
+            raise ValueError(f"actions.{name} must be a lowercase 40-hex commit")
+        pins[f"actions/{name}"] = pin
+    return pins
+
+
+def checker():
+    """Copy the checker template with WORKFLOW_ACTION_PINS rendered from the canonical pins.
+
+    The block is replaced, not trusted: the consumer checker binds exactly the commits that
+    tool_steps() renders into its workflows, whatever the template's own copy says, and a
+    governance test keeps the template's copy identical so it can be tested unrendered.
+    """
+    template = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
+    block = "WORKFLOW_ACTION_PINS = {\n" + "".join(
+        f'    "{action}": "{pin}",\n' for action, pin in sorted(action_pins().items())
+    ) + "}\n"
+    rendered, count = ACTION_PINS_BLOCK.subn(lambda match: block, template)
+    if count != 1:
+        raise ValueError("templates/check_repository.py must define WORKFLOW_ACTION_PINS exactly once")
+    return rendered
 
 
 def android_sdk_script(packages):
@@ -495,7 +526,7 @@ No open-source license was selected by this setup migration; public visibility
 alone is not a license grant. Existing source notices are preserved.
 """,
         ".gitattributes": "".join(line + "\n" for line in ATTRIBUTES + profile.get("attributes", [])),
-        "scripts/check_repository.py": (HERE / "templates/check_repository.py").read_text(encoding="utf-8"),
+        "scripts/check_repository.py": checker(),
         "scripts/setup.py": (HERE / "templates/setup.py").read_text(encoding="utf-8"),
     }
 
