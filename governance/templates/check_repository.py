@@ -52,9 +52,29 @@ WORKFLOW_ACTIONS = {
     "actions/setup-java": {"distribution", "java-version"},
 }
 ACTION_COMMIT = re.compile(r"[0-9a-f]{40}")
+# Generated workflows use exactly these keys at the top level, in a job and in a
+# step; every other key at these placements is refused, so nothing is accepted by
+# omission. A job-level `container` would run the generated JavaScript actions,
+# and their default `INPUT_TOKEN`, inside an attacker image; `services`,
+# `snapshot`, `environment`, `strategy`, `outputs`, `defaults`, `needs`,
+# `continue-on-error`, `if` and a reusable-workflow `uses`/`with`/`secrets` fall
+# under the same rule. A job-level `permissions` is not emitted (the exact
+# workflow-level `permissions` is the rule) and neither are step `id`, `shell`,
+# `working-directory` or `timeout-minutes`; extend by generator change only.
+WORKFLOW_KEYS = {"name", "on", "permissions", "concurrency", "jobs"}
+JOB_KEYS = {"name", "runs-on", "timeout-minutes", "env", "steps"}
+STEP_KEYS = {"name", "uses", "with", "run", "env"}
 SENSITIVE_NAMES = {".env", "id_rsa", "id_ed25519"}
 SENSITIVE_SUFFIXES = (".p12", ".pfx", ".keystore", ".jks", ".bks", ".pem")
 TEXT_EXTENSIONS = {".md", ".json", ".yaml", ".yml", ".py", ".kt", ".kts", ".xml", ".toml", ".properties"}
+
+
+class Refused(ValueError):
+    """One rule of this checker refused a document.
+
+    The message is static rule text: it never carries a key, value or other
+    content of the refused file, so check() can print it as is.
+    """
 
 
 def git(*args):
@@ -85,14 +105,23 @@ def inventory(staged=False):
 
 
 def json_document(content):
+    """Parse one strictly UTF-8 JSON document without a byte order mark or duplicate keys.
+
+    json.loads(bytes) would skip a UTF-8 BOM and accept UTF-16/32 through its
+    encoding detection, so the document this checker validates could differ
+    from the bytes GitHub reads; decoding here keeps both views identical.
+    """
     def unique(pairs):
         value = {}
         for key, item in pairs:
             if key in value:
-                raise ValueError("Duplicate JSON key")
+                raise Refused("Duplicate JSON key")
             value[key] = item
         return value
-    return json.loads(content, object_pairs_hook=unique)
+    text = content.decode("utf-8")
+    if text.startswith("\ufeff"):
+        raise Refused("UTF-8 byte order mark before the JSON document")
+    return json.loads(text, object_pairs_hook=unique)
 
 
 def workflow_strings(value):
@@ -119,60 +148,83 @@ def workflow_mappings(value):
             yield from workflow_mappings(item)
 
 
-def validate_expressions(name, value):
+def validate_expressions(value):
     for text in workflow_strings(value):
         start = text.find("${{")
         while start != -1:
             end = text.find("}}", start)
             if end == -1 or text[start:end + 2] not in WORKFLOW_EXPRESSIONS:
-                raise ValueError(f"{name}: unreviewed workflow expression; public jobs must not receive secrets")
+                raise Refused("unreviewed workflow expression; public jobs must not receive secrets")
             start = text.find("${{", end + 2)
 
 
-def validate_mappings(name, value):
+def validate_mappings(value):
     for mapping in workflow_mappings(value):
         if "if" in mapping:
             # jobs.<id>.if, steps[].if, jobs.<id>.snapshot.if or any future condition field.
-            raise ValueError(f"{name}: conditions are not part of the generated workflows")
+            raise Refused("conditions are not part of the generated workflows")
         if "uses" in mapping:
             action, _, commit = str(mapping["uses"]).partition("@")
             if action not in WORKFLOW_ACTIONS or ACTION_COMMIT.fullmatch(commit) is None:
-                raise ValueError(f"{name}: action must be immutable and one of the generated GitHub-owned actions")
+                raise Refused("action must be immutable and one of the generated GitHub-owned actions")
             inputs = mapping.get("with", {})
             if not isinstance(inputs, dict) or set(inputs) - WORKFLOW_ACTIONS[action]:
-                raise ValueError(f"{name}: unreviewed action input; only the generated inputs are accepted")
+                raise Refused("unreviewed action input; only the generated inputs are accepted")
             if action == "actions/checkout" and inputs.get("persist-credentials") is not False:
-                raise ValueError(f"{name}: checkout must not retain credentials")
+                raise Refused("checkout must not retain credentials")
+
+
+def validate_shape(value):
+    """Refuse every top-level, job-level and step-level key the generator does not emit."""
+    if set(value) - WORKFLOW_KEYS:
+        raise Refused("top-level key outside the generated workflow keys name, on, permissions, concurrency, jobs")
+    jobs = value.get("jobs")
+    if not isinstance(jobs, dict) or not jobs:
+        raise Refused("jobs must be a mapping of job ids with at least one job")
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            raise Refused("job must be a mapping")
+        if set(job) - JOB_KEYS:
+            raise Refused("job-level key outside the generated job keys name, runs-on, timeout-minutes, env, steps")
+        steps = job.get("steps")
+        if not isinstance(steps, list) or not steps or not all(isinstance(step, dict) for step in steps):
+            raise Refused("steps must be a list of step mappings with at least one step")
+        for step in steps:
+            if set(step) - STEP_KEYS:
+                raise Refused("step-level key outside the generated step keys name, uses, with, run, env")
 
 
 def validate_workflow(name, data):
     # Generated workflow files use JSON syntax, which is valid YAML.
     value = json_document(data)
+    if not isinstance(value, dict):
+        raise Refused("workflow document must be one JSON object")
     if value.get("permissions") != {"contents": "read"}:
-        raise ValueError(f"{name}: expected read-only workflow token")
-    validate_expressions(name, value)
+        raise Refused("expected read-only workflow token")
+    validate_expressions(value)
     if any(WORKFLOW_SECRET_ACCESS.search(text) for text in workflow_strings(value)):
-        raise ValueError(f"{name}: public candidate jobs must not receive secrets")
-    validate_mappings(name, value)
+        raise Refused("public candidate jobs must not receive secrets")
+    validate_mappings(value)
+    validate_shape(value)
     events = value.get("on", {})
     if not isinstance(events, dict) or set(events) - {"push", "pull_request", "workflow_dispatch"}:
-        raise ValueError(f"{name}: unreviewed workflow trigger")
-    jobs = value.get("jobs", {})
-    if not jobs:
-        raise ValueError(f"{name}: workflow has no jobs")
+        raise Refused("unreviewed workflow trigger")
+    jobs = value["jobs"]
     for job in jobs.values():
         if job.get("runs-on") != "ubuntu-24.04":
-            raise ValueError(f"{name}: only the standard hosted Ubuntu runner is configured")
+            raise Refused("only the standard hosted Ubuntu runner is configured")
+        # Behind the job-key allowlist, which already refuses a job-level `permissions`:
+        # writable job credentials stay refused even if JOB_KEYS is ever widened by mistake.
         if job.get("permissions", {"contents": "read"}) != {"contents": "read"}:
-            raise ValueError(f"{name}: writable job credentials are not permitted")
+            raise Refused("writable job credentials are not permitted")
     if name.endswith("/ci.yml"):
         if not {"push", "pull_request"} <= set(events):
-            raise ValueError("CI must run on both main pushes and pull requests")
+            raise Refused("CI must run on both main pushes and pull requests")
         if jobs.get("ci", {}).get("name") != "CI":
-            raise ValueError("Keep the required native CI job name stable")
+            raise Refused("Keep the required native CI job name stable")
     else:
         if set(jobs) != {"copilot-setup-steps"}:
-            raise ValueError("Copilot setup must contain its documented single job")
+            raise Refused("Copilot setup must contain its documented single job")
 
 
 def check(files):
@@ -195,13 +247,20 @@ def check(files):
         if name.endswith(".json"):
             try:
                 json_document(content)
-            except (ValueError, UnicodeDecodeError):
+            except Refused as error:
+                problems.append(f"Invalid JSON in {safe_name}: {error}")
+            except (ValueError, UnicodeDecodeError, RecursionError):
                 problems.append(f"Invalid JSON in {safe_name}")
         if name.startswith(".github/workflows/"):
             try:
                 validate_workflow(name, content)
-            except (ValueError, TypeError, KeyError, UnicodeDecodeError):
-                problems.append(f"Invalid or unsafe workflow: {safe_name}")
+            except Refused as error:
+                # The refusing rule is static text; no key, value or other file content is echoed.
+                problems.append(f"Invalid or unsafe workflow: {safe_name}: {error}")
+            except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError, RecursionError):
+                # Malformed, non-UTF-8 or too deeply nested input, or a shape no rule anticipated,
+                # fails closed with one static message instead of a traceback.
+                problems.append(f"Invalid or unsafe workflow: {safe_name}: not a parseable UTF-8 JSON-syntax document")
     return problems
 
 
