@@ -2,8 +2,8 @@
 repository checker (PenniLogic/infra#50, notes S3/C1 of PR #48): only the top-level, job-level
 and step-level keys the generator emits are accepted, check() names the refusing rule without
 echoing file content, and a BOM, a non-object document or malformed input fails closed.
-Since PenniLogic/infra#54 (note C3 of PR #51) each of the two generated workflow files is also
-bound to exactly its generated trigger set and single job, and any third file is refused."""
+Since PenniLogic/infra#54 (note C3 of PR #51) each generated workflow file is also bound to
+its trigger set and single job. PR G adds only infra's reviewed conformance workflow."""
 
 import importlib.util
 import json
@@ -27,7 +27,7 @@ CI_TRIGGER_RULE = "CI must run on exactly main pushes, pull requests and manual 
 CI_JOB_RULE = "CI must contain its documented single job"
 SETUP_TRIGGER_RULE = "Copilot setup must run on manual dispatch only"
 SETUP_JOB_RULE = "Copilot setup must contain its documented single job"
-FILE_RULE = "workflow file outside the generated pair ci.yml and copilot-setup-steps.yml"
+FILE_RULE = "workflow file outside the generated pair or infra-only conformance.yml"
 UNPARSEABLE = "not a parseable UTF-8 JSON-syntax document"
 
 
@@ -377,7 +377,7 @@ class FileRuleTests(unittest.TestCase):
                 validate(ci, CI)
                 validate(setup, SETUP)
                 names = sorted(name for name in generator.artifacts(repo) if name.startswith(".github/workflows/"))
-                self.assertEqual([CI, SETUP], names)
+                self.assertEqual([CI, ".github/workflows/conformance.yml", SETUP] if repo == "infra" else [CI, SETUP], names)
 
     def test_ci_with_a_job_set_other_than_ci_is_refused_for_every_profile(self):
         plain = {"name": "Extra", "runs-on": "ubuntu-24.04", "timeout-minutes": 10,
@@ -683,7 +683,7 @@ class RuleMessageTests(unittest.TestCase):
         source = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
         messages = re.findall(r'raise Refused\("([^"\\{}]*)"\)', source)
         self.assertEqual(source.count("raise Refused("), len(messages))
-        self.assertEqual(26, len(messages))
+        self.assertEqual(32, len(messages))
         readme = (HERE / "README.md").read_text(encoding="utf-8")
         for message in messages:
             with self.subTest(message=message):

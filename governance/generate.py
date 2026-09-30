@@ -26,6 +26,7 @@ PATTERNS = {
 # same pins are rendered into the consumer checker, which compares them exactly.
 ACTION_PIN = re.compile(r"[0-9a-f]{40}")
 ACTION_PINS_BLOCK = re.compile(r'^WORKFLOW_ACTION_PINS = \{\n(?:    "[^"\n]*": "[^"\n]*",\n)*\}\n', re.MULTILINE)
+WORKFLOW_REPOSITORY_LINE = re.compile(r'^WORKFLOW_REPOSITORY = "[^"\n]*"\n', re.MULTILINE)
 # Job-level env applies to every step, including the JS actions and package
 # installs, so only reviewed telemetry opt-outs are accepted; extend by generator change.
 ENV_KEYS = {"NEXT_TELEMETRY_DISABLED"}
@@ -153,8 +154,8 @@ def action_pins():
     return pins
 
 
-def checker():
-    """Copy the checker template with WORKFLOW_ACTION_PINS rendered from the canonical pins.
+def checker(repo="infra"):
+    """Render the checker with the canonical pins and its repository-bound workflow exception.
 
     The block is replaced, not trusted: the consumer checker binds exactly the commits that
     tool_steps() renders into its workflows, whatever the template's own copy says, and a
@@ -167,6 +168,12 @@ def checker():
     rendered, count = ACTION_PINS_BLOCK.subn(lambda match: block, template)
     if count != 1:
         raise ValueError("templates/check_repository.py must define WORKFLOW_ACTION_PINS exactly once")
+    profile_for(repo)
+    rendered, count = WORKFLOW_REPOSITORY_LINE.subn(
+        lambda match: f"WORKFLOW_REPOSITORY = {json.dumps(repo)}\n", rendered,
+    )
+    if count != 1:
+        raise ValueError("templates/check_repository.py must define WORKFLOW_REPOSITORY exactly once")
     return rendered
 
 
@@ -255,6 +262,33 @@ def workflow(repo, setup=False):
     })
 
 
+def conformance_workflow():
+    """Render the infra-only, Python-only report job requested by infra#24 PR G."""
+    steps = tool_steps({})
+    steps.extend([
+        {"name": "Run conformance", "run": """mkdir -p conformance-report
+if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$GITHUB_REF_PROTECTED" != "true" ]; then
+  echo "::error::Conformance requires protected main; no harness was executed."
+  touch conformance-report/FAILED
+else
+  python governance/conformance/run.py --scratch "$RUNNER_TEMP/conformance-scratch" --output conformance-report --github-client anonymous --exercise python || touch conformance-report/FAILED
+fi"""},
+        {"name": "Upload report", "uses": f"actions/upload-artifact@{PROFILES['actions']['upload-artifact']}",
+         "with": {"name": "conformance-report", "path": "conformance-report",
+                  "retention-days": 3, "if-no-files-found": "error"}},
+        {"name": "Fail on findings", "run": "test ! -f conformance-report/FAILED"},
+    ])
+    return encoded({
+        "name": "Conformance",
+        "on": {"workflow_dispatch": {}, "schedule": [{"cron": "17 5 * * 1"}]},
+        "permissions": {"contents": "read"},
+        "concurrency": {"group": "${{ github.workflow }}", "cancel-in-progress": True},
+        "jobs": {"conformance": {
+            "name": "Conformance", "runs-on": PROFILES["runner"], "timeout-minutes": 60, "steps": steps,
+        }},
+    })
+
+
 def toolchain(profile):
     tools = [f"Python {PROFILES['python']}", "Git"]
     if "node" in profile:
@@ -282,6 +316,12 @@ def artifacts(repo):
     profile = profile_for(repo)
     commands = "\n".join(profile["commands"])
     guide = guide_paragraph(profile)
+    artifact_policy = (
+        "No release publishing or cache/storage allowance increase is configured.\n"
+        "Infra's report-only Conformance workflow uploads reports with three-day retention."
+        if repo == "infra" else
+        "No release publishing, artifact upload or cache allowance increase is configured."
+    )
     policy = {
         "version": 1, "repository": f"PenniLogic/{repo}", "repository_id": profile["id"],
         "required_native_check": "CI", "review_roles": ROLES,
@@ -291,7 +331,7 @@ def artifacts(repo):
         "github_approving_review_count": 0, "mandatory_commit_signatures": False,
         "no_bypass": True,
     }
-    return {
+    output = {
         ".gitignore": "\n".join(IGNORE + profile.get("ignore", [])) + "\n",
         "AGENTS.md": HEADER + f"""# PenniLogic/{repo}
 
@@ -519,16 +559,19 @@ Product specifications and the preserved backlog are in
 Only standard GitHub-hosted runners are configured. Public-repository runner
 minutes are free; paid larger runners, storage overages, Copilot usage, external
 APIs and deployments are not automatically free and are not authorized here.
-No release publishing, artifact upload or cache allowance increase is configured.
+{artifact_policy}
 There is one GitHub owner with multiple independent AI sessions, not multiple humans.
 
 No open-source license was selected by this setup migration; public visibility
 alone is not a license grant. Existing source notices are preserved.
 """,
         ".gitattributes": "".join(line + "\n" for line in ATTRIBUTES + profile.get("attributes", [])),
-        "scripts/check_repository.py": checker(),
+        "scripts/check_repository.py": checker(repo),
         "scripts/setup.py": (HERE / "templates/setup.py").read_text(encoding="utf-8"),
     }
+    if repo == "infra":
+        output[".github/workflows/conformance.yml"] = conformance_workflow()
+    return output
 
 
 def generate(repo, root, check=False):
