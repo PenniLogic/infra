@@ -38,8 +38,11 @@ class InstructionProvenanceTests(unittest.TestCase):
             with self.subTest(repo=repo):
                 output = generator.artifacts(repo)
                 text = output[".github/copilot-instructions.md"]
-                # One paragraph, appended after the existing one and separated by one blank line.
-                self.assertTrue(text.endswith("automatic remote control.\n\n" + PROVENANCE_RULE), text)
+                # One paragraph, appended after the entry paragraph and separated by one blank line;
+                # since infra#53 the capability paragraph (PenniLogic/.github#10) follows it, separated
+                # the same way, and ends the file. The provenance rule itself stays second and verbatim.
+                tail = "automatic remote control.\n\n" + PROVENANCE_RULE + "\n" + generator.CAPABILITY_RULE
+                self.assertTrue(text.endswith(tail), text)
                 self.assertEqual(1, text.count(PROVENANCE_RULE))
                 normalized = " ".join(text.split())
                 for phrase in PHRASES:
