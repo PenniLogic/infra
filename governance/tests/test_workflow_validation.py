@@ -1,10 +1,14 @@
 """Workflow validation of the generated repository checker: the secret tripwire runs
-over decoded strings, `if` is refused at any nesting level and only the actions and
-inputs the generator emits are accepted (PenniLogic/infra#46, findings S1/S2 of PR #45)."""
+over decoded strings, `if` is refused at any nesting level, only the actions and
+inputs the generator emits are accepted (PenniLogic/infra#46, findings S1/S2 of PR #45),
+and each listed action is bound to exactly the pin the generator renders
+(PenniLogic/infra#54, finding S1 of PR #51)."""
 
 import importlib.util
 import json
 from pathlib import Path
+import re
+import tempfile
 import unittest
 from unittest import mock
 
@@ -22,6 +26,10 @@ def load(name, path):
 
 generator = load("workflow_generator", HERE / "generate.py")
 checker = load("workflow_checker", HERE / "templates/check_repository.py")
+# The pin the generator renders for each listed action, from the canonical source.
+PINS = {f"actions/{name}": pin for name, pin in generator.PROFILES["actions"].items()}
+PIN_RULE = "action commit differs from the generated pin; regenerate instead of editing it"
+ACTION_RULE = "action must be immutable and one of the generated GitHub-owned actions"
 
 # Whitespace GitHub's expression lexer skips (Char.IsWhiteSpace) between the tokens of a
 # secret read. json.dumps escapes each of these, so a regex over the serialized document
@@ -279,6 +287,9 @@ class ActionAllowlistTests(unittest.TestCase):
                         emitted.setdefault(action, set()).update(mapping.get("with", {}))
         self.assertEqual(checker.WORKFLOW_ACTIONS, emitted)
         self.assertEqual({f"actions/{name}": {pin} for name, pin in generator.PROFILES["actions"].items()}, pins)
+        # The checker binds each listed action to exactly the pin the workflows carry (S1 of PR #51).
+        self.assertEqual({action: {pin} for action, pin in checker.WORKFLOW_ACTION_PINS.items()}, pins)
+        self.assertEqual(set(checker.WORKFLOW_ACTIONS), set(checker.WORKFLOW_ACTION_PINS))
         self.assertEqual({
             "actions/checkout": {"persist-credentials", "fetch-depth"}, "actions/setup-python": {"python-version"},
             "actions/setup-node": {"node-version-file"}, "actions/setup-java": {"distribution", "java-version"},
@@ -343,11 +354,23 @@ class ActionAllowlistTests(unittest.TestCase):
         workflow["jobs"]["reuse"]["secrets"] = "inherit"
         with self.assertRaisesRegex(ValueError, "public candidate jobs must not receive secrets"):
             validate(workflow)
+        # A listed action at its generated pin as a reusable-workflow job passes the action and pin
+        # rules; the job-key allowlist then refuses `uses`/`with` at job level. Both variants are
+        # asserted: without `runs-on` (which the PR D template already refused through the runner
+        # rule) and with `runs-on: ubuntu-24.04`, the variant the PR D template ACCEPTED outright
+        # (Q2 of PR #51); the `ci` job itself gaining the same two keys is refused the same way.
+        listed = {"uses": f"actions/checkout@{PINS['actions/checkout']}", "with": {"persist-credentials": False}}
+        for job in (dict(listed), {"runs-on": "ubuntu-24.04", **listed},
+                    {"runs-on": "ubuntu-24.04", "timeout-minutes": 10, **listed}):
+            with self.subTest(job=job):
+                workflow = json.loads(generator.workflow("web"))
+                workflow["jobs"]["reuse"] = job
+                self.assertFalse(tripwire_hits(workflow))
+                with self.assertRaisesRegex(ValueError, "^job-level key outside the generated job keys"):
+                    validate(workflow)
         workflow = json.loads(generator.workflow("web"))
-        workflow["jobs"]["reuse"] = {"uses": f"actions/checkout@{SHA}", "with": {"persist-credentials": False}}
-        # A listed action as a reusable-workflow job passes the action rule; the job-key allowlist
-        # then refuses `uses`/`with` at job level before the runner rule is reached.
-        with self.assertRaisesRegex(ValueError, "job-level key"):
+        workflow["jobs"]["ci"].update(listed)
+        with self.assertRaisesRegex(ValueError, "^job-level key outside the generated job keys"):
             validate(workflow)
         # Any other nesting of `uses` is held to the same rule.
         for path in (("jobs", "ci", "container"), ("jobs", "ci", "steps", -1, "env"), ("jobs", "ci", "env")):
@@ -360,11 +383,11 @@ class ActionAllowlistTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "immutable and one of the generated GitHub-owned actions"):
                     validate(workflow)
 
-    def test_listed_actions_pass_only_with_a_full_commit_and_checkout_stays_credential_free(self):
+    def test_listed_actions_pass_only_at_their_generated_pin_and_checkout_stays_credential_free(self):
         for action, inputs in sorted(checker.WORKFLOW_ACTIONS.items()):
             with self.subTest(action=action):
                 workflow = json.loads(generator.workflow("web"))
-                step = {"name": "Step", "uses": f"{action}@{SHA}"}
+                step = {"name": "Step", "uses": f"{action}@{PINS[action]}"}
                 if action == "actions/checkout":
                     step["with"] = {"persist-credentials": False}
                 workflow["jobs"]["ci"]["steps"].append(step)
@@ -373,8 +396,11 @@ class ActionAllowlistTests(unittest.TestCase):
                     for key in inputs:
                         step["with"] = {key: "1"}
                         validate(workflow)
-        # The checker holds the name and the commit shape; the exact pin is the generator's
-        # `--check` contract, so a consumer cannot loosen a pin by hand without a visible diff.
+                # The same step at any other full commit is refused before its inputs are read; the
+                # exact pin is bound here, not only by the generator's `--check` in infra (S1 of #51).
+                step["uses"] = f"{action}@{SHA}"
+                with self.assertRaisesRegex(ValueError, PIN_RULE):
+                    validate(workflow)
         for inputs in ({}, {"persist-credentials": True}, {"persist-credentials": "false"},
                        {"persist-credentials": None}, {"fetch-depth": 0}, None):
             with self.subTest(inputs=inputs):
@@ -412,14 +438,16 @@ class ActionAllowlistTests(unittest.TestCase):
                     workflow = json.loads(generator.workflow("web"))
                     inputs = {"persist-credentials": False} if action == "actions/checkout" else {}
                     inputs[key] = "https://evil.example" if key == "github-server-url" else "x"
-                    workflow["jobs"]["ci"]["steps"].append({"name": "Step", "uses": f"{action}@{SHA}", "with": inputs})
+                    workflow["jobs"]["ci"]["steps"].append({"name": "Step", "uses": f"{action}@{PINS[action]}",
+                                                            "with": inputs})
                     self.assertFalse(tripwire_hits(workflow))
                     with self.assertRaisesRegex(ValueError, "unreviewed action input"):
                         validate(workflow)
             for inputs in ("persist-credentials: false", ["persist-credentials"], 1, None):
                 with self.subTest(action=action, inputs=inputs):
                     workflow = json.loads(generator.workflow("web"))
-                    workflow["jobs"]["ci"]["steps"].append({"name": "Step", "uses": f"{action}@{SHA}", "with": inputs})
+                    workflow["jobs"]["ci"]["steps"].append({"name": "Step", "uses": f"{action}@{PINS[action]}",
+                                                            "with": inputs})
                     with self.assertRaisesRegex(ValueError, "unreviewed action input"):
                         validate(workflow)
         # The generated checkout step itself, re-pointed at another host, is refused.
@@ -427,6 +455,241 @@ class ActionAllowlistTests(unittest.TestCase):
         workflow["jobs"]["ci"]["steps"][0]["with"]["github-server-url"] = "https://evil.example"
         with self.assertRaisesRegex(ValueError, "unreviewed action input"):
             validate(workflow)
+
+
+def load_text(name, text):
+    """Load a rendered checker from its text, as a consumer's scripts/check_repository.py."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "scripts" / "check_repository.py"
+        path.parent.mkdir()
+        path.write_text(text, encoding="utf-8")
+        return load(name, path)
+
+
+def complete_repository(repo="web"):
+    files = {name: content.encode("utf-8") for name, content in generator.artifacts(repo).items()}
+    files["migration-source.json"] = b"{}\n"
+    return files
+
+
+class ActionPinTests(unittest.TestCase):
+    """S1 of PR #51: a listed action is accepted only at the pin the generator renders."""
+
+    def test_listed_action_at_another_commit_is_refused_at_every_generated_step(self):
+        other = {action: next(pin for name, pin in PINS.items() if name != action) for action in PINS}
+        for repo in generator.PROFILES["repositories"]:
+            for setup in (False, True):
+                name = f".github/workflows/{'copilot-setup-steps' if setup else 'ci'}.yml"
+                document = json.loads(generator.workflow(repo, setup=setup))
+                steps = next(iter(document["jobs"].values()))["steps"]
+                for index, step in enumerate(steps):
+                    if "uses" not in step:
+                        continue
+                    action, _, pin = step["uses"].partition("@")
+                    self.assertEqual(PINS[action], pin)
+                    # Another commit of the same action, a listed action at another listed action's
+                    # pin, and a pin that differs in one hex digit: all valid 40-hex, all refused.
+                    for commit in (SHA, other[action], pin[:-1] + ("0" if pin[-1] != "0" else "1"),
+                                   ("1" if pin[0] != "1" else "2") + pin[1:], pin[::-1]):
+                        with self.subTest(repo=repo, name=name, index=index, commit=commit):
+                            planted = json.loads(generator.workflow(repo, setup=setup))
+                            next(iter(planted["jobs"].values()))["steps"][index]["uses"] = f"{action}@{commit}"
+                            self.assertIsNotNone(checker.ACTION_COMMIT.fullmatch(commit))
+                            self.assertFalse(tripwire_hits(planted))
+                            with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                                validate(planted, name)
+        # Through check(): one static line, no content of the planted step echoed.
+        files = complete_repository()
+        document = json.loads(generator.workflow("web"))
+        document["jobs"]["ci"]["steps"][0]["name"] = "MARKER-2b6d1e-DO-NOT-ECHO"
+        document["jobs"]["ci"]["steps"][0]["uses"] = f"actions/checkout@{SHA}"
+        files[".github/workflows/ci.yml"] = json.dumps(document).encode()
+        problems = checker.check(files)
+        self.assertEqual([f"Invalid or unsafe workflow: .github/workflows/ci.yml: {PIN_RULE}"], problems)
+        self.assertNotIn("MARKER", "\n".join(problems))
+        self.assertNotIn(SHA, "\n".join(problems))
+
+    def test_pin_forms_that_are_not_the_generated_commit_are_refused(self):
+        pin = PINS["actions/checkout"]
+        # Not a lowercase 40-hex commit at all: refused as an unlisted or mutable action, before
+        # the pin comparison, so `ACTION_COMMIT` stays the first gate.
+        for uses in (f"actions/checkout@{pin.upper()}", f"actions/checkout@{pin[:20].upper()}{pin[20:]}",
+                     "actions/checkout@v4", "actions/checkout@v4.2.2", "actions/checkout@main",
+                     "actions/checkout@refs/tags/v4", f"actions/checkout@refs/heads/{pin}",
+                     f"actions/checkout@{pin[:7]}", f"actions/checkout@{pin[:39]}", f"actions/checkout@{pin}0",
+                     f"actions/checkout@{pin} ", f" actions/checkout@{pin}", f"actions/checkout@{pin}\n",
+                     f"actions/checkout@{pin} # v4", f"actions/checkout@{pin}#v4", f'"actions/checkout@{pin}"',
+                     f"'actions/checkout@{pin}'", f"actions/checkout@{pin}@{pin}", f"actions/checkout@@{pin}",
+                     f"actions/checkout@{pin[:20]}\u200b{pin[20:]}", f"actions/checkout@{pin[:20]} {pin[20:]}",
+                     f"uses: actions/checkout@{pin}", f"docker://actions/checkout@{pin}",
+                     f"./actions/checkout@{pin}", f"github.com/actions/checkout@{pin}",
+                     f"https://github.com/actions/checkout@{pin}"):
+            with self.subTest(uses=uses):
+                workflow = json.loads(generator.workflow("web"))
+                workflow["jobs"]["ci"]["steps"][0]["uses"] = uses
+                with self.assertRaisesRegex(ValueError, f"^{ACTION_RULE}$"):
+                    validate(workflow)
+        # The generated pin under another name: a listed name is refused by the pin rule, an
+        # unlisted or differently spelled name by the action rule.
+        for uses, rule in ((f"actions/setup-node@{pin}", PIN_RULE), (f"actions/setup-python@{pin}", PIN_RULE),
+                           (f"actions/setup-java@{pin}", PIN_RULE), (f"actions/github-script@{pin}", ACTION_RULE),
+                           (f"actions/cache@{pin}", ACTION_RULE), (f"octo/checkout@{pin}", ACTION_RULE),
+                           (f"Actions/Checkout@{pin}", ACTION_RULE), (f"actions/Checkout@{pin}", ACTION_RULE),
+                           (f"actions/checkout/@{pin}", ACTION_RULE), (f"actions/checkout/subdir@{pin}", ACTION_RULE),
+                           (f"actions//checkout@{pin}", ACTION_RULE), (f"actions/checkout.git@{pin}", ACTION_RULE)):
+            with self.subTest(uses=uses):
+                workflow = json.loads(generator.workflow("web"))
+                workflow["jobs"]["ci"]["steps"].append({"name": "Step", "uses": uses, "with": {}})
+                with self.assertRaisesRegex(ValueError, f"^{rule}$"):
+                    validate(workflow)
+
+    def test_pin_comparison_is_exact_even_if_the_commit_shape_were_loosened(self):
+        # The equality with the rendered pin is the binding rule: were `ACTION_COMMIT` ever widened
+        # to accept upper-case hex or a tag, a differently cased commit, a tag, or any commit other
+        # than the generated one would still be refused by the pin rule.
+        pin = PINS["actions/checkout"]
+        for pattern, commits in ((r"[0-9a-fA-F]{40}", (pin.upper(), pin.replace("a", "A", 1), SHA.upper())),
+                                 (r".*", ("v4", "main", pin[:7], pin + "0", pin.upper(), SHA))):
+            with mock.patch.object(checker, "ACTION_COMMIT", re.compile(pattern)):
+                for commit in commits:
+                    with self.subTest(pattern=pattern, commit=commit):
+                        workflow = json.loads(generator.workflow("web"))
+                        workflow["jobs"]["ci"]["steps"][0]["uses"] = f"actions/checkout@{commit}"
+                        with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                            validate(workflow)
+                # Control: the exact pin still passes under the widened shape.
+                validate(json.loads(generator.workflow("web")))
+
+    def test_an_unrendered_or_partial_pin_mapping_fails_closed(self):
+        # A checker whose mapping was never rendered (or lost an entry) binds nothing: every listed
+        # action is refused, never accepted at an arbitrary commit.
+        for pins in ({}, {"actions/setup-python": PINS["actions/setup-python"]},
+                     {action: SHA for action in PINS}, {action: None for action in PINS},
+                     {action: pin.upper() for action, pin in PINS.items()}):
+            with mock.patch.object(checker, "WORKFLOW_ACTION_PINS", pins):
+                for repo in generator.PROFILES["repositories"]:
+                    with self.subTest(pins=pins, repo=repo):
+                        with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                            validate(json.loads(generator.workflow(repo)))
+        # A mapping that binds a listed action to a non-commit still refuses the commit shape first.
+        with mock.patch.object(checker, "WORKFLOW_ACTION_PINS", {**PINS, "actions/checkout": "v4"}):
+            with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                validate(json.loads(generator.workflow("web")))
+            workflow = json.loads(generator.workflow("web"))
+            workflow["jobs"]["ci"]["steps"][0]["uses"] = "actions/checkout@v4"
+            with self.assertRaisesRegex(ValueError, f"^{ACTION_RULE}$"):
+                validate(workflow)
+
+    def test_rendered_checker_carries_the_generated_pins_and_refuses_the_same_negatives(self):
+        template = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
+        rendered_texts = set()
+        for repo in generator.PROFILES["repositories"]:
+            with self.subTest(repo=repo):
+                text = generator.artifacts(repo)["scripts/check_repository.py"]
+                rendered_texts.add(text)
+                rendered = load_text(f"rendered_checker_{repo.strip('.')}", text)
+                self.assertEqual(PINS, rendered.WORKFLOW_ACTION_PINS)
+                self.assertEqual(checker.WORKFLOW_ACTION_PINS, rendered.WORKFLOW_ACTION_PINS)
+                self.assertEqual(list(sorted(PINS)), list(rendered.WORKFLOW_ACTION_PINS))
+                for setup in (False, True):
+                    name = f".github/workflows/{'copilot-setup-steps' if setup else 'ci'}.yml"
+                    rendered.validate_workflow(name, generator.workflow(repo, setup=setup).encode())
+                    document = json.loads(generator.workflow(repo, setup=setup))
+                    step = next(iter(document["jobs"].values()))["steps"][0]
+                    step["uses"] = f"actions/checkout@{SHA}"
+                    with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                        rendered.validate_workflow(name, json.dumps(document).encode())
+                self.assertEqual([], rendered.check(complete_repository(repo)))
+        # One rendering for every profile, and it is the template byte for byte.
+        self.assertEqual({template}, rendered_texts)
+
+    def test_template_mirrors_the_block_the_generator_renders(self):
+        # The template carries the current pins so it can be imported and tested unrendered; the
+        # rendered copy must be byte-identical, so a pin bump that forgets the template fails here.
+        template = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
+        self.assertEqual(template, generator.checker())
+        block = generator.ACTION_PINS_BLOCK.findall(template)
+        self.assertEqual(1, len(block))
+        expected = "WORKFLOW_ACTION_PINS = {\n" + "".join(
+            f'    "{action}": "{pin}",\n' for action, pin in sorted(PINS.items())) + "}\n"
+        self.assertEqual(expected, block[0])
+        self.assertEqual(PINS, checker.WORKFLOW_ACTION_PINS)
+        self.assertEqual(PINS, generator.action_pins())
+        for pin in PINS.values():
+            self.assertIsNotNone(generator.ACTION_PIN.fullmatch(pin))
+            self.assertIsNotNone(checker.ACTION_COMMIT.fullmatch(pin))
+
+    def test_generator_renders_the_pins_from_the_canonical_source_not_from_the_template(self):
+        template = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
+        block = generator.ACTION_PINS_BLOCK.search(template).group(0)
+        stale = template.replace(block, block.replace(PINS["actions/checkout"], "0" * 40))
+        emptied = template.replace(block, "WORKFLOW_ACTION_PINS = {\n}\n")
+        reordered = template.replace(block, "WORKFLOW_ACTION_PINS = {\n" + "".join(
+            f'    "{action}": "{pin}",\n' for action, pin in sorted(PINS.items(), reverse=True)) + "}\n")
+        for variant in (stale, emptied, reordered):
+            self.assertNotEqual(template, variant)
+            with mock.patch.object(generator.Path, "read_text", lambda self, encoding=None: variant):
+                self.assertEqual(template, generator.checker())
+        # A template that lost the block, or defines it twice, is refused rather than copied.
+        for variant in (template.replace(block, ""), template.replace(block, block + block),
+                        template.replace(block, block.replace("WORKFLOW_ACTION_PINS", "PINS")),
+                        template.replace(block, block.replace('    "actions/checkout"', '  "actions/checkout"'))):
+            with mock.patch.object(generator.Path, "read_text", lambda self, encoding=None: variant):
+                with self.assertRaisesRegex(ValueError, "WORKFLOW_ACTION_PINS exactly once"):
+                    generator.checker()
+
+    def test_a_pin_bump_changes_the_workflows_and_the_checker_in_one_regeneration(self):
+        new = "f" * 40
+        with mock.patch.dict(generator.PROFILES["actions"], {"checkout": new}):
+            output = generator.artifacts("web")
+            for name in (".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml"):
+                self.assertEqual(f"actions/checkout@{new}", json.loads(output[name])["jobs"].popitem()[1]["steps"][0]["uses"])
+            bumped = load_text("bumped_checker", output["scripts/check_repository.py"])
+            self.assertEqual({**PINS, "actions/checkout": new}, bumped.WORKFLOW_ACTION_PINS)
+            self.assertIn(f'    "actions/checkout": "{new}",\n', output["scripts/check_repository.py"])
+            self.assertNotIn(PINS["actions/checkout"], output["scripts/check_repository.py"])
+            for name in (".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml"):
+                bumped.validate_workflow(name, output[name].encode())
+                # The regenerated checker refuses the previous pin; the previous checker (this
+                # template) refuses the regenerated workflow: drift is visible from both sides.
+                with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                    checker.validate_workflow(name, output[name].encode())
+                previous = json.loads(output[name])
+                next(iter(previous["jobs"].values()))["steps"][0]["uses"] = f"actions/checkout@{PINS['actions/checkout']}"
+                with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                    bumped.validate_workflow(name, json.dumps(previous).encode())
+        # Outside the patch the canonical pins are back and the template is current again.
+        self.assertEqual(PINS, generator.action_pins())
+
+    def test_generator_refuses_a_pin_that_is_not_a_lowercase_commit(self):
+        pin = PINS["actions/checkout"]
+        for bad in (pin.upper(), pin.replace("a", "A", 1), "v4", "main", "refs/tags/v4", pin[:39], pin + "0",
+                    f"{pin} ", f" {pin}", f"{pin}\n", "", None, 42, [pin], {"sha": pin}, pin[:20] + "g" + pin[21:]):
+            with self.subTest(bad=bad):
+                with mock.patch.dict(generator.PROFILES["actions"], {"checkout": bad}):
+                    with self.assertRaisesRegex(ValueError, "actions.checkout must be a lowercase 40-hex commit"):
+                        generator.checker()
+                    with self.assertRaisesRegex(ValueError, "lowercase 40-hex commit"):
+                        generator.artifacts("web")
+                    with tempfile.TemporaryDirectory() as tmp:
+                        with self.assertRaisesRegex(ValueError, "lowercase 40-hex commit"):
+                            generator.generate("web", Path(tmp))
+                        self.assertEqual([], list(Path(tmp).rglob("*")))
+
+    def test_check_catches_a_consumer_checker_with_a_stale_pin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generator.generate("web", root)
+            generator.generate("web", root, check=True)
+            path = root / "scripts/check_repository.py"
+            path.write_text(path.read_text(encoding="utf-8").replace(PINS["actions/checkout"], SHA), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"Generated setup differs: scripts/check_repository\.py$"):
+                generator.generate("web", root, check=True)
+            stale = load("stale_consumer_checker", path)
+            self.assertEqual({**PINS, "actions/checkout": SHA}, stale.WORKFLOW_ACTION_PINS)
+            for name in (".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml"):
+                with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                    stale.validate_workflow(name, (root / name).read_bytes())
 
 
 if __name__ == "__main__":

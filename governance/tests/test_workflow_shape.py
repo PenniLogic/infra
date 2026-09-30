@@ -1,7 +1,9 @@
 """Key allowlists, surfaced rule messages and json_document hardening of the generated
 repository checker (PenniLogic/infra#50, notes S3/C1 of PR #48): only the top-level, job-level
 and step-level keys the generator emits are accepted, check() names the refusing rule without
-echoing file content, and a BOM, a non-object document or malformed input fails closed."""
+echoing file content, and a BOM, a non-object document or malformed input fails closed.
+Since PenniLogic/infra#54 (note C3 of PR #51) each of the two generated workflow files is also
+bound to exactly its generated trigger set and single job, and any third file is refused."""
 
 import importlib.util
 import json
@@ -20,6 +22,12 @@ MARKER = "MARKER-7f3a9c-DO-NOT-ECHO"
 TOP_RULE = "top-level key outside the generated workflow keys name, on, permissions, concurrency, jobs"
 JOB_RULE = "job-level key outside the generated job keys name, runs-on, timeout-minutes, env, steps"
 STEP_RULE = "step-level key outside the generated step keys name, uses, with, run, env"
+PIN_RULE = "action commit differs from the generated pin; regenerate instead of editing it"
+CI_TRIGGER_RULE = "CI must run on exactly main pushes, pull requests and manual dispatch"
+CI_JOB_RULE = "CI must contain its documented single job"
+SETUP_TRIGGER_RULE = "Copilot setup must run on manual dispatch only"
+SETUP_JOB_RULE = "Copilot setup must contain its documented single job"
+FILE_RULE = "workflow file outside the generated pair ci.yml and copilot-setup-steps.yml"
 UNPARSEABLE = "not a parseable UTF-8 JSON-syntax document"
 
 
@@ -345,6 +353,213 @@ class KeyAllowlistTests(unittest.TestCase):
             validate(document)
 
 
+class FileRuleTests(unittest.TestCase):
+    """C3 of PR #51: each generated workflow file is bound to its own trigger set and single job."""
+
+    def assert_only_a_file_rule_refuses(self, document):
+        # Every rule before the per-file rules accepts the document, so the per-file rule alone
+        # is the reason the planted drift is refused.
+        self.assertFalse(tripwire_hits(document))
+        checker.validate_expressions(document)
+        checker.validate_mappings(document)
+        checker.validate_shape(document)
+        self.assertEqual(set(), set(document.get("on", {})) - {"push", "pull_request", "workflow_dispatch"})
+
+    def test_generated_workflows_carry_exactly_the_sets_the_checker_binds(self):
+        for repo in generator.PROFILES["repositories"]:
+            with self.subTest(repo=repo):
+                ci, setup = workflow(repo), workflow(repo, setup=True)
+                self.assertEqual({"push", "pull_request", "workflow_dispatch"}, set(ci["on"]))
+                self.assertEqual({"ci"}, set(ci["jobs"]))
+                self.assertEqual("CI", ci["jobs"]["ci"]["name"])
+                self.assertEqual({"workflow_dispatch"}, set(setup["on"]))
+                self.assertEqual({"copilot-setup-steps"}, set(setup["jobs"]))
+                validate(ci, CI)
+                validate(setup, SETUP)
+                names = sorted(name for name in generator.artifacts(repo) if name.startswith(".github/workflows/"))
+                self.assertEqual([CI, SETUP], names)
+
+    def test_ci_with_a_job_set_other_than_ci_is_refused_for_every_profile(self):
+        plain = {"name": "Extra", "runs-on": "ubuntu-24.04", "timeout-minutes": 10,
+                 "steps": [{"name": "Run", "run": "true"}]}
+        for repo in generator.PROFILES["repositories"]:
+            document = workflow(repo)
+            generated = json.loads(json.dumps(document["jobs"]["ci"]))
+            for label, jobs in (("extra plain job", {"ci": generated, "other": plain}),
+                                ("second copy of the generated job", {"ci": generated, "ci2": generated}),
+                                ("renamed job id", {"build": generated}),
+                                ("upper-case job id", {"CI": generated}),
+                                ("padded job id", {"ci ": generated}),
+                                ("zero-width job id", {"ci\u200b": generated}),
+                                ("extra job before ci", {"other": plain, "ci": generated})):
+                with self.subTest(repo=repo, label=label):
+                    document = workflow(repo)
+                    document["jobs"] = jobs
+                    self.assert_only_a_file_rule_refuses(document)
+                    with self.assertRaisesRegex(ValueError, f"^{CI_JOB_RULE}$"):
+                        validate(document)
+        # The job set is checked before the job name: a second job hides nothing behind a renamed `ci`.
+        document = workflow()
+        document["jobs"]["ci"]["name"] = "Checks"
+        document["jobs"]["other"] = plain
+        with self.assertRaisesRegex(ValueError, f"^{CI_JOB_RULE}$"):
+            validate(document)
+        del document["jobs"]["other"]
+        with self.assertRaisesRegex(ValueError, "^Keep the required native CI job name stable$"):
+            validate(document)
+        # The setup document saved under the CI name fails the CI trigger set first, then the job set.
+        document = workflow(setup=True)
+        with self.assertRaisesRegex(ValueError, f"^{CI_TRIGGER_RULE}$"):
+            validate(document, CI)
+        document["on"] = workflow()["on"]
+        with self.assertRaisesRegex(ValueError, f"^{CI_JOB_RULE}$"):
+            validate(document, CI)
+
+    def test_ci_trigger_set_must_be_exactly_the_generated_one(self):
+        main = {"branches": ["main"]}
+        for repo in generator.PROFILES["repositories"]:
+            for events, rule in (({"push": main, "pull_request": main}, CI_TRIGGER_RULE),
+                                 ({"workflow_dispatch": {}, "push": main}, CI_TRIGGER_RULE),
+                                 ({"workflow_dispatch": {}, "pull_request": main}, CI_TRIGGER_RULE),
+                                 ({"workflow_dispatch": {}}, CI_TRIGGER_RULE),
+                                 ({"push": main}, CI_TRIGGER_RULE),
+                                 ({}, CI_TRIGGER_RULE),
+                                 (None, CI_TRIGGER_RULE),
+                                 ({"push": main, "pull_request": main, "workflow_dispatch": {}, "pull_request_target": main},
+                                  "unreviewed workflow trigger"),
+                                 ({"push": main, "pull_request": main, "workflow_dispatch": {}, "schedule": [{"cron": "0 0 * * *"}]},
+                                  "unreviewed workflow trigger"),
+                                 ({"push": main, "pull_request": main, "workflow_dispatch": {}, "workflow_call": {}},
+                                  "unreviewed workflow trigger"),
+                                 ({"Push": main, "pull_request": main, "workflow_dispatch": {}}, "unreviewed workflow trigger"),
+                                 ({"push ": main, "pull_request": main, "workflow_dispatch": {}}, "unreviewed workflow trigger"),
+                                 (["push", "pull_request", "workflow_dispatch"], "unreviewed workflow trigger"),
+                                 ("push", "unreviewed workflow trigger"),
+                                 (1, "unreviewed workflow trigger")):
+                with self.subTest(repo=repo, events=events):
+                    document = workflow(repo)
+                    if events is None:
+                        del document["on"]
+                    else:
+                        document["on"] = events
+                    if rule == CI_TRIGGER_RULE:
+                        self.assert_only_a_file_rule_refuses(document)
+                    with self.assertRaisesRegex(ValueError, f"^{rule}$"):
+                        validate(document)
+
+    def test_setup_workflow_must_keep_manual_dispatch_only_and_its_single_job(self):
+        main = {"branches": ["main"]}
+        for repo in generator.PROFILES["repositories"]:
+            for events, rule in (({"workflow_dispatch": {}, "push": main}, SETUP_TRIGGER_RULE),
+                                 ({"workflow_dispatch": {}, "pull_request": main}, SETUP_TRIGGER_RULE),
+                                 ({"workflow_dispatch": {}, "push": main, "pull_request": main}, SETUP_TRIGGER_RULE),
+                                 ({"workflow_dispatch": {}, "push": {}}, SETUP_TRIGGER_RULE),
+                                 ({"push": main}, SETUP_TRIGGER_RULE),
+                                 ({"pull_request": main}, SETUP_TRIGGER_RULE),
+                                 ({}, SETUP_TRIGGER_RULE),
+                                 (None, SETUP_TRIGGER_RULE),
+                                 ({"workflow_dispatch": {}, "pull_request_target": main}, "unreviewed workflow trigger"),
+                                 ({"workflow_dispatch": {}, "schedule": [{"cron": "0 0 * * *"}]}, "unreviewed workflow trigger"),
+                                 ({"Workflow_Dispatch": {}}, "unreviewed workflow trigger"),
+                                 (["workflow_dispatch"], "unreviewed workflow trigger"),
+                                 ("workflow_dispatch", "unreviewed workflow trigger")):
+                with self.subTest(repo=repo, events=events):
+                    document = workflow(repo, setup=True)
+                    if events is None:
+                        del document["on"]
+                    else:
+                        document["on"] = events
+                    if rule == SETUP_TRIGGER_RULE:
+                        self.assert_only_a_file_rule_refuses(document)
+                    with self.assertRaisesRegex(ValueError, f"^{rule}$"):
+                        validate(document, SETUP)
+            generated = workflow(repo, setup=True)["jobs"]["copilot-setup-steps"]
+            plain = {"runs-on": "ubuntu-24.04", "steps": [{"run": "true"}]}
+            for label, jobs in (("extra plain job", {"copilot-setup-steps": generated, "other": plain}),
+                                ("renamed job id", {"setup": generated}),
+                                ("upper-case job id", {"Copilot-Setup-Steps": generated}),
+                                ("ci job copied in", {"copilot-setup-steps": generated, "ci": workflow(repo)["jobs"]["ci"]})):
+                with self.subTest(repo=repo, label=label):
+                    document = workflow(repo, setup=True)
+                    document["jobs"] = jobs
+                    self.assert_only_a_file_rule_refuses(document)
+                    with self.assertRaisesRegex(ValueError, f"^{SETUP_JOB_RULE}$"):
+                        validate(document, SETUP)
+        # The CI document saved under the setup name fails the setup trigger set first.
+        with self.assertRaisesRegex(ValueError, f"^{SETUP_TRIGGER_RULE}$"):
+            validate(workflow(), SETUP)
+
+    def test_any_third_workflow_file_is_refused(self):
+        names = (".github/workflows/extra.yml", ".github/workflows/release.yml", ".github/workflows/deploy.json",
+                 ".github/workflows/ci.yaml", ".github/workflows/CI.yml", ".github/workflows/Ci.yml",
+                 ".github/workflows/ci.yml.yml", ".github/workflows/ci.yml ", ".github/workflows/ ci.yml",
+                 ".github/workflows/copilot-setup-steps.yaml", ".github/workflows/Copilot-Setup-Steps.yml",
+                 ".github/workflows/copilot_setup_steps.yml", ".github/workflows/sub/ci.yml",
+                 ".github/workflows/sub/copilot-setup-steps.yml", ".github/workflows/./ci.yml",
+                 ".github/workflows//ci.yml", ".github/workflows/ci\u200b.yml")
+        for name in names:
+            for document in (workflow(), workflow(setup=True)):
+                with self.subTest(name=name, jobs=list(document["jobs"])):
+                    self.assert_only_a_file_rule_refuses(document)
+                    with self.assertRaisesRegex(ValueError, f"^{FILE_RULE}$"):
+                        validate(document, name)
+                    files = complete_repository()
+                    files[name] = encoded(document)
+                    problems = checker.check(files)
+                    self.assertEqual([f"Invalid or unsafe workflow: {name if name.isprintable() else '[non-printable path]'}: "
+                                      f"{FILE_RULE}"], problems)
+        # The earlier rules still come first in a third file: a token is named before the file rule.
+        document = workflow(setup=True)
+        document["jobs"]["copilot-setup-steps"]["steps"][-1]["run"] += "\necho ${{ github.token }}"
+        with self.assertRaisesRegex(ValueError, "secrets"):
+            validate(document, ".github/workflows/extra.yml")
+        document = workflow(setup=True)
+        document["jobs"]["copilot-setup-steps"]["container"] = {"image": "ghcr.io/octo/evil"}
+        with self.assertRaisesRegex(ValueError, "job-level key"):
+            validate(document, ".github/workflows/extra.yml")
+
+    def test_duplicate_job_ids_and_events_are_refused_before_any_set_is_computed(self):
+        # JSON syntax has no anchors or merge keys, so the only way to name `ci` twice is a duplicate
+        # key; rule 2 refuses it before a job or trigger set exists (a parser keeping the last value
+        # would otherwise see one job), and a null `on` is not a mapping.
+        for setup in (False, True):
+            name = SETUP if setup else CI
+            document = workflow(setup=setup)
+            job_id = "copilot-setup-steps" if setup else "ci"
+            text = json.dumps(document)
+            job = json.dumps(document["jobs"][job_id])
+            twice = text.replace('"jobs": {', f'"jobs": {{"{job_id}": {job}, ', 1)
+            self.assertEqual(2, twice.count(f'"{job_id}": {{'))
+            with self.assertRaisesRegex(ValueError, "^Duplicate JSON key$"):
+                checker.validate_workflow(name, twice.encode())
+            event = "workflow_dispatch"
+            twice = text.replace('"on": {', f'"on": {{"{event}": {{}}, ', 1)
+            with self.assertRaisesRegex(ValueError, "^Duplicate JSON key$"):
+                checker.validate_workflow(name, twice.encode())
+            document["on"] = None
+            with self.assertRaisesRegex(ValueError, "^unreviewed workflow trigger$"):
+                validate(document, name)
+
+    def test_trigger_filters_and_dispatch_inputs_stay_outside_the_set_rules(self):
+        # Disclosed residual of #54: the per-file rules bind the event names, not the filters
+        # under them; a branch, path or type filter or a dispatch input is still walked by the
+        # expression rule and the tripwire, so no token can hide there.
+        document = workflow()
+        document["on"]["push"]["branches"] = ["*"]
+        document["on"]["pull_request"] = {"types": ["opened"], "paths-ignore": ["docs/**"]}
+        document["on"]["workflow_dispatch"] = {"inputs": {"ref": {"default": "main", "type": "string"}}}
+        validate(document)
+        document["on"]["workflow_dispatch"]["inputs"]["ref"]["default"] = "${{ github.token }}"
+        with self.assertRaisesRegex(ValueError, "secrets"):
+            validate(document)
+        document["on"]["workflow_dispatch"]["inputs"]["ref"]["default"] = "github\n.token"
+        with self.assertRaisesRegex(ValueError, "secrets"):
+            validate(document)
+        document["on"]["workflow_dispatch"]["inputs"]["ref"]["default"] = "${{ github.ref }}"
+        with self.assertRaisesRegex(ValueError, "unreviewed workflow expression"):
+            validate(document)
+
+
 class RuleMessageTests(unittest.TestCase):
     def test_check_appends_the_refusing_rule_and_never_file_content(self):
         files = complete_repository()
@@ -400,7 +615,17 @@ class RuleMessageTests(unittest.TestCase):
         plants.append((document, "Keep the required native CI job name stable"))
         document = workflow()
         del document["on"]["pull_request"]
-        plants.append((document, "CI must run on both main pushes and pull requests"))
+        plants.append((document, CI_TRIGGER_RULE))
+        document = workflow()
+        del document["on"]["workflow_dispatch"]
+        plants.append((document, CI_TRIGGER_RULE))
+        document = workflow()
+        document["jobs"][MARKER] = {"name": MARKER, "runs-on": "ubuntu-24.04", "steps": [{"run": MARKER}]}
+        plants.append((document, CI_JOB_RULE))
+        document = workflow()
+        document["jobs"]["ci"]["steps"][0]["name"] = MARKER
+        document["jobs"]["ci"]["steps"][0]["uses"] = f"actions/checkout@{SHA}"
+        plants.append((document, PIN_RULE))
         for document, rule in plants:
             with self.subTest(rule=rule):
                 files[CI] = encoded(document)
@@ -427,6 +652,25 @@ class RuleMessageTests(unittest.TestCase):
         document["jobs"]["copilot-setup-steps"]["services"] = {MARKER: {"image": MARKER}}
         files[SETUP] = encoded(document)
         self.assertEqual([f"Invalid or unsafe workflow: {SETUP}: {JOB_RULE}"], checker.check(files))
+        for events, rule in (({"workflow_dispatch": {}, "push": {"branches": [MARKER]}}, SETUP_TRIGGER_RULE),
+                             ({"workflow_dispatch": {}, "pull_request": {"branches": [MARKER]}}, SETUP_TRIGGER_RULE),
+                             ({MARKER: {}}, "unreviewed workflow trigger")):
+            document = workflow(setup=True)
+            document["on"] = events
+            files[SETUP] = encoded(document)
+            self.assertEqual([f"Invalid or unsafe workflow: {SETUP}: {rule}"], checker.check(files))
+        document = workflow(setup=True)
+        document["jobs"][MARKER] = {"runs-on": "ubuntu-24.04", "steps": [{"run": MARKER}]}
+        files[SETUP] = encoded(document)
+        self.assertEqual([f"Invalid or unsafe workflow: {SETUP}: {SETUP_JOB_RULE}"], checker.check(files))
+        # A third workflow file is named by its path (as every problem line is) and refused as a
+        # whole; the document's content is still not echoed.
+        files = complete_repository()
+        document = workflow(setup=True)
+        document["jobs"]["copilot-setup-steps"]["steps"][-1]["name"] = MARKER
+        files[".github/workflows/extra.yml"] = encoded(document)
+        self.assertEqual([f"Invalid or unsafe workflow: .github/workflows/extra.yml: {FILE_RULE}"], checker.check(files))
+        self.assertNotIn(MARKER, "\n".join(checker.check(files)))
 
     def test_non_printable_workflow_path_is_not_echoed(self):
         name = ".github/workflows/ci\x1b[31m.yml"
@@ -439,7 +683,7 @@ class RuleMessageTests(unittest.TestCase):
         source = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
         messages = re.findall(r'raise Refused\("([^"\\{}]*)"\)', source)
         self.assertEqual(source.count("raise Refused("), len(messages))
-        self.assertEqual(22, len(messages))
+        self.assertEqual(26, len(messages))
         readme = (HERE / "README.md").read_text(encoding="utf-8")
         for message in messages:
             with self.subTest(message=message):
