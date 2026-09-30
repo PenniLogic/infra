@@ -683,7 +683,7 @@ class RuleMessageTests(unittest.TestCase):
         source = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
         messages = re.findall(r'raise Refused\("([^"\\{}]*)"\)', source)
         self.assertEqual(source.count("raise Refused("), len(messages))
-        self.assertEqual(32, len(messages))
+        self.assertEqual(33, len(messages))
         readme = (HERE / "README.md").read_text(encoding="utf-8")
         for message in messages:
             with self.subTest(message=message):

@@ -114,6 +114,8 @@ def validate_profile(repo, profile):
         value = profile.get(field)
         if value is not None and not (isinstance(value, str) and PATTERNS[field].fullmatch(value)):
             raise ValueError(f"{repo}: {field} has an unexpected value")
+    if repo == "infra" and profile.get("node") is None:
+        raise ValueError("infra: node is required for the Conformance runtime")
     if ".." in profile.get("developer_guide", ""):
         raise ValueError(f"{repo}: developer_guide must stay inside the repository")
     timeout = profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES)
@@ -194,7 +196,7 @@ else
 fi"""
 
 
-def tool_steps(profile):
+def tool_steps(profile, *, include_node=True):
     actions = PROFILES["actions"]
     steps = [
         {"name": "Checkout", "uses": f"actions/checkout@{actions['checkout']}",
@@ -202,7 +204,7 @@ def tool_steps(profile):
         {"name": "Python", "uses": f"actions/setup-python@{actions['setup-python']}",
          "with": {"python-version": PROFILES["python"]}},
     ]
-    if "node" in profile:
+    if include_node and "node" in profile:
         steps.append({
             "name": "Node", "uses": f"actions/setup-node@{actions['setup-node']}",
             "with": {"node-version-file": ".nvmrc"},
@@ -220,7 +222,8 @@ def tool_steps(profile):
 
 def workflow(repo, setup=False):
     profile = profile_for(repo)
-    steps = tool_steps(profile)
+    # Infra's Node pin is for Conformance only; preserve its native CI registry binding and setup.
+    steps = tool_steps(profile, include_node=repo != "infra")
     if "gradle_wrapper_jar_sha256" in profile and not setup:
         steps.append({
             "name": "Verify Gradle wrapper",
@@ -263,15 +266,16 @@ def workflow(repo, setup=False):
 
 
 def conformance_workflow():
-    """Render the infra-only, Python-only report job requested by infra#24 PR G."""
-    steps = tool_steps({})
+    """Render the infra-only authenticated report job and its Python, Node and uv exercises."""
+    steps = tool_steps(profile_for("infra"))
     steps.extend([
-        {"name": "Run conformance", "run": """mkdir -p conformance-report
+        {"name": "Install uv", "run": profile_for("ai-service")["install"][0]},
+        {"name": "Run conformance", "env": {"GH_TOKEN": "${{ github.token }}"}, "run": """mkdir -p conformance-report
 if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$GITHUB_REF_PROTECTED" != "true" ]; then
   echo "::error::Conformance requires protected main; no harness was executed."
   touch conformance-report/FAILED
 else
-  python governance/conformance/run.py --scratch "$RUNNER_TEMP/conformance-scratch" --output conformance-report --github-client anonymous --exercise python || touch conformance-report/FAILED
+  python governance/conformance/run.py --scratch "$RUNNER_TEMP/conformance-scratch" --output conformance-report --github-client gh --exercise python,node,uv || touch conformance-report/FAILED
 fi"""},
         {"name": "Upload report", "uses": f"actions/upload-artifact@{PROFILES['actions']['upload-artifact']}",
          "with": {"name": "conformance-report", "path": "conformance-report",
@@ -570,6 +574,7 @@ alone is not a license grant. Existing source notices are preserved.
         "scripts/setup.py": (HERE / "templates/setup.py").read_text(encoding="utf-8"),
     }
     if repo == "infra":
+        output[".nvmrc"] = profile["node"] + "\n"
         output[".github/workflows/conformance.yml"] = conformance_workflow()
     return output
 

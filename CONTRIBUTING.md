@@ -3,7 +3,7 @@
 
 Read [AGENTS.md](AGENTS.md). Development-only Compose and public repository automation; no production deployment.
 
-Install Python 3.14, Git, then run:
+Install Python 3.14, Git, and Node 24.14.0 (see `.nvmrc`), then run:
 
 ```text
 python scripts/setup.py

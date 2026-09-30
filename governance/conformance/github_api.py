@@ -2,17 +2,20 @@
 that apply to ``main``, and the last completed ``main`` CI run.
 
 Two interchangeable clients: ``AnonymousClient`` (plain ``urllib``, no credential, the public
-rate limit of 60 requests per hour per address, the design the scheduled job uses because the
-generated workflows never receive a token) and ``GhClient`` (the ``gh`` CLI's stored credential
-for local runs). Both only ever issue GET requests; nothing here can write to a repository.
+rate limit of 60 requests per hour per address) and ``GhClient`` (the step-scoped ephemeral token
+on Actions, or local ``gh`` authentication). Actions requires explicit ``gh`` and ``GH_TOKEN``;
+it never probes stored credentials or falls back to anonymous. Both clients only issue GET.
 """
 
 import datetime
 import json
+import os
 import shutil
 import subprocess
 import urllib.error
 import urllib.request
+
+from conformance import defects
 
 
 API = "https://api.github.com"
@@ -71,18 +74,33 @@ class AnonymousClient:
 class GhClient:
     name = "gh"
 
-    def __init__(self, run=subprocess.run):
+    def __init__(self, run=subprocess.run, environ=None):
         self._run = run
+        environ = os.environ if environ is None else environ
+        token = environ.get("GH_TOKEN")
+        hosted = environ.get("GITHUB_ACTIONS") == "true"
+        if hosted and (not isinstance(token, str) or not token.strip()):
+            raise ApiError("GitHub Actions metadata requires a non-empty step-scoped GH_TOKEN")
+        self._environ = defects.probe_environment(environ)
+        if isinstance(token, str) and token.strip():
+            self._environ["GH_TOKEN"] = token
+        elif not hosted:
+            # Local auto/gh retains the existing stored-auth option, but never operator selectors.
+            del self._environ["GH_CONFIG_DIR"]
         self.rate_limit_remaining = None
         self.requests = 0
 
     def get(self, path):
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or "\n" in path or "\r" in path:
+            raise ApiError("gh api GET requires a relative API path on github.com")
         self.requests += 1
         try:
-            result = self._run(["gh", "api", "-X", "GET", path], capture_output=True, check=False,
-                               timeout=GH_TIMEOUT_SECONDS)
+            result = self._run(["gh", "api", "--hostname", "github.com", "-X", "GET", path],
+                               capture_output=True, check=False, env=self._environ, timeout=GH_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             raise ApiError(f"gh api GET {path} timed out") from None
+        except OSError as error:
+            raise ApiError(f"gh api GET {path} could not start: {error.__class__.__name__}") from None
         if result.returncode:
             raise ApiError(f"gh api GET {path} exited {result.returncode}")
         try:
@@ -91,25 +109,31 @@ class GhClient:
             raise ApiError(f"gh api GET {path} returned an unparsable body") from None
 
 
-def _gh_authenticated(run):
+def _gh_authenticated(run, environ):
     try:
-        return run(["gh", "api", "user", "--jq", ".login"], capture_output=True, check=False,
-                   timeout=GH_TIMEOUT_SECONDS).returncode == 0
-    except subprocess.TimeoutExpired:
+        return run(["gh", "api", "--hostname", "github.com", "-X", "GET", "/user", "--jq", ".login"],
+                   capture_output=True, check=False, env=environ, timeout=GH_TIMEOUT_SECONDS).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
-def choose_client(mode="auto", run=subprocess.run, which=shutil.which, opener=urllib.request.urlopen):
-    """``gh`` when requested (or, in ``auto`` mode, when it is installed and authenticated), else anonymous."""
+def choose_client(mode="auto", run=subprocess.run, which=shutil.which, opener=urllib.request.urlopen, environ=None):
+    """Actions requires explicit gh and its step token; local auto retains the stored-auth preference."""
+    environ = os.environ if environ is None else environ
+    hosted = environ.get("GITHUB_ACTIONS") == "true"
+    if hosted and mode != "gh":
+        raise ApiError("GitHub Actions metadata requires --github-client gh; no anonymous fallback")
     if mode == "anonymous":
         return AnonymousClient(opener)
     available = which("gh") is not None
     if mode == "gh":
         if not available:
             raise ApiError("gh is not installed")
-        return GhClient(run)
-    if available and _gh_authenticated(run):
-        return GhClient(run)
+        return GhClient(run, environ)
+    if available:
+        client = GhClient(run, environ)
+        if _gh_authenticated(run, client._environ):
+            return client
     return AnonymousClient(opener)
 
 

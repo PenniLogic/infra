@@ -20,7 +20,7 @@ import tempfile
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conformance import generator as generator_module  # noqa: E402
+from conformance import defects, generator as generator_module  # noqa: E402
 from conformance import schema as schema_module  # noqa: E402
 from conformance import steps  # noqa: E402
 
@@ -30,8 +30,8 @@ REGISTRY_PATH = HERE / "check-names.json"
 SCHEMA_PATH = HERE / "check-names.schema.json"
 REGISTRY_SCHEMA_ID = "pennilogic.infra.check-names/1"
 REQUIRED_FIELDS = ("repo", "check_name", "workflow_ref", "language")
-# Profiles whose primary artifact is not a general-purpose language.
-LANGUAGE_OVERRIDES = {"docs": "documentation", "contracts": "openapi"}
+# Primary native-CI stacks not inferred from every declared report toolchain.
+LANGUAGE_OVERRIDES = {"docs": "documentation", "contracts": "openapi", "infra": "python"}
 
 
 class RegistryError(ValueError):
@@ -64,7 +64,7 @@ def load_registry(path=REGISTRY_PATH):
 
 
 def expected_language(name, profile):
-    """The stack a profile's workflow exercises, derived from its toolchain fields."""
+    """The primary native-CI stack; infra's optional report toolchain does not change its language."""
     if name in LANGUAGE_OVERRIDES:
         return LANGUAGE_OVERRIDES[name]
     if "java" in profile:
@@ -136,7 +136,8 @@ def render_workflow_at(infra_root, ref, name, run=subprocess.run):
     not present in the local history (a shallow clone) or the profile did not exist at that commit.
     """
     def show(path):
-        result = run(["git", "-C", str(infra_root), "show", f"{ref}:{path}"], capture_output=True, check=False)
+        result = run(["git", "-C", str(infra_root), "show", f"{ref}:{path}"], capture_output=True, check=False,
+                     env=defects.probe_environment(), timeout=60)
         return None if result.returncode else result.stdout
     source = show("governance/generate.py")
     profiles = show("governance/repository-profiles.json")

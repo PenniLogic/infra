@@ -439,7 +439,7 @@ class OrchestratorTests(support.ConsumerCase):
         output = self.scratch / "unwritten"
         err = io.StringIO()
         with mock.patch.object(run.github_api, "choose_client", lambda mode: client), \
-                mock.patch.object(run.report_module, "redaction_survivors", lambda document, replacements: ["drive path"]), \
+                mock.patch.object(run.report_module, "redaction_survivors", lambda document, replacements, credentials: ["drive path"]), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             code = run.main(["--scratch", str(self.scratch), "--output", str(output), "--repository", self.profile_name,
                              "--github-client", "anonymous", "--exercise", "node"])
