@@ -73,14 +73,14 @@ class RuleTableTests(unittest.TestCase):
         self.assertEqual(self.source.count("raise Refused("), len(messages))
         self.assertEqual(sorted(messages), sorted(self.order))
         self.assertEqual(len(set(self.order)), len(self.order))
-        self.assertEqual(26, len(self.order))
-        # The first five rows are the document rules PR E documented; the last six the per-file rules.
+        self.assertEqual(32, len(self.order))
+        # The document rules stay first; PR G extends only the per-file/profile exception.
         self.assertEqual(["UTF-8 byte order mark before the JSON document", "Duplicate JSON key",
                           "workflow document must be one JSON object", "expected read-only workflow token",
                           "unreviewed workflow expression; public jobs must not receive secrets"], self.order[:5])
         self.assertEqual("action commit differs from the generated pin; regenerate instead of editing it", self.order[8])
-        self.assertTrue(self.order[-6].startswith("CI must run on exactly"))
-        self.assertTrue(self.order[-1].startswith("workflow file outside the generated pair"))
+        self.assertTrue(self.order[-11].startswith("CI must run on exactly"))
+        self.assertEqual("workflow file outside the generated pair or infra-only conformance.yml", self.order[-1])
 
     def test_source_order_equals_evaluation_order_inside_each_stage(self):
         # The derivation above relies on each helper being straight-line: its rules appear in the
@@ -109,11 +109,11 @@ class RuleTableTests(unittest.TestCase):
         runner = list(refusals(first_loop(functions["validate_workflow"]), functions, ("validate_workflow",)))
         per_file = self.order[self.order.index(runner[-1]) + 1:]
         self.assertEqual(mappings, per_mapping)
-        self.assertEqual(5, len(mappings))
+        self.assertEqual(6, len(mappings))
         self.assertEqual(6, len(shape))
         self.assertEqual(4, len(per_job))
         self.assertEqual(2, len(runner))
-        self.assertEqual(6, len(per_file))
+        self.assertEqual(11, len(per_file))
         # Prose ranges: per-element interleaving (C2) and the stage descriptions after the table.
         for text in (f"rules {span(per_mapping)} are applied to each mapping", f"rules {span(per_job)} to each job",
                      f"rules {span(runner)} to each job in turn", f"Rules {span(shape)} accept exactly the keys",
@@ -123,21 +123,25 @@ class RuleTableTests(unittest.TestCase):
         self.assertIn(f"(tripwire behind rule {self.order.index(self.order[4]) + 1})", self.readme)
         job_key = self.order.index("job-level key outside the generated job keys name, runs-on, timeout-minutes, env, steps") + 1
         self.assertIn(f"tripwire behind rule {job_key}, which already refuses the key", self.readme)
-        self.assertEqual(15, job_key)
+        self.assertEqual(16, job_key)
 
     def test_readme_generated_file_list_is_exactly_what_artifacts_renders(self):
         paragraph = self.readme.split("\n\n")[1]
         self.assertTrue(paragraph.startswith("`generate.py` renders"), paragraph)
         listed = [token for token in re.findall(r"`([^`]+)`", paragraph) if token not in NOT_GENERATED]
+        conformance = ".github/workflows/conformance.yml"
+        self.assertIn(conformance, listed)
+        self.assertIn("20 common files", paragraph)
+        self.assertIn("infra alone has 21 files", paragraph)
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 names = sorted(generator.artifacts(repo))
-                self.assertEqual(20, len(names))
-                self.assertIn(f"{len(names)} files", paragraph)
+                self.assertEqual(21 if repo == "infra" else 20, len(names))
+                applicable = [token for token in listed if token != conformance or repo == "infra"]
                 self.assertIn(".github/instructions/source.instructions.md", names)
                 for name in names:
-                    self.assertTrue(any(fnmatch.fnmatchcase(name, token) for token in listed), name)
-                for token in listed:
+                    self.assertTrue(any(fnmatch.fnmatchcase(name, token) for token in applicable), name)
+                for token in applicable:
                     self.assertTrue(any(fnmatch.fnmatchcase(name, token) for name in names), token)
         self.assertIn("`.github/instructions/source.instructions.md`", paragraph)
         self.assertEqual(len(set(listed)), len(listed))

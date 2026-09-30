@@ -35,7 +35,8 @@ Product specifications and the preserved backlog are in
 Only standard GitHub-hosted runners are configured. Public-repository runner
 minutes are free; paid larger runners, storage overages, Copilot usage, external
 APIs and deployments are not automatically free and are not authorized here.
-No release publishing, artifact upload or cache allowance increase is configured.
+No release publishing or cache/storage allowance increase is configured.
+Infra's report-only Conformance workflow uploads reports with three-day retention.
 There is one GitHub owner with multiple independent AI sessions, not multiple humans.
 
 No open-source license was selected by this setup migration; public visibility

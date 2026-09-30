@@ -278,8 +278,10 @@ class ActionAllowlistTests(unittest.TestCase):
     def test_allowlist_equals_the_actions_and_inputs_the_generator_emits(self):
         emitted, pins = {}, {}
         for repo in generator.PROFILES["repositories"]:
-            for setup in (False, True):
-                workflow = json.loads(generator.workflow(repo, setup=setup))
+            for name, text in generator.artifacts(repo).items():
+                if not name.startswith(".github/workflows/"):
+                    continue
+                workflow = json.loads(text)
                 for mapping in checker.workflow_mappings(workflow):
                     if "uses" in mapping:
                         action, _, commit = mapping["uses"].partition("@")
@@ -293,6 +295,7 @@ class ActionAllowlistTests(unittest.TestCase):
         self.assertEqual({
             "actions/checkout": {"persist-credentials", "fetch-depth"}, "actions/setup-python": {"python-version"},
             "actions/setup-node": {"node-version-file"}, "actions/setup-java": {"distribution", "java-version"},
+            "actions/upload-artifact": {"name", "path", "retention-days", "if-no-files-found"},
         }, checker.WORKFLOW_ACTIONS)
         for commits in pins.values():
             for commit in commits:
@@ -318,7 +321,7 @@ class ActionAllowlistTests(unittest.TestCase):
 
     def test_unlisted_unpinned_or_malformed_uses_is_refused_at_any_nesting_level(self):
         refused = (
-            f"actions/cache@{SHA}", f"actions/upload-artifact@{SHA}", f"actions/download-artifact@{SHA}",
+            f"actions/cache@{SHA}", f"actions/download-artifact@{SHA}",
             f"actions/create-github-app-token@{SHA}", f"actions/attest-build-provenance@{SHA}",
             f"actions/setup-go@{SHA}", f"actions/setup-dotnet@{SHA}", f"actions/labeler@{SHA}", f"actions/stale@{SHA}",
             f"actions/dependency-review-action@{SHA}", f"actions/deploy-pages@{SHA}", f"actions/add-to-project@{SHA}",
@@ -386,21 +389,23 @@ class ActionAllowlistTests(unittest.TestCase):
     def test_listed_actions_pass_only_at_their_generated_pin_and_checkout_stays_credential_free(self):
         for action, inputs in sorted(checker.WORKFLOW_ACTIONS.items()):
             with self.subTest(action=action):
-                workflow = json.loads(generator.workflow("web"))
+                name = ".github/workflows/conformance.yml" if action == "actions/upload-artifact" else ".github/workflows/ci.yml"
+                workflow = json.loads(generator.artifacts("infra")[name] if action == "actions/upload-artifact"
+                                      else generator.workflow("web"))
                 step = {"name": "Step", "uses": f"{action}@{PINS[action]}"}
                 if action == "actions/checkout":
                     step["with"] = {"persist-credentials": False}
-                workflow["jobs"]["ci"]["steps"].append(step)
-                validate(workflow)
+                next(iter(workflow["jobs"].values()))["steps"].append(step)
+                validate(workflow, name)
                 if action != "actions/checkout":
                     for key in inputs:
                         step["with"] = {key: "1"}
-                        validate(workflow)
+                        validate(workflow, name)
                 # The same step at any other full commit is refused before its inputs are read; the
                 # exact pin is bound here, not only by the generator's `--check` in infra (S1 of #51).
                 step["uses"] = f"{action}@{SHA}"
                 with self.assertRaisesRegex(ValueError, PIN_RULE):
-                    validate(workflow)
+                    validate(workflow, name)
         for inputs in ({}, {"persist-credentials": True}, {"persist-credentials": "false"},
                        {"persist-credentials": None}, {"fetch-depth": 0}, None):
             with self.subTest(inputs=inputs):
@@ -588,6 +593,7 @@ class ActionPinTests(unittest.TestCase):
                 text = generator.artifacts(repo)["scripts/check_repository.py"]
                 rendered_texts.add(text)
                 rendered = load_text(f"rendered_checker_{repo.strip('.')}", text)
+                self.assertEqual(repo, rendered.WORKFLOW_REPOSITORY)
                 self.assertEqual(PINS, rendered.WORKFLOW_ACTION_PINS)
                 self.assertEqual(checker.WORKFLOW_ACTION_PINS, rendered.WORKFLOW_ACTION_PINS)
                 self.assertEqual(list(sorted(PINS)), list(rendered.WORKFLOW_ACTION_PINS))
@@ -600,8 +606,11 @@ class ActionPinTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
                         rendered.validate_workflow(name, json.dumps(document).encode())
                 self.assertEqual([], rendered.check(complete_repository(repo)))
-        # One rendering for every profile, and it is the template byte for byte.
-        self.assertEqual({template}, rendered_texts)
+        # Only the repository-bound workflow exception differs between consumers.
+        self.assertEqual({template}, {
+            generator.WORKFLOW_REPOSITORY_LINE.sub('WORKFLOW_REPOSITORY = "infra"\n', text)
+            for text in rendered_texts
+        })
 
     def test_template_mirrors_the_block_the_generator_renders(self):
         # The template carries the current pins so it can be imported and tested unrendered; the
