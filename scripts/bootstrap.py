@@ -322,7 +322,13 @@ class TreeTimeoutExpired(subprocess.TimeoutExpired):
 
 
 class ProcessOwnershipError(OSError):
-    """Windows refused to place the command under this bootstrap's job object (the run fails closed)."""
+    """Windows refused to create the job object or to place the command in it (the run fails closed).
+
+    ``command_started`` is False when the refusal came before the command was started (nothing ran)
+    and True when the already started command was terminated because it could not be owned.
+    """
+
+    command_started = False
 
 
 if os.name == "nt":
@@ -331,8 +337,11 @@ if os.name == "nt":
 
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
-    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation = 1, 9
-    PROCESS_TERMINATE, PROCESS_SET_QUOTA = 0x0001, 0x0100
+    JobObjectBasicAccountingInformation, JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation = 1, 3, 9
+    PROCESS_TERMINATE, PROCESS_SET_QUOTA, PROCESS_QUERY_LIMITED_INFORMATION = 0x0001, 0x0100, 0x1000
+    SYNCHRONIZE = 0x100000
+    WAIT_OBJECT_0, WAIT_TIMEOUT, MAXIMUM_WAIT_OBJECTS = 0x0, 0x102, 64
+    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA = 87, 234
 
     class _IO_COUNTERS(ctypes.Structure):
         _fields_ = [(name, ctypes.c_ulonglong) for name in (
@@ -357,6 +366,13 @@ if os.name == "nt":
                     ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
                     ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
 
+    def _process_id_list(capacity):
+        """JOBOBJECT_BASIC_PROCESS_ID_LIST with room for ``capacity`` PIDs (the SDK declares a flexible array)."""
+        class _JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
+            _fields_ = [("NumberOfAssignedProcesses", wintypes.DWORD), ("NumberOfProcessIdsInList", wintypes.DWORD),
+                        ("ProcessIdList", ctypes.c_size_t * capacity)]
+        return _JOBOBJECT_BASIC_PROCESS_ID_LIST()
+
     for _name, _restype, _argtypes in (
         ("CreateJobObjectW", wintypes.HANDLE, (wintypes.LPVOID, wintypes.LPCWSTR)),
         ("SetInformationJobObject", wintypes.BOOL, (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)),
@@ -365,6 +381,7 @@ if os.name == "nt":
         ("AssignProcessToJobObject", wintypes.BOOL, (wintypes.HANDLE, wintypes.HANDLE)),
         ("TerminateJobObject", wintypes.BOOL, (wintypes.HANDLE, wintypes.UINT)),
         ("OpenProcess", wintypes.HANDLE, (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)),
+        ("WaitForMultipleObjects", wintypes.DWORD, (wintypes.DWORD, wintypes.LPHANDLE, wintypes.BOOL, wintypes.DWORD)),
         ("CloseHandle", wintypes.BOOL, (wintypes.HANDLE,)),
     ):
         _function = getattr(_kernel32, _name)
@@ -388,9 +405,12 @@ class WindowsJob:
     window is a few microseconds of Python, far shorter than a Go binary needs to start and spawn
     its plugin, and a process started inside the job is a member from birth. Nested jobs are used
     when this process already runs inside a job (Windows 8+). The job handle is never inheritable.
-    A failure to establish ownership while the command is running fails closed: the just-started
-    command is terminated and :class:`ProcessOwnershipError` is raised; nothing runs unowned. A
-    command that has already exited by then is reported with its own result.
+    On a timeout :func:`terminate_tree` terminates the job and then awaits the members' process
+    objects, so "has exited" is only claimed once Windows has finished tearing them down.
+    A failure to establish ownership fails closed: a refusal before the command exists means
+    nothing is started; a refusal after it was started terminates it at once. Both raise
+    :class:`ProcessOwnershipError`; nothing runs unowned. A command that has already exited by
+    the time it would be assigned is reported with its own result.
     """
 
     def __init__(self):
@@ -435,6 +455,18 @@ class WindowsJob:
             return None
         return info.ActiveProcesses
 
+    def process_ids(self):
+        """PIDs of the processes in this job right now (job-scoped, no global enumeration), or None."""
+        for capacity in (64, 4096):
+            info = _process_id_list(capacity)
+            if _kernel32.QueryInformationJobObject(
+                self.handle, JobObjectBasicProcessIdList, ctypes.byref(info), ctypes.sizeof(info), None,
+            ):
+                return list(info.ProcessIdList[:info.NumberOfProcessIdsInList])
+            if ctypes.get_last_error() != ERROR_MORE_DATA:
+                return None
+        return None
+
     def close(self):
         if self.handle:
             _kernel32.CloseHandle(self.handle)  # kill-on-close: anything still in the job dies now
@@ -446,6 +478,57 @@ class WindowsJob:
     def __exit__(self, *exc_info):
         self.close()
         return False
+
+
+class ProcessExits:
+    """Await the exit of specific processes by PID through their process objects.
+
+    A process object is signaled only when Windows has finished tearing the process down,
+    including the rundown of its handles; the job's ``ActiveProcesses`` counter and PID list drop
+    a terminated process milliseconds earlier (measured: counter 0.04-0.34 ms, PID list 0.4-1.5 ms,
+    process object 3.7-38 ms after ``TerminateJobObject``; a file the process held was still
+    undeletable at the first two points in 30/30 rounds and deletable at the third in 30/30).
+    ``add`` pins the objects with SYNCHRONIZE handles; a PID that no longer exists at that moment
+    (ERROR_INVALID_PARAMETER) had already been torn down completely and counts as exited.
+    """
+
+    def __init__(self):
+        self.handles, self.gone, self.unopenable = {}, set(), set()
+
+    def add(self, pids):
+        for pid in pids:
+            if pid in self.handles or pid in self.gone or pid in self.unopenable:
+                continue
+            handle = _kernel32.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if handle:
+                self.handles[pid] = handle
+            elif ctypes.get_last_error() == ERROR_INVALID_PARAMETER:
+                self.gone.add(pid)
+            else:
+                self.unopenable.add(pid)
+
+    @property
+    def seen(self):
+        return len(self.handles) + len(self.gone) + len(self.unopenable)
+
+    def wait(self, timeout):
+        """Wait up to ``timeout`` seconds for every pinned process object; returns how many are signaled."""
+        handles, deadline = list(self.handles.values()), time.monotonic() + timeout
+        for start in range(0, len(handles), MAXIMUM_WAIT_OBJECTS):
+            batch = handles[start:start + MAXIMUM_WAIT_OBJECTS]
+            array = (wintypes.HANDLE * len(batch))(*batch)
+            remaining = max(0, int((deadline - time.monotonic()) * 1000))
+            _kernel32.WaitForMultipleObjects(len(batch), array, True, remaining)
+        signaled = 0
+        for handle in handles:
+            array = (wintypes.HANDLE * 1)(handle)
+            signaled += _kernel32.WaitForMultipleObjects(1, array, True, 0) == WAIT_OBJECT_0
+        return signaled + len(self.gone)
+
+    def close(self):
+        for handle in self.handles.values():
+            _kernel32.CloseHandle(handle)
+        self.handles = {}
 
 
 def release_pipes(process, timeout):
@@ -462,25 +545,41 @@ def release_pipes(process, timeout):
         return False
 
 
-def terminate_tree(job, process):
-    """After a timeout: terminate the whole tree and wait, bounded by TEARDOWN_SECONDS, until it is
-    gone and the output pipes are released. Returns a sentence for the error message. The teardown
-    wait only observes the exit; it is never extra command time."""
-    deadline = time.monotonic() + TEARDOWN_SECONDS
+def terminate_tree(job, process, deadline):
+    """After a timeout: terminate the whole tree, then wait until ``deadline`` (TEARDOWN_SECONDS after the
+    timeout) for every process that was in the job to exit (its process object is signaled, see
+    :class:`ProcessExits`) and for the output pipes to be released. Returns a sentence for the error
+    message saying exactly what was confirmed. The teardown wait only observes the exit; it is never
+    extra command time."""
+    exits = ProcessExits()
+    exits.add(job.process_ids() or [])  # pin the members before the kill so their exit can be awaited
     terminated = job.terminate()
     if not terminated:
         process.kill()  # at least docker itself, as `subprocess.run` would
-    released = release_pipes(process, max(0.0, deadline - time.monotonic()))
+    try:
+        # A process created in the microseconds between the snapshot and the kill was terminated too;
+        # await it as well while the job still lists it.
+        while time.monotonic() < deadline:
+            late = [pid for pid in job.process_ids() or [] if pid not in exits.handles and pid not in exits.gone
+                    and pid not in exits.unopenable]
+            if not late:
+                break
+            exits.add(late)
+        released = release_pipes(process, max(0.0, deadline - time.monotonic()))
+        seen = exits.seen
+        exited = exits.wait(max(0.0, deadline - time.monotonic()))
+    finally:
+        exits.close()
     active = job.active_processes()
-    while active and time.monotonic() < deadline:
-        time.sleep(0.05)
-        active = job.active_processes()
-    if terminated and released and active == 0:
-        return "Its whole process tree (docker and the compose plugin) was terminated."
+    if terminated and released and seen and exited == seen and active == 0:
+        return (f"Its whole process tree was terminated and has exited ({seen} process{'' if seen == 1 else 'es'},"
+                " output released).")
+    awaited = f"{exited} of {seen}" if seen else "none awaited (the job listed no process at the timeout)"
     return (
         f"Warning: docker was terminated, but its process tree could not be confirmed gone within {TEARDOWN_SECONDS}s"
-        f" (job termination {'accepted' if terminated else 'refused'}, output released: {released},"
-        f" processes still active: {'unknown' if active is None else active}); a descendant may still be running."
+        f" (job termination {'accepted' if terminated else 'refused'}; output released: {released};"
+        f" processes exited: {awaited}; processes still active: {'unknown' if active is None else active});"
+        " a descendant may still be running."
     )
 
 
@@ -494,21 +593,31 @@ def run_docker(command, cwd, env, timeout):
     options = dict(cwd=cwd, env=env, text=True, encoding="utf-8", errors="replace")
     if os.name != "nt":
         return subprocess.run(command, capture_output=True, timeout=timeout, check=False, **options)
-    with WindowsJob() as job:
+    with WindowsJob() as job:  # a refusal here raises before anything is started (command_started stays False)
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
         try:
             job.assign(process.pid)
-        except ProcessOwnershipError:
+        except ProcessOwnershipError as error:
             if process.poll() is None:  # still running, unowned: fail closed
                 process.kill()
                 release_pipes(process, TEARDOWN_SECONDS)
+                error.command_started = True
                 raise
             # Windows also refuses to assign a process that has already exited. Only a command failing
             # within microseconds of its creation can get here; its own result is what to report.
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise TreeTimeoutExpired(command, timeout, terminate_tree(job, process)) from None
+            deadline = time.monotonic() + TEARDOWN_SECONDS
+            try:
+                cleanup = terminate_tree(job, process, deadline)
+            except Exception as error:  # cleanup must never mask the timeout; the tree is still terminated
+                job.terminate()
+                release_pipes(process, max(0.0, deadline - time.monotonic()))
+                cleanup = (f"Warning: the process tree could not be cleaned up ({type(error).__name__}: {error});"
+                           " it was terminated without confirmation, and closing the job object with this run"
+                           " terminates whatever is still in it.")
+            raise TreeTimeoutExpired(command, timeout, cleanup) from None
         except BaseException:
             job.terminate()  # e.g. Ctrl-C: the tree goes down with the bootstrap, as `subprocess.run` kills its child
             raise
@@ -535,11 +644,13 @@ class Compose:
         except FileNotFoundError as error:
             raise BootstrapError("docker_missing", "The `docker` command is not installed or not on PATH.") from error
         except ProcessOwnershipError as error:
+            fate = ("The command had already been started and was terminated immediately." if error.command_started
+                    else "The command was not started.")
             raise BootstrapError(
                 "io_error",
-                f"Windows refused to place `{label}` under this bootstrap's process ownership ({error}). The command"
-                " was terminated immediately and nothing ran. Typically the bootstrap itself is running inside a job"
-                " object that forbids nested jobs (an old-style sandbox); re-run it from a plain terminal.",
+                f"Windows refused to own the process tree of `{label}` ({error}). {fate} Typically the bootstrap"
+                " itself is running inside a job object that forbids nested jobs (an old-style sandbox); re-run it"
+                " from a plain terminal.",
             ) from error
         except subprocess.TimeoutExpired as error:
             message = f"`{label}` did not finish within {timeout}s."
