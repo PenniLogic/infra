@@ -108,7 +108,8 @@ overran it. On Windows, `docker.exe` runs `docker compose` as a child process,
 `docker-compose.exe`, which keeps the command's output open and keeps working after `docker.exe`
 alone is killed. The bootstrap therefore runs each `docker` command inside a Windows job object
 and, on a timeout, terminates docker and every process it started together: the error is raised
-within the time limit plus at most 5 s, and `error.cleanup` states whether every process of that
+within the time limit plus about 5 s (the bounded teardown wait, plus a fraction of a second of
+process start-up and teardown overhead), and `error.cleanup` states whether every process of that
 tree was confirmed to have exited (the bootstrap waits on their process objects, which Windows
 signals only after the process's handles are released) or what could not be confirmed. On Linux
 and macOS only `docker` itself is killed, as before; a compose plugin that is still working may
@@ -305,7 +306,7 @@ password), the env-file contract, the loopback refusals, credential redaction, t
 Docker bind-failure texts and the named-port diagnostic. They also cover the command time
 limit with a harmless fake `docker` (a Python script standing in for `docker.exe`, never the
 real one): it starts a child that outlives a 2 s limit while inheriting or redirecting the
-captured output, and the bootstrap must report `docker_timeout` within the limit plus 5 s on
+captured output, and the bootstrap must report `docker_timeout` within about the limit plus 5 s on
 every platform and, on Windows, leave that child dead; further Windows-only tests exercise the job
 object directly (job-scoped member list, process objects awaited, a held file deletable right after),
 both fail-closed paths (job creation refused: nothing started; assignment refused: the started

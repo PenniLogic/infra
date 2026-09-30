@@ -450,7 +450,14 @@ if os.name == "nt":
     _k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
     _k32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
     _k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _k32.GetProcessHandleCount.argtypes = (wintypes.HANDLE, wintypes.LPDWORD)
+    _k32.GetCurrentProcess.restype = wintypes.HANDLE
     _SYNCHRONIZE, _PROCESS_TERMINATE, _PROCESS_QUERY_LIMITED_INFORMATION, _WAIT_OBJECT_0 = 0x100000, 0x1, 0x1000, 0
+
+    def own_handle_count():
+        count = wintypes.DWORD()
+        _k32.GetProcessHandleCount(_k32.GetCurrentProcess(), ctypes.byref(count))
+        return count.value
 
 
 def wait_for_exit(pid, seconds):
@@ -498,16 +505,19 @@ def stop_process(pid):
 class DockerCommandTests(unittest.TestCase):
     """`Compose.docker()` with a harmless fake docker (infra#37).
 
-    A timed-out `docker` command must raise `docker_timeout` within `timeout + TEARDOWN_SECONDS`
-    even when the command started a child that outlives it, as docker.exe's compose plugin does
-    on Windows. There the whole tree is owned by a job object and the child must be gone when the
-    error is raised. On POSIX only docker itself is killed (unchanged by infra#37): the child is
-    left to the operating system, no ownership is claimed in the error, and this test stops it.
-    The fixture directory is removed without `ignore_errors`: a child that still held a file in it
-    would fail the test loudly instead of leaving the directory behind.
+    A timed-out `docker` command must raise `docker_timeout` about `timeout + TEARDOWN_SECONDS` after
+    it started (a healthy Windows teardown takes ~0.1 s; the bound below adds half a second of slack
+    for the start-up and wait overhead measured when a tree does not exit) even when the command
+    started a child that outlives it, as docker.exe's compose plugin does on Windows. There the whole
+    tree is owned by a job object and the child must be gone when the error is raised. On POSIX only
+    docker itself is killed (unchanged by infra#37): the child is left to the operating system, no
+    ownership is claimed in the error, and this test stops it. The fixture directory is removed
+    without `ignore_errors`: a child that still held a file in it would fail the test loudly instead
+    of leaving the directory behind.
     """
 
     TIMEOUT, LIFETIME = 2.0, 20.0  # seconds; the fake and its child outlive TIMEOUT + TEARDOWN_SECONDS widely
+    TEARDOWN_SLACK = 0.5  # seconds of start-up/wait overhead tolerated on top of TIMEOUT + TEARDOWN_SECONDS
     TREE_EXITED = "Its whole process tree was terminated and has exited (2 processes, output released)."
 
     def setUp(self):
@@ -544,7 +554,7 @@ class DockerCommandTests(unittest.TestCase):
         self.assertEqual("docker_missing", ctx.exception.kind)
 
     def test_timed_out_docker_returns_within_bound_whatever_its_child_does_with_the_pipes(self):
-        bound = self.TIMEOUT + bootstrap.TEARDOWN_SECONDS
+        bound = self.TIMEOUT + bootstrap.TEARDOWN_SECONDS + self.TEARDOWN_SLACK
         for stdio in ("inherit", "redirect"):
             with self.subTest(stdio=stdio):
                 for leftover in ("child.pid", "held.txt"):
@@ -613,6 +623,54 @@ class DockerCommandTests(unittest.TestCase):
         pid = self.child_pid()
         self.assertIsNotNone(pid)
         self.assertTrue(wait_for_exit(pid, 2.0), "closing the job object must still terminate the child")
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_refused_termination_with_failing_kill_releases_the_pinned_handles(self):
+        # Reliability finding R3: when TerminateJobObject is refused and the fallback kill raises, the
+        # SYNCHRONIZE pins taken before the kill must still be closed (two handles leaked per event before).
+        sleeper = "import time; time.sleep(30)"
+
+        def one_round():
+            with bootstrap.WindowsJob() as job:
+                process = subprocess.Popen([sys.executable, "-c", sleeper],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                job.assign(process.pid)
+                self.assertTrue(self.wait_until(lambda: job.active_processes() == 1, 10.0))
+                with mock.patch.object(bootstrap.WindowsJob, "terminate", return_value=False), \
+                        mock.patch.object(subprocess.Popen, "kill", side_effect=OSError("probe: kill refused")):
+                    with self.assertRaises(OSError):
+                        bootstrap.terminate_tree(job, process, time.monotonic() + 1.0)
+                # leaving the block closes the job: kill-on-close ends the sleeper
+            process.wait(timeout=bootstrap.TEARDOWN_SECONDS)
+            del process  # the Popen's own process handle goes with it
+            gc.collect()
+
+        one_round()  # warm-up: lazily created interpreter/mock objects settle before the baseline
+        before = own_handle_count()
+        for _ in range(5):
+            one_round()
+        after = own_handle_count()
+        self.assertLessEqual(after, before, f"process handle count grew from {before} to {after} over five"
+                                            " refused-termination rounds (the leak was +2 per round)")
+
+    @unittest.skipIf(os.name != "nt", "Windows job objects")
+    def test_interrupt_inside_the_unowned_window_kills_the_started_command(self):
+        # Reliability finding R2: between Popen returning and the assignment the command is unowned;
+        # an interrupt there must not leave it behind. The command records its PID, the interrupt is
+        # raised in place of the assignment once that PID is known.
+        pid_file = self.state / "self.pid"
+        code = f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(30)"
+        compose = bootstrap.Compose("p", self.state / ".env", os.environ, (), docker_command=(sys.executable, "-c"))
+
+        def interrupted_assign(job, pid):
+            self.assertTrue(self.wait_until(lambda: pid_file.is_file() and pid_file.read_text(), 10.0))
+            raise KeyboardInterrupt
+
+        with mock.patch.object(bootstrap.WindowsJob, "assign", interrupted_assign):
+            with self.assertRaises(KeyboardInterrupt):
+                compose.docker(code, timeout=self.TIMEOUT)
+        pid = int(pid_file.read_text())
+        self.assertTrue(wait_for_exit(pid, 2.0), f"the unowned command {pid} survived the interrupt")
 
     @unittest.skipIf(os.name != "nt", "Windows job objects")
     def test_command_that_exits_before_it_can_be_owned_is_reported_with_its_result(self):

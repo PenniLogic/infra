@@ -401,16 +401,22 @@ class WindowsJob:
 
     The job is created before the child exists, with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and no
     breakaway right, so descendants cannot leave it and anything still alive dies when the handle
-    is closed. The child is assigned immediately after ``CreateProcess`` returns: the remaining
-    window is a few microseconds of Python, far shorter than a Go binary needs to start and spawn
-    its plugin, and a process started inside the job is a member from birth. Nested jobs are used
-    when this process already runs inside a job (Windows 8+). The job handle is never inheritable.
-    On a timeout :func:`terminate_tree` terminates the job and then awaits the members' process
-    objects, so "has exited" is only claimed once Windows has finished tearing them down.
-    A failure to establish ownership fails closed: a refusal before the command exists means
-    nothing is started; a refusal after it was started terminates it at once. Both raise
-    :class:`ProcessOwnershipError`; nothing runs unowned. A command that has already exited by
-    the time it would be assigned is reported with its own result.
+    is closed. The child is assigned immediately after ``CreateProcess`` returns. The unowned
+    window between the two is a few hundred microseconds of Python (``OpenProcess`` plus
+    ``AssignProcessToJobObject`` through ctypes; measured 0.17-0.71 ms, median 0.23 ms, over 50
+    rounds, and up to a few milliseconds under scheduling pressure), two to three orders of
+    magnitude shorter than ``docker.exe`` needs to start and spawn its plugin (measured
+    0.13-0.39 s), and a process started inside the job is a member from birth. The stdlib offers
+    nothing shorter: ``Popen`` closes the thread handle right after ``CreateProcess`` (so no
+    suspended start) and ``_winapi.CreateProcess`` has no ``PROC_THREAD_ATTRIBUTE_JOB_LIST``. An
+    interrupt landing inside that window kills the just-started command before it propagates.
+    Nested jobs are used when this process already runs inside a job (Windows 8+). The job handle
+    is never inheritable. On a timeout :func:`terminate_tree` terminates the job and then awaits
+    the members' process objects, so "has exited" is only claimed once Windows has finished
+    tearing them down. A failure to establish ownership fails closed: a refusal before the command
+    exists means nothing is started; a refusal after it was started terminates it at once. Both
+    raise :class:`ProcessOwnershipError`; nothing runs unowned. A command that has already exited
+    by the time it would be assigned is reported with its own result.
     """
 
     def __init__(self):
@@ -530,6 +536,13 @@ class ProcessExits:
             _kernel32.CloseHandle(handle)
         self.handles = {}
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()  # every pinned handle is released whatever raised inside the block
+        return False
+
 
 def release_pipes(process, timeout):
     """Collect the output threads and reap the child within ``timeout``.
@@ -550,13 +563,13 @@ def terminate_tree(job, process, deadline):
     timeout) for every process that was in the job to exit (its process object is signaled, see
     :class:`ProcessExits`) and for the output pipes to be released. Returns a sentence for the error
     message saying exactly what was confirmed. The teardown wait only observes the exit; it is never
-    extra command time."""
-    exits = ProcessExits()
-    exits.add(job.process_ids() or [])  # pin the members before the kill so their exit can be awaited
-    terminated = job.terminate()
-    if not terminated:
-        process.kill()  # at least docker itself, as `subprocess.run` would
-    try:
+    extra command time (the return lands a fraction of a second after the deadline: process start-up,
+    the ``communicate`` join and the wait granularity)."""
+    with ProcessExits() as exits:  # the pins are released on every exit from this block, including a failing kill
+        exits.add(job.process_ids() or [])  # pin the members before the kill so their exit can be awaited
+        terminated = job.terminate()
+        if not terminated:
+            process.kill()  # at least docker itself, as `subprocess.run` would
         # A process created in the microseconds between the snapshot and the kill was terminated too;
         # await it as well while the job still lists it.
         while time.monotonic() < deadline:
@@ -568,12 +581,14 @@ def terminate_tree(job, process, deadline):
         released = release_pipes(process, max(0.0, deadline - time.monotonic()))
         seen = exits.seen
         exited = exits.wait(max(0.0, deadline - time.monotonic()))
-    finally:
-        exits.close()
     active = job.active_processes()
     if terminated and released and seen and exited == seen and active == 0:
         return (f"Its whole process tree was terminated and has exited ({seen} process{'' if seen == 1 else 'es'},"
                 " output released).")
+    if terminated and released and not seen and active == 0:
+        # Only possible when the last member exited in the moment between the timeout and the snapshot.
+        return ("Its whole process tree was terminated; the job listed no process any more at the timeout,"
+                " nothing is active and the output was released.")
     awaited = f"{exited} of {seen}" if seen else "none awaited (the job listed no process at the timeout)"
     return (
         f"Warning: docker was terminated, but its process tree could not be confirmed gone within {TEARDOWN_SECONDS}s"
@@ -588,23 +603,35 @@ def run_docker(command, cwd, env, timeout):
 
     POSIX keeps the plain ``subprocess.run`` call, unchanged. On Windows the command starts inside
     a :class:`WindowsJob`; on timeout the whole tree is terminated and :class:`TreeTimeoutExpired`
-    is raised within ``timeout + TEARDOWN_SECONDS``.
+    is raised about ``timeout + TEARDOWN_SECONDS`` after the start (measured up to ~0.15 s past that
+    when the tree does not exit).
     """
     options = dict(cwd=cwd, env=env, text=True, encoding="utf-8", errors="replace")
     if os.name != "nt":
         return subprocess.run(command, capture_output=True, timeout=timeout, check=False, **options)
     with WindowsJob() as job:  # a refusal here raises before anything is started (command_started stays False)
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
+        process = None
         try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
             job.assign(process.pid)
         except ProcessOwnershipError as error:
-            if process.poll() is None:  # still running, unowned: fail closed
+            if process is not None and process.poll() is None:  # still running, unowned: fail closed
                 process.kill()
                 release_pipes(process, TEARDOWN_SECONDS)
                 error.command_started = True
                 raise
+            if process is None:
+                raise
             # Windows also refuses to assign a process that has already exited. Only a command failing
             # within microseconds of its creation can get here; its own result is what to report.
+        except BaseException:
+            # An interrupt inside the unowned window (Popen returned, assignment not yet done) must not
+            # leave the just-started command behind; an interrupt inside Popen itself is the stdlib's own
+            # window, the same one `subprocess.run` has.
+            if process is not None:
+                process.kill()
+                release_pipes(process, TEARDOWN_SECONDS)
+            raise
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
