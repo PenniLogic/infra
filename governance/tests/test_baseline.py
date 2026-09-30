@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import unittest
 
@@ -52,8 +53,13 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual("python scripts/check_repository.py", contracts[-1]["run"])
         self.assertFalse(any("uses" in step and "setup-node" in step["uses"] for step in contracts))
 
-    def test_sprint_scaffold_profiles_run_their_requested_commands(self):
+    def test_profiles_run_exactly_their_requested_commands(self):
         expected = {
+            ".github": ["python scripts/check_agent_profiles.py", "python -m unittest discover -s scripts/tests"],
+            "docs": ["python scripts/check_docs.py", "python scripts/check_test_strategy.py",
+                     "python -m unittest discover -s scripts/tests"],
+            "contracts": [],
+            "api": ["python scripts/quality.py build", "python -m unittest discover -s scripts/tests"],
             "web": ["npm ci", "npm run lint", "npm run format:check", "npm run typecheck", "npm test",
                     "npm run build", "npm run check:bundle", "npm run report:build",
                     "npm run check:bundle:planted"],
@@ -71,11 +77,18 @@ class BaselineTests(unittest.TestCase):
                       "docker compose -f docker-compose.yml config --quiet",
                       "python -m unittest discover -s scripts/tests"],
         }
+        self.assertEqual(set(expected), set(generator.PROFILES["repositories"]))
         for repo, commands in expected.items():
             with self.subTest(repo=repo):
-                steps = json.loads(generator.workflow(repo))["jobs"]["ci"]["steps"]
-                self.assertEqual("Run checks", steps[-1]["name"])
-                self.assertEqual(["python scripts/check_repository.py", *commands], steps[-1]["run"].split("\n"))
+                commands = ["python scripts/check_repository.py", *commands]
+                output = generator.artifacts(repo)
+                steps = json.loads(output[".github/workflows/ci.yml"])["jobs"]["ci"]["steps"]
+                run = [step for step in steps if step["name"] == "Run checks"]
+                self.assertEqual([commands], [step["run"].split("\n") for step in run])
+                self.assertEqual(commands, json.loads(output[".github/agent-policy.json"])["commands"])
+                block = "```text\npython scripts/setup.py\n" + "\n".join(commands) + "\n```"
+                for name in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
+                    self.assertIn(block, output[name])
                 setup = json.loads(generator.workflow(repo, setup=True))["jobs"]["copilot-setup-steps"]["steps"]
                 verify = [step for step in setup if step["name"] == "Verify repository"]
                 self.assertEqual(["python scripts/check_repository.py"], [step["run"] for step in verify])
@@ -86,6 +99,21 @@ class BaselineTests(unittest.TestCase):
         for flag in ("uv==0.11.33", "--hash=sha256:", "--only-binary :all:", "--require-hashes", "--no-deps"):
             self.assertIn(flag, UV_INSTALL)
         self.assertNotIn('"uv>=', json.dumps(generator.PROFILES["repositories"]["ai-service"]))
+
+    def test_every_readme_links_the_published_test_strategy(self):
+        pointer = ("[PenniLogic/docs](https://github.com/PenniLogic/docs). Verification requirements:\n"
+                   "[PenniLogic/docs/governance/test-strategy.md]"
+                   "(https://github.com/PenniLogic/docs/blob/main/governance/test-strategy.md)\n"
+                   "(numbers in [governance/test-strategy.json]"
+                   "(https://github.com/PenniLogic/docs/blob/main/governance/test-strategy.json)).\n")
+        for repo in generator.PROFILES["repositories"]:
+            with self.subTest(repo=repo):
+                output = generator.artifacts(repo)
+                self.assertEqual(1, output["README.md"].count(pointer))
+                self.assertEqual(1, output["README.md"].count(generator.TEST_STRATEGY + ".md)"))
+                for name in output:
+                    if name != "README.md":
+                        self.assertNotIn("test-strategy", output[name], name)
 
     def test_jdk_resolves_from_the_runner_tool_cache(self):
         for repo, profile in generator.PROFILES["repositories"].items():
@@ -258,6 +286,63 @@ class BaselineTests(unittest.TestCase):
         for repo, profile in generator.PROFILES["repositories"].items():
             generator.validate_profile(repo, profile)
 
+    def test_attribute_lines_are_a_narrow_allowlist(self):
+        base = {"purpose": "Example repository", "state": "Example state; nothing is implemented.",
+                "commands": ["python scripts/check_repository.py"]}
+        # Every line below was confirmed by the PR #40 reviewers (git check-attr) to override the
+        # shared `* text=auto eol=lf` / `*.jar binary` rules or to attach an unreviewed attribute.
+        evasions = [
+            "** -text", "**/* -text", "/* -text", "\\* -text", "**/*.jar text", "*.[jJ]ar text",
+            "*.ja[r] text", "*.j?r text", "*.JAR text", "*.Jar binary", "* text=auto eol=lf", "*.jar binary",
+            "gradle/wrapper/gradle-wrapper.jar text", "gradle/wrapper/gradle-wrapper.jar text eol=lf",
+            "gradle/wrapper/gradle-wrapper.jar -text", "GRADLE/WRAPPER/GRADLE-WRAPPER.JAR eol=crlf",
+            "lib/x.jar text", "*.kt linguist-generated=true", "*.kt linguist-generated", "*.kt filter=lfs",
+            "*.kt merge=ours", "*.kt export-subst", "*.kt export-ignore", "*.kt diff=kotlin", "*.kt -diff",
+            "*.kt text=auto", "*.kt eol=native", "*.kt !text", "*.kt Text", "*.kt TEXT", "*.kt binary text",
+            "*.kt binary -text", "*.kt binary eol=lf", "*.kt text -text", "*.kt eol=lf eol=crlf",
+            "*.kt text text", "*.kt", "gradlew.bat", "*", "[attr]binary text", "[attr]lf text eol=lf",
+            "*.tar.gz binary", "*.min.js -text", "*.* -text", "*.k? text", "*.kt* text", "docs/*.md text",
+            "/gradlew.bat text eol=crlf", ".editorconfig text", "-x text", "#x text", '"a b" text', "!x text",
+            "x;y text", "x y text eol=lf", "x=y text", "x$HOME text", "x{a,b} text",
+        ]
+        for line in evasions:
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                generator.validate_profile("example", {**base, "attributes": [line]})
+        accepted = ["gradlew.bat text eol=crlf", "*.png binary", "*.PNG binary", "*.txt -text",
+                    "docs/notes.md text eol=lf", "lib/x.jar binary", "*.sh text", "x.y-z_1/w text eol=lf"]
+        generator.validate_profile("example", {**base, "attributes": accepted})
+        for line in accepted:
+            with self.subTest(line=line):
+                generator.validate_profile("example", {**base, "attributes": [line]})
+        self.assertEqual({"text", "-text", "binary", "eol=lf", "eol=crlf"}, generator.ATTRIBUTE_TOKENS)
+        self.assertEqual(["* text=auto eol=lf", "*.jar binary"], generator.ATTRIBUTES)
+
+    def test_generated_attributes_keep_shared_rules_effective(self):
+        # git itself resolves the generated file: the profile line applies only to its literal path
+        # and the shared text/binary rules stay in force for everything else, ignorecase or not.
+        paths = ["lib/x.jar", "a/b.txt", "gradlew.bat", "sub/gradlew.bat", "GRADLEW.BAT", "Main.kt"]
+        for repo, ignorecase in (("android", "true"), ("android", "false"), ("web", "true")):
+            with self.subTest(repo=repo, ignorecase=ignorecase), tempfile.TemporaryDirectory() as tmp:
+                subprocess.run(["git", "init", "-q", tmp], check=True)
+                (Path(tmp) / ".gitattributes").write_text(generator.artifacts(repo)[".gitattributes"], encoding="utf-8")
+                result = subprocess.run(
+                    ["git", "-C", tmp, "-c", f"core.ignorecase={ignorecase}", "check-attr", "text", "eol", "binary",
+                     "--", *paths], capture_output=True, text=True, encoding="utf-8", check=True)
+                attributes = {}
+                for line in result.stdout.splitlines():
+                    path, attribute, value = line.rsplit(": ", 2)
+                    attributes[path, attribute] = value
+                names = ("text", "eol", "binary")
+                self.assertEqual(("unset", "lf", "set"), tuple(attributes["lib/x.jar", name] for name in names))
+                for path in ("a/b.txt", "Main.kt"):
+                    self.assertEqual(("auto", "lf", "unspecified"), tuple(attributes[path, name] for name in names))
+                crlf = repo == "android"
+                for path in ("gradlew.bat", "sub/gradlew.bat"):
+                    self.assertEqual(("set", "crlf") if crlf else ("auto", "lf"),
+                                     (attributes[path, "text"], attributes[path, "eol"]))
+                self.assertEqual(("set", "crlf") if crlf and ignorecase == "true" else ("auto", "lf"),
+                                 (attributes["GRADLEW.BAT", "text"], attributes["GRADLEW.BAT", "eol"]))
+
     def test_expression_opener_never_reaches_a_generated_workflow(self):
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):
@@ -332,17 +417,38 @@ class BaselineTests(unittest.TestCase):
 
     def test_secret_in_job_or_workflow_env_is_rejected(self):
         forms = ("${{ secrets.NPM_TOKEN }}", "${{ secrets['NPM_TOKEN'] }}", '${{ secrets["NPM_TOKEN"] }}',
-                 "${{ toJSON(secrets) }}", "${{ github.token }}", "${{ github['token'] }}",
-                 "${{ SECRETS.NPM_TOKEN }}", "${{ GitHub.Token }}")
-        for level in ("job", "workflow", "step-env", "step-with", "step-run"):
+                 "${{ toJSON(secrets) }}", "${{ github.token }}", "${{ github['token'] }}", '${{ github["token"] }}',
+                 "${{ SECRETS.NPM_TOKEN }}", "${{ GitHub.Token }}", "${{ toJSON(github) }}", "${{ toJson(github) }}",
+                 "${{ github[format('to{0}', 'ken')] }}", "${{ github[join(fromJSON('[\"to\",\"ken\"]'), '')] }}",
+                 "${{ fromJSON(toJSON(github)).token }}", "${{ format('{0}', github.token) }}",
+                 "${{ github.workflow }}${{ github.token }}", "${{github.token}}", "${{ github . token }}")
+        levels = ("workflow-name", "workflow-env", "workflow-env-key", "concurrency", "job-name", "job-env",
+                  "job-if", "container", "step-name", "step-if", "step-env", "step-with", "step-run")
+        for level in levels:
             for form in forms:
                 with self.subTest(level=level, form=form):
                     workflow = json.loads(generator.workflow("web"))
                     job = workflow["jobs"]["ci"]
-                    if level == "workflow":
+                    if level == "workflow-name":
+                        workflow["name"] = f"CI {form}"
+                    elif level == "workflow-env":
                         workflow["env"] = {"NPM_TOKEN": form}
-                    elif level == "job":
+                    elif level == "workflow-env-key":
+                        workflow["env"] = {form: "1"}
+                    elif level == "concurrency":
+                        workflow["concurrency"]["group"] = form
+                    elif level == "job-name":
+                        job["name"] = f"CI {form}"
+                    elif level == "job-env":
                         job["env"] = {"NPM_TOKEN": form}
+                    elif level == "job-if":
+                        job["if"] = form
+                    elif level == "container":
+                        job["container"] = {"image": "ghcr.io/x/y", "credentials": {"username": "x", "password": form}}
+                    elif level == "step-name":
+                        job["steps"][-1]["name"] = f"Run {form}"
+                    elif level == "step-if":
+                        job["steps"][-1]["if"] = form
                     elif level == "step-env":
                         job["steps"][-1]["env"] = {"NPM_TOKEN": form}
                     elif level == "step-with":
@@ -351,11 +457,66 @@ class BaselineTests(unittest.TestCase):
                         job["steps"][-1]["run"] += f"\necho {form}"
                     with self.assertRaisesRegex(ValueError, "secrets"):
                         checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
+                    # The tripwire regex alone also refuses every form, so a widened allowlist
+                    # could not admit a secret-bearing expression.
+                    self.assertIsNotNone(checker.WORKFLOW_SECRET_ACCESS.search(json.dumps(workflow)), form)
         # A workflow that merely mentions a "secretsmanager" tool, the word "token" or a
         # script named check_secrets is not flagged.
         workflow = json.loads(generator.workflow("web"))
         workflow["jobs"]["ci"]["steps"][-1]["run"] += "\necho secretsmanager tokens github_token\npython check_secrets.py"
         checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
+
+    def test_only_generator_expressions_and_no_conditions_are_accepted(self):
+        # Every expression in every generated workflow is in the checker allowlist and vice versa.
+        emitted = set()
+        for repo in generator.PROFILES["repositories"]:
+            for setup in (False, True):
+                for text in checker.workflow_strings(json.loads(generator.workflow(repo, setup=setup))):
+                    emitted.update(re.findall(r"\$\{\{.*?\}\}", text))
+        self.assertEqual(emitted, checker.WORKFLOW_EXPRESSIONS)
+        self.assertEqual(3, len(checker.WORKFLOW_EXPRESSIONS))
+        for expression in checker.WORKFLOW_EXPRESSIONS:
+            self.assertRegex(expression, r"^\$\{\{ github\.[a-z_.]+( \|\| github\.[a-z_.]+)? \}\}$")
+            self.assertIsNone(checker.WORKFLOW_SECRET_ACCESS.search(expression))
+        # Any other expression is refused even when it names no secret, at any level.
+        unreviewed = ("${{ github.ref }}", "${{ github.sha }}", "${{ github.workflow }}-${{ github.ref }}",
+                      "${{ github.event.pull_request.title }}", "${{ github.actor }}", "${{ runner.os }}",
+                      "${{ inputs.ref }}", "${{ env.HOME }}", "${{ vars.X }}", "${{github.workflow}}",
+                      "${{ GITHUB.WORKFLOW }}", "${{  github.workflow  }}", "${{ github.workflow",
+                      "${{ github.event.pull_request.number||github.ref }}", "${{ toJSON(github.event) }}",
+                      "${{ github.event.pull_request.base.sha || github.sha }}x${{ github.event }}")
+        for expression in unreviewed:
+            for level in ("run", "env", "with", "name", "concurrency"):
+                with self.subTest(expression=expression, level=level):
+                    workflow = json.loads(generator.workflow("api"))
+                    job = workflow["jobs"]["ci"]
+                    if level == "run":
+                        job["steps"][-2]["run"] += f"\necho '{expression}'"
+                    elif level == "env":
+                        job["steps"][-1]["env"]["BASE_SHA"] = expression
+                    elif level == "with":
+                        job["steps"][1]["with"]["python-version"] = expression
+                    elif level == "name":
+                        workflow["name"] = expression
+                    else:
+                        workflow["concurrency"]["group"] = expression
+                    with self.assertRaisesRegex(ValueError, "unreviewed workflow expression"):
+                        checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
+        # Conditions evaluate expressions without `${{`, so none may exist; a token-bearing
+        # condition additionally trips the secret-access regex.
+        for level, condition in (("job", "always()"), ("job", "github.token != ''"), ("step", "toJSON(github)"),
+                                 ("step", "true"), ("step", "startsWith(github.token, 'g')")):
+            with self.subTest(level=level, condition=condition):
+                workflow = json.loads(generator.workflow("web"))
+                target = workflow["jobs"]["ci"] if level == "job" else workflow["jobs"]["ci"]["steps"][-1]
+                target["if"] = condition
+                message = "conditions" if condition in ("always()", "true") else "secrets"
+                with self.assertRaisesRegex(ValueError, message):
+                    checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
+        for repo in generator.PROFILES["repositories"]:
+            for setup in (False, True):
+                checker.validate_workflow(f".github/workflows/{'copilot-setup-steps' if setup else 'ci'}.yml",
+                                          generator.workflow(repo, setup=setup).encode())
 
     def test_sensitive_key_material_files_are_rejected(self):
         for name in ("release.jks", "app/keystore.bks", "certs/server.pem", "upload.keystore", "id_rsa", ".env",
@@ -371,18 +532,27 @@ class BaselineTests(unittest.TestCase):
         claims = re.compile(
             r"\b(accept(?:ed|s)?|approv(?:ed|al)|production[- ]ready|complete[ds]?|finished|"
             r"released?|shipped|live|verified|passe[sd]|done|stable|ready)\b", re.IGNORECASE)
-        for repo in ("admin", "ai-service", "android", "web"):
+        # Every application repository names the origin of its scaffold: the Sprint 01 issue, or
+        # for api the reviewed initial import recorded in PUBLIC_SETUP.md. The state may describe
+        # the scaffold but must still say what is not implemented and must not read as acceptance.
+        scaffolds = {"admin": "PenniLogic/admin#1", "ai-service": "PenniLogic/ai-service#1",
+                     "android": "PenniLogic/android#1", "web": "PenniLogic/web#1",
+                     "api": "from the reviewed initial import"}
+        other = {".github", "contracts", "docs", "infra"}
+        self.assertEqual(set(generator.PROFILES["repositories"]), set(scaffolds) | other)
+        for repo, origin in scaffolds.items():
             state = generator.PROFILES["repositories"][repo]["state"]
             with self.subTest(repo=repo):
-                # The state may describe the scaffold but must still say what is not
-                # implemented and must not read as acceptance of the consumer scaffold.
                 self.assertIn("scaffold", state)
+                self.assertIn(origin, state)
                 self.assertRegex(state, r"no [a-z\-]+[^.;]* (?:is|are) implemented")
-                self.assertIn(f"PenniLogic/{repo}#1", state)
                 self.assertIsNone(claims.search(state.replace("acceptance is claimed", "")), state)
         self.assertIn("no physical-device acceptance is claimed", generator.PROFILES["repositories"]["android"]["state"])
         self.assertIsNotNone(claims.search("Scaffold accepted; no product is implemented."))
         self.assertIsNotNone(claims.search("Approved scaffold from PenniLogic/web#1; no screens are implemented."))
+        self.assertIsNotNone(claims.search("Accepted health-service scaffold only. Product APIs are not implemented."))
+        self.assertIn("The accepted executable application scaffold is the API's Kotlin/Ktor",
+                      (HERE.parent / "PUBLIC_SETUP.md").read_text(encoding="utf-8"))
 
     def test_infra_runs_its_application_tests_and_links_the_runbook(self):
         profile = generator.PROFILES["repositories"]["infra"]

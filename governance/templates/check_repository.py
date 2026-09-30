@@ -21,9 +21,19 @@ SECRET_PATTERNS = (
     re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
-# Any form of the secrets context or the workflow token, at any workflow level.
+# Generated workflows contain exactly these reviewed expressions. Every other
+# `${{` is refused wherever it appears, so whole-context forms such as
+# toJSON(github) or github[format('to{0}', 'ken')] cannot reach the token without
+# naming it, and `if` is refused because a condition evaluates expressions without `${{`.
+WORKFLOW_EXPRESSIONS = {
+    "${{ github.workflow }}",
+    "${{ github.event.pull_request.number || github.ref }}",
+    "${{ github.event.pull_request.base.sha || github.sha }}",
+}
+# Tripwire behind the allowlist: any form of the secrets context or the workflow
+# token stays refused even if the allowlist above is ever widened by mistake.
 WORKFLOW_SECRET_ACCESS = re.compile(
-    r"\bsecrets\b|\bgithub\b\s*(?:\.\s*token\b|\[\s*['\"]token['\"]\s*\])", re.IGNORECASE
+    r"\bsecrets\b|\bgithub\b\s*(?:\.\s*token\b|\[)|\btojson\s*\(\s*github\b", re.IGNORECASE
 )
 SENSITIVE_NAMES = {".env", "id_rsa", "id_ed25519"}
 SENSITIVE_SUFFIXES = (".p12", ".pfx", ".keystore", ".jks", ".bks", ".pem")
@@ -68,11 +78,35 @@ def json_document(content):
     return json.loads(content, object_pairs_hook=unique)
 
 
+def workflow_strings(value):
+    """Yield every key and string of a parsed workflow document at any nesting level."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from workflow_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from workflow_strings(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def validate_expressions(name, value):
+    for text in workflow_strings(value):
+        start = text.find("${{")
+        while start != -1:
+            end = text.find("}}", start)
+            if end == -1 or text[start:end + 2] not in WORKFLOW_EXPRESSIONS:
+                raise ValueError(f"{name}: unreviewed workflow expression; public jobs must not receive secrets")
+            start = text.find("${{", end + 2)
+
+
 def validate_workflow(name, data):
     # Generated workflow files use JSON syntax, which is valid YAML.
     value = json_document(data)
     if value.get("permissions") != {"contents": "read"}:
         raise ValueError(f"{name}: expected read-only workflow token")
+    validate_expressions(name, value)
     if WORKFLOW_SECRET_ACCESS.search(json.dumps(value)):
         raise ValueError(f"{name}: public candidate jobs must not receive secrets")
     events = value.get("on", {})
@@ -86,6 +120,8 @@ def validate_workflow(name, data):
             raise ValueError(f"{name}: only the standard hosted Ubuntu runner is configured")
         if job.get("permissions", {"contents": "read"}) != {"contents": "read"}:
             raise ValueError(f"{name}: writable job credentials are not permitted")
+        if "if" in job or any("if" in step for step in job.get("steps", [])):
+            raise ValueError(f"{name}: conditions are not part of the generated workflows")
         for step in job.get("steps", []):
             if "uses" in step and not re.fullmatch(r"actions/[a-z0-9-]+@[0-9a-f]{40}", step["uses"]):
                 raise ValueError(f"{name}: action must be immutable and GitHub-owned")
