@@ -419,7 +419,7 @@ FIXTURES = (
     ),
     Fixture(
         "workflow-step-continue-on-error", "workflow", "python",
-        "continue-on-error: true is added to the Run checks step; refused by the current template (PR E rule 16) and by the drift check",
+        "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
         lambda context: True, _plant_continue_on_error,
         lambda context: [drift_probe(context), Probe(
             "current infra template check_repository.py over the scratch tree",

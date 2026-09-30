@@ -122,7 +122,7 @@ security acceptance.
 | `workflow-step-skipped-by-condition` | workflow | python | every profile | drift check; consumer checker refuses (`if` rule) |
 | `workflow-unpinned-action` | workflow | python | every profile | drift check; consumer checker refuses `actions/checkout@v4` (pinned-action rule) |
 | `workflow-reusable-workflow-job` | workflow | python | every profile | drift check; consumer checker refuses `jobs.reuse.uses` |
-| `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current infra template copied over the scratch checker refuses (PR E rule 16) |
+| `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current infra template copied over the scratch checker refuses (step-key rule from PR E, rule 17 of the ordered table) |
 | `python-tests-removed` | python | python | profiles with `unittest discover` | the exact profile command exits 5, `NO TESTS RAN` |
 | `python-test-failing` | python | python | profiles with `unittest discover` | the exact profile command exits 1 naming `test_planted_defect_must_fail` |
 | `python-pytest-failing` / `python-pytest-removed` | python | uv | ai-service | `uv sync --locked` then `uv run --locked pytest` exits 1 / 5 |
@@ -209,17 +209,19 @@ Proposed changes (text only; an agent session does not apply ruleset changes):
 
 `.github/workflows/conformance.yml` cannot be added by this PR. Every workflow file is validated by the
 generated `scripts/check_repository.py`, which runs first in CI, and its rules refuse the file regardless of
-content (verified with the template's `validate_workflow` on 2026-09-30):
+content (verified with the template's `validate_workflow` on 2026-09-30, after PR F
+[#54](https://github.com/PenniLogic/infra/pull/54); rule numbers follow the ordered table in
+`governance/README.md`):
 
 | Candidate | Refusing rule |
 | --- | --- |
-| any third workflow file (single job `conformance`) | 22 `Copilot setup must contain its documented single job` |
-| `on.schedule` | 17 `unreviewed workflow trigger` |
-| `actions/upload-artifact@<sha>` | 8 `action must be immutable and one of the generated GitHub-owned actions` |
+| any third workflow file, whatever its job id | 26 `workflow file outside the generated pair ci.yml and copilot-setup-steps.yml` |
+| `on.schedule` | 18 `unreviewed workflow trigger` |
+| `actions/upload-artifact@<sha>` | 8 `action must be immutable and one of the generated GitHub-owned actions` (and 9, the generated-pin rule, once listed) |
 | `env: GH_TOKEN: ${{ github.token }}` | 5 `unreviewed workflow expression; public jobs must not receive secrets` (rule 6 behind it) |
 
 The checker is not weakened here and no generated file is hand-edited. The request to the generator
-owner (PR F, [#54](https://github.com/PenniLogic/infra/pull/54), or a sibling) is:
+owner (a successor of PR F, [#54](https://github.com/PenniLogic/infra/pull/54)) is:
 
 1. **A third generated workflow for the infra profile only**, `.github/workflows/conformance.yml`, rendered
    by `generate.py` in JSON syntax exactly as below (action SHAs are the generator's `actions` table; the
@@ -258,15 +260,17 @@ owner (PR F, [#54](https://github.com/PenniLogic/infra/pull/54), or a sibling) i
    The report is uploaded before the job fails, without an `if: always()` condition (rule 7 refuses `if`),
    by recording the failure in a file and failing in the last step. `fetch-depth: 0` is needed so the
    registry's `workflow_ref` commits can be rendered from history.
-2. **Rule 22**: accept `conformance.yml` whose job set is exactly `{"conformance"}` named `Conformance`
-   (name-scoped, like the existing `ci.yml` / `copilot-setup-steps.yml` rules), so no consumer surface
-   changes.
-3. **Rule 17**: accept `schedule` only in `conformance.yml`, as a list of `{"cron": "<string>"}` mappings;
+2. **Rule 26**: accept `conformance.yml` for the infra profile with a job set of exactly `{"conformance"}`
+   named `Conformance` and an event set of exactly `workflow_dispatch` + `schedule` (a name-scoped
+   per-file job and trigger set, like the `ci.yml` / `copilot-setup-steps.yml` rules PR F introduced), so
+   no consumer surface changes; a third file stays refused everywhere else.
+3. **Rule 18**: accept `schedule` only in `conformance.yml`, as a list of `{"cron": "<string>"}` mappings;
    `push`/`pull_request` stay refused there so the job never runs on PR content it did not review.
-4. **Rules 8/9**: add `actions/upload-artifact` at the reviewed commit with inputs `name` and `path` to
-   `WORKFLOW_ACTIONS`; `test_workflow_shape.py` derives the allowlists from the rendered profiles, so the
-   template and the generator change land in the same PR. `contents: read` suffices; upload-artifact uses
-   the runtime artifact token, not the repository token.
+4. **Rules 8/9/10**: add `actions/upload-artifact` with inputs `name` and `path` to `WORKFLOW_ACTIONS`, and its
+   reviewed commit to the `actions` pins of `repository-profiles.json`, from which `generate.py` renders
+   `WORKFLOW_ACTION_PINS` into every consumer's checker; `test_workflow_shape.py` derives the allowlists
+   from the rendered profiles, so the template and the generator change land in the same PR.
+   `contents: read` suffices; upload-artifact uses the runtime artifact token, not the repository token.
 5. **No token channel** (preferred): the job reads with the anonymous client and public clones. Consequence:
    60 requests per hour per runner address, of which the job uses 45; a manual dispatch within an hour of
    the scheduled run from the same address may fail closed. If a token ever becomes unavoidable, it would
