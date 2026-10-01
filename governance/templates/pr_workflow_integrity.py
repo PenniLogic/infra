@@ -4,7 +4,9 @@ import base64
 import binascii
 from dataclasses import dataclass
 import hashlib
+import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -76,10 +78,15 @@ def json_document(data: bytes) -> Any:
     def constant(_value):
         raise GateError("json-number")
 
+    def finite_float(value):
+        decoded = float(value)
+        require(math.isfinite(decoded), "json-number")
+        return decoded
+
     try:
         text = data.decode("utf-8")
         require(not text.startswith("\ufeff"), "json-bom")
-        value = json.loads(text, object_pairs_hook=unique, parse_constant=constant)
+        value = json.loads(text, object_pairs_hook=unique, parse_constant=constant, parse_float=finite_float)
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
         if isinstance(error, GateError):
             raise
@@ -186,6 +193,7 @@ class ReadOnlyClient:
                                 r"/git/(?:commits|trees|blobs)/[0-9a-f]{40})")
 
     def get(self, path: str) -> Any:
+        """Read bounded JSON; HTTP parser failures expose only a static metadata code."""
         require(isinstance(path, str) and self.paths.fullmatch(path) is not None, "metadata-path")
         timeout = self.budget.request()
         request = urllib.request.Request("https://api.github.com" + path, method="GET", headers={
@@ -212,6 +220,8 @@ class ReadOnlyClient:
         except urllib.error.HTTPError as error:
             error.close()
             raise GateError("metadata-denied" if error.code in (401, 403, 404) else "metadata-http") from None
+        except http.client.HTTPException:
+            raise GateError("metadata-protocol") from None
         except (urllib.error.URLError, OSError, TimeoutError):
             raise GateError("metadata-unavailable") from None
 

@@ -2,8 +2,10 @@
 
 import contextlib
 import copy
+import http.client
 import io
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -23,7 +25,15 @@ CI = ".github/workflows/ci.yml"
 WORKFLOW = ".github/workflows/pr-workflow-integrity.yml"
 MARKER = "candidate-marker-never-published-9f128a"
 SECRET = "ghs_" + "synthetic-only-not-a-credential" * 2
+PROFILE_NUMBER_PATHS = (
+    ("schema_version",),
+    ("actions", "checkout"),
+    ("repositories", "infra", "timeout_minutes"),
+    ("unprojected", "nested"),
+    ("repositories", "infra", "unprojected", "nested"),
+)
 DRIVER = '''import io
+import http.client
 import json
 import os
 import runpy
@@ -43,8 +53,24 @@ def opened(_self, request, data_argument=None, timeout=None):
     if request.get_method() != "GET" or not request.full_url.startswith("https://api.github.com/"):
         raise RuntimeError("non-canonical fixture request")
     path = request.full_url[len("https://api.github.com"):]
-    response = io.BytesIO(json.dumps(data[path]).encode("utf-8"))
-    response.status = 200
+    content = json.dumps(data[path]).encode("utf-8")
+    protocol_case = data.get("__http_protocol_case__")
+    if protocol_case is None:
+        response = io.BytesIO(content)
+        response.status = 200
+    else:
+        wire = b"HTTP/1.1 200 OK\\r\\nTransfer-Encoding: chunked\\r\\n\\r\\n"
+        wire += (b"not-a-chunk-size" if protocol_case == "malformed-size"
+                 else format(len(content), "x").encode("ascii")) + b"\\r\\n" + content
+        if protocol_case != "missing-delimiter":
+            wire += b"\\r\\n0\\r\\n\\r\\n"
+
+        class MemorySocket:
+            def makefile(self, _mode):
+                return io.BytesIO(wire)
+
+        response = http.client.HTTPResponse(MemorySocket())
+        response.begin()
     response.geturl = lambda: request.full_url
     return response
 
@@ -62,6 +88,41 @@ def edited_ci(name, update):
     value = json.loads(support.generator.workflow(name))
     update(value, value["jobs"]["ci"])
     return encoded(value)
+
+
+def profile_number_payload(path, literal):
+    value = copy.deepcopy(support.generator.PROFILES)
+    node = value
+    for part in path[:-1]:
+        node = node.setdefault(part, {})
+    node[path[-1]] = MARKER
+    content = encoded(value)
+    marker = json.dumps(MARKER).encode("utf-8")
+    if content.count(marker) != 1:
+        raise AssertionError("numeric fixture needs exactly one insertion point")
+    return content.replace(marker, literal.encode("ascii"))
+
+
+class ProtocolOpener:
+    def __init__(self, case):
+        header = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        size = b"not-a-chunk-size" if case == "malformed-size" else b"2"
+        self.wire = header + size + b"\r\n{}"
+        if case != "missing-delimiter":
+            self.wire += b"\r\n0\r\n\r\n"
+        self.response = None
+
+    def open(self, request, timeout):
+        wire = self.wire
+
+        class MemorySocket:
+            def makefile(self, _mode):
+                return io.BytesIO(wire)
+
+        self.response = http.client.HTTPResponse(MemorySocket())
+        self.response.begin()
+        self.response.geturl = lambda: request.full_url
+        return self.response
 
 
 class CommandBindingTests(unittest.TestCase):
@@ -205,6 +266,64 @@ class CommandBindingTests(unittest.TestCase):
 
 
 class MetadataBoundaryTests(unittest.TestCase):
+    def test_http_protocol_response_parser_returns_static_errors_and_valid_control(self):
+        fixture = support.PRMetadata()
+        contract = gate.TrustedContract.from_data(fixture.contract)
+        for case in ("valid", "malformed-size", "missing-delimiter"):
+            budget = gate.Budget()
+            opener = ProtocolOpener(case)
+            client = gate.ReadOnlyClient(contract, fixture.token, budget, opener=opener)
+            with self.subTest(case=case):
+                if case == "valid":
+                    self.assertEqual({}, client.get(fixture.prefix))
+                else:
+                    with self.assertRaisesRegex(gate.GateError, "^metadata-protocol$"):
+                        client.get(fixture.prefix)
+                self.assertEqual(1, budget.requests)
+                self.assertTrue(opener.response.isclosed())
+
+    def test_all_nonfinite_json_numbers_are_refused_at_decode_at_every_depth(self):
+        for literal in ("1e999", "-1e999", "1e+999", "-1e+999", "NaN", "Infinity", "-Infinity"):
+            for document in (literal, "[" + literal + "]",
+                             '{"unprojected":{"nested":[' + literal + "]}}"):
+                with self.subTest(literal=literal, container=document[0]), \
+                        self.assertRaisesRegex(gate.GateError, "^json-number$"):
+                    gate.json_document(document.encode("ascii"))
+        for literal in ("1e308", "-1e308", "1.25", "-1.25", "1e-999", "-1e-999"):
+            with self.subTest(finite=literal):
+                value = gate.json_document(literal.encode("ascii"))
+                self.assertTrue(math.isfinite(value))
+                nested = gate.json_document(('{"unprojected":[' + literal + "]}").encode("ascii"))
+                self.assertTrue(math.isfinite(nested["unprojected"][0]))
+
+    def test_nonfinite_candidate_profile_numbers_produce_static_metadata_errors(self):
+        for path in PROFILE_NUMBER_PATHS:
+            for literal in ("1e999", "-1e999", "NaN", "Infinity", "-Infinity"):
+                fixture = support.PRMetadata(changes={
+                    gate.PROFILES: profile_number_payload(path, literal),
+                })
+                with self.subTest(path=path, literal=literal):
+                    report = fixture.evaluate(gate)
+                    self.assertEqual("error", report["result"])
+                    self.assertEqual(2, gate.exit_code(report))
+                    self.assertEqual(["json-number"], report["violations"])
+                    self.assertNotIn(MARKER, json.dumps(report))
+                    self.assertNotIn(literal, json.dumps(report))
+
+    def test_nonfinite_unprojected_api_numbers_stop_before_candidate_git_reads(self):
+        for literal in ("1e999", "-1e999"):
+            fixture = support.PRMetadata()
+            value = copy.deepcopy(fixture.repository)
+            value["unprojected"] = {"nested": [MARKER]}
+            fixture.payloads[fixture.prefix] = encoded(value).replace(
+                json.dumps(MARKER).encode("utf-8"), literal.encode("ascii"),
+            )
+            with self.subTest(literal=literal):
+                report = fixture.evaluate(gate)
+                self.assertEqual("error", report["result"])
+                self.assertEqual(["json-number"], report["violations"])
+                self.assertEqual(["https://api.github.com" + fixture.prefix], fixture.calls)
+
     def test_denied_mismatched_or_missing_identity_prevents_candidate_reads(self):
         for change in ("401", "403", "404", "id", "org", "name", "branch", "private", "bool", "missing"):
             fixture = support.PRMetadata()
@@ -362,7 +481,7 @@ class MetadataBoundaryTests(unittest.TestCase):
 
 
 class RealCLIAndStepTests(unittest.TestCase):
-    def run_cli(self, fixture, bash_step=False, env_changes=None):
+    def run_cli(self, fixture, bash_step=False, env_changes=None, http_case=None):
         with tempfile.TemporaryDirectory(prefix="pr-integrity-cli-") as directory:
             root = Path(directory)
             program = root / "validator.py"
@@ -370,7 +489,10 @@ class RealCLIAndStepTests(unittest.TestCase):
             driver = root / "fixture_driver.py"
             driver.write_text(DRIVER, encoding="utf-8")
             payloads = root / "metadata.json"
-            payloads.write_text(json.dumps(fixture.payloads), encoding="utf-8")
+            responses = dict(fixture.payloads)
+            if http_case is not None:
+                responses["__http_protocol_case__"] = http_case
+            payloads.write_text(json.dumps(responses), encoding="utf-8")
             event = root / "_github_workflow" / "event.json"
             event.parent.mkdir()
             event.write_text(json.dumps(fixture.event), encoding="utf-8")
@@ -419,6 +541,48 @@ class RealCLIAndStepTests(unittest.TestCase):
                 }))
                 self.assertEqual(1, code)
                 self.assertEqual("fail", report["result"])
+
+    def test_nonfinite_profile_numbers_emit_static_json_in_actual_cli_and_bash_step(self):
+        cases = [(path, literal) for path in PROFILE_NUMBER_PATHS for literal in ("1e999", "-1e999")]
+        cases += [(("unprojected", "nested"), literal) for literal in (
+            '[{"ignored":1e999}]', '[{"ignored":-1e999}]', "NaN", "Infinity", "-Infinity",
+        )]
+        for path, literal in cases:
+            for bash_step in (False, True):
+                fixture = support.PRMetadata(changes={
+                    gate.PROFILES: profile_number_payload(path, literal),
+                })
+                with self.subTest(path=path, literal=literal, bash_step=bash_step):
+                    code, report = self.run_cli(fixture, bash_step=bash_step)
+                    self.assertEqual(2, code)
+                    self.assertEqual("error", report["result"])
+                    self.assertEqual(["json-number"], report["violations"])
+                    self.assertNotIn(literal, json.dumps(report))
+
+    def test_http_protocol_errors_emit_static_json_in_actual_cli_and_bash_step(self):
+        for case in ("valid", "malformed-size", "missing-delimiter"):
+            for bash_step in (False, True):
+                with self.subTest(case=case, bash_step=bash_step):
+                    code, report = self.run_cli(support.PRMetadata(), bash_step=bash_step, http_case=case)
+                    self.assertEqual(0 if case == "valid" else 2, code)
+                    self.assertEqual("pass" if case == "valid" else "error", report["result"])
+                    self.assertEqual([] if case == "valid" else ["metadata-protocol"], report["violations"])
+
+    def test_finite_profile_numbers_preserve_actual_cli_and_step_pass_or_binding_failure(self):
+        for bash_step in (False, True):
+            for path, literal, expected_code in (
+                (("unprojected", "nested"), "[1e308,-1e308,1e-999,-1e-999]", 0),
+                (("repositories", "infra", "timeout_minutes"), "2e1", 1),
+            ):
+                fixture = support.PRMetadata(changes={
+                    gate.PROFILES: profile_number_payload(path, literal),
+                })
+                with self.subTest(path=path, bash_step=bash_step):
+                    code, report = self.run_cli(fixture, bash_step=bash_step)
+                    self.assertEqual(expected_code, code)
+                    self.assertEqual("pass" if expected_code == 0 else "fail", report["result"])
+                    self.assertEqual([] if expected_code == 0 else ["protected-profile-binding"],
+                                     report["violations"])
 
     def test_emitted_bash_step_runs_real_validator_and_surfaces_guard_failures(self):
         code, report = self.run_cli(support.PRMetadata(), bash_step=True)

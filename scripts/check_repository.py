@@ -314,7 +314,7 @@ import hashlib
 
 
 PR_GATE_FILE = ".github/workflows/pr-workflow-integrity.yml"
-PR_GATE_SHA256 = "fd0e2f4b21d029ae3f91684c09cd8dc0fc3ccdf30fd2c70e69bc642532f43ed2"
+PR_GATE_SHA256 = "6fc63acc21e26d23ac08bf5a52b37cb9950f04b5fe4a868e2d2ab9361dd60981"
 REQUIRED += (PR_GATE_FILE,)
 
 
