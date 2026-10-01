@@ -47,12 +47,22 @@ def records_for(root, name):
     def snapshot():
         return {path: (root / path).read_bytes() for path in support.git(root, "ls-files").splitlines()}
 
+    observed = []
+
+    def capture(command, cwd):
+        result = defects.subprocess_runner(command, cwd)
+        observed.append(result.output)
+        return result
+
     before = snapshot()
     records = {item["id"]: item for item in defects.run_fixtures(context, fixtures=selected,
-                                                               exercise=workflow_exercise())}
+                                                               runner=capture, exercise=workflow_exercise())}
     if before != snapshot() or defects.git_status(root):
         raise AssertionError("the real runtime fixtures did not restore the fake consumer")
-    return records
+    if len(observed) != sum(len(record["probes"]) for record in records.values()):
+        raise AssertionError("captured output does not match the executed probes")
+    outputs = iter(observed)
+    return records, {key: [next(outputs) for probe in record["probes"]] for key, record in records.items()}
 
 
 class RealNodeFixtureTests(unittest.TestCase):
@@ -62,6 +72,7 @@ class RealNodeFixtureTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory(prefix="conformance-real-node-")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.records = {}
+        cls.outputs = {}
         for name in ("web", "admin"):
             tests = "tests/unit" if name == "admin" else "tests"
             root = support.make_consumer(Path(cls.temporary.name) / name, name, {
@@ -79,7 +90,7 @@ class RealNodeFixtureTests(unittest.TestCase):
             execute(support.generator.profile_for(name)["install"][0], root)
             print_versions(root, "node --version", "npm --version", "npm exec -- vitest --version")
             execute("npm test", root)
-            cls.records[name] = records_for(root, name)
+            cls.records[name], cls.outputs[name] = records_for(root, name)
 
     def test_web_and_admin_real_npm_tests_refuse_the_executed_failing_test(self):
         for name, records in self.records.items():
@@ -88,7 +99,7 @@ class RealNodeFixtureTests(unittest.TestCase):
                 self.assertEqual("proved", record["outcome"], record)
                 self.assertEqual("npm test", record["probes"][-1]["command"])
                 self.assertNotEqual(0, record["probes"][-1]["exit_code"])
-                self.assertIn("planted defect", record["probes"][-1]["output_tail"])
+                self.assertIn("planted defect", self.outputs[name]["typescript-test-failing"][-1])
 
     def test_web_and_admin_real_npm_tests_refuse_the_removed_suite(self):
         for name, records in self.records.items():
@@ -96,7 +107,7 @@ class RealNodeFixtureTests(unittest.TestCase):
             with self.subTest(profile=name):
                 self.assertEqual("proved", record["outcome"], record)
                 self.assertNotEqual(0, record["probes"][-1]["exit_code"])
-                self.assertIn("No test files found", record["probes"][-1]["output_tail"])
+                self.assertIn("No test files found", self.outputs[name]["typescript-tests-removed"][-1])
 
 
 class RealUvFixtureTests(unittest.TestCase):
@@ -118,20 +129,20 @@ class RealUvFixtureTests(unittest.TestCase):
         execute("uv sync --locked", root)
         print_versions(root, "uv --version", "uv run --locked pytest --version")
         execute("uv run --locked pytest", root)
-        cls.records = records_for(root, "ai-service")
+        cls.records, cls.outputs = records_for(root, "ai-service")
 
     def test_ai_real_locked_pytest_refuses_the_executed_failing_test(self):
         record = self.records["python-pytest-failing"]
         self.assertEqual("proved", record["outcome"], record)
         self.assertEqual("uv run --locked pytest", record["probes"][-1]["command"])
         self.assertEqual(1, record["probes"][-1]["exit_code"])
-        self.assertIn("test_planted_defect_must_fail", record["probes"][-1]["output_tail"])
+        self.assertIn("test_planted_defect_must_fail", self.outputs["python-pytest-failing"][-1])
 
     def test_ai_real_locked_pytest_refuses_the_removed_suite(self):
         record = self.records["python-pytest-removed"]
         self.assertEqual("proved", record["outcome"], record)
         self.assertEqual(5, record["probes"][-1]["exit_code"])
-        self.assertIn("no tests ran", record["probes"][-1]["output_tail"])
+        self.assertIn("no tests ran", self.outputs["python-pytest-removed"][-1])
 
 
 if __name__ == "__main__":

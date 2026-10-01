@@ -461,6 +461,14 @@ that actually renders the changed workflow. The eight other entries stay unchang
 Fresh native CI on the final bound head is required; old local success or a skipped uv suite
 cannot replace it. Conformance dispatch remains prohibited until separately accepted integration.
 
+Pinned Linux validation also exposed why the real fixture assertion must inspect the full probe
+output used by the harness's matcher, not the intentionally truncated 400-character report tail:
+Vitest's colored summary can push the actual failing-test marker outside that tail. The fixtures
+were already `proved` from the real exit/text match; the corrected tests retain and assert that
+executed output directly, without changing report truncation or refusal semantics. The missing-token
+unit test independently supplies the synthetic installed-gh seam so it tests missing authentication,
+not availability of a CLI it never executes.
+
 ## Remaining for infra#24
 
 - Reviewed integration and actual hosted verification of the authenticated Python/Node/uv runtime:

@@ -319,7 +319,10 @@ class AuthenticatedMetadataTests(unittest.TestCase):
         env = hostile_environment()
         del env["GH_TOKEN"]
         stderr = io.StringIO()
+        choose_client = run.github_api.choose_client
         with mock.patch.object(defects.os, "environ", env), \
+                mock.patch.object(run.github_api, "choose_client",
+                                  side_effect=lambda mode: choose_client(mode, which=lambda name: "/synthetic/gh")), \
                 mock.patch.object(run, "git") as git, \
                 mock.patch.object(run, "inspect_repository") as inspect, \
                 contextlib.redirect_stderr(stderr):
