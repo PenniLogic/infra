@@ -241,7 +241,9 @@ renders the current workflow from Git history; the job verifies the same against
 Update the registry in the same PR as a profile change that alters a workflow: set `workflow_ref` to the
 merged generator commit the consumer regenerates from (the eight consumers record
 `4e6e749fd849ae58f2b13c21215022c1bc410b9f`, the last commit that changed their rendered `ci.yml`; infra
-records `56d78eebf34e368d14e6c60158a95f5b9f3ba09f`, the commit that last changed its own `ci.yml`).
+records the full source commit that renders its current `ci.yml`. When source changes that workflow,
+an ordinary source commit is followed by a registry-only binding commit pointing to the source commit;
+never try to embed a commit's own unknown SHA in its contents).
 
 ## Onboarding a new repository
 
@@ -394,17 +396,20 @@ environments, consumer CI/setup workflows and reusable/default-input action chan
 The source-bound ordered refusal table and generated artifact-count/shape assertions are updated
 with it (`governance/README.md`, 33 rules, 22 infra files versus 20 per consumer).
 
-Before the guarded harness step, Conformance alone sets up Node `24.14.0` from infra's new canonical
+Before the guarded harness step, Conformance sets up Node `24.14.0` from infra's new canonical
 profile pin and generated `.nvmrc`, using the existing setup-node SHA, and installs uv `0.11.33`
 using the existing ai-service hash-required, binary-only, no-dependency install line. Its arguments
 are `--github-client gh --exercise python,node,uv`: web/admin Vitest and ai-service locked pytest
 failing/removed-suite fixtures run, not `not_exercised`. JDK/Android fixtures and consumer profiles
-are unchanged. All eighteen native CI/setup workflow bytes, including infra's native `CI` source
-binding and Python registry language, are preserved; the infra Node field is Conformance-only.
+are unchanged. The other sixteen native consumer CI/setup workflow bytes and all eight consumer
+profiles are preserved. Infra CI/setup also provisions these runtimes for the real governance
+fixtures, as the native failure and repair below require. Infra's primary registry language remains
+Python; its native `CI` workflow source reference binds the preceding source commit.
 
 The protected-default-main guard, weekly schedule, input-free dispatch, concurrency, standard
 runner, 60-minute job bound, ten-minute reporting budget, sentinel-before-failure upload, three-day
-retention and missing-file error remain. Report schema `/1` and registry references are unchanged.
+retention and missing-file error remain. Report schema `/1` and all eight consumer registry references
+are unchanged; only infra's native workflow source binding changes with its runtime provisioning.
 No ruleset, entitlement, purchase, deployment, reviewer mechanism or required Conformance context
 is added. No unreviewed workflow is activated or manually dispatched by this unit.
 
@@ -415,7 +420,7 @@ selectors, a synthetic unshaped token survived publication, and all six Node/uv 
 scrubbing and fail-closed credential scanning. Real minimal fake web/admin/AI consumers run their
 unchanged `npm ci`/`npm test` and `uv sync --locked`/`uv run --locked pytest` commands against actual
 Vitest/pytest, with passing baselines, executed failures and removed-suite refusals. Dependencies
-stay in temporary fixture trees; missing local toolchains are explicit skips, not proof.
+stay in temporary fixture trees; missing toolchains now fail before setup, not skip as proof.
 This proves mechanics only, not nine current-main rows or hosted job-token read permissions.
 
 Separate non-author Core, QA, Security, Privacy and Reliability review is required for this
@@ -425,6 +430,36 @@ request a reviewed decision; do not add personal credentials, permissions or sil
 Rollback is a reviewed revert/regeneration to accepted `e96eb757` (remove the new generated
 `.nvmrc` explicitly), restoring the anonymous/Python-only workflow and its known quota limit.
 The original failure artifact remains evidence either way.
+
+### Native PR CI failure and required runtime repair
+
+The local results on unaccepted `c9fceee` were not native acceptance.
+[PR CI run 36795639431](https://github.com/PenniLogic/infra/actions/runs/36795639431)
+([job 110158325561](https://github.com/PenniLogic/infra/actions/runs/36795639431/job/110158325561))
+failed `RealNodeFixtureTests.setUpClass` at `npm install --package-lock-only --ignore-scripts
+--no-audit --no-fund`, with `Cannot read properties of null (reading 'edgesOut')`. It reported
+227 tests, one error and 13 skips; uv had not been provisioned. Its immutable image
+`ubuntu24/20260927.320` documents default Node `22.23.3`/npm `10.9.9`, while that native infra
+workflow had deliberately remained Python-only.
+
+A Linux reproduction downloaded checksum-verified Node distributions, recorded actual
+`node --version`/`npm --version`, and ran the same minimal Vitest `5.0.2` manifest and preparation
+command. `22.23.3`/`10.9.9` reproduced the exact `edgesOut` error with no lock file; its debug
+stack is npm Arborist's `loadPeerSet`. `24.14.0`/`11.9.0` completed the same command with a lock
+file. No retry, cache deletion, `--legacy-peer-deps`, altered fixture dependency or successful
+fallback was used. The original native log, declared image metadata and reproduction stderr/debug
+logs are preserved as evidence rather than calling the failure transient.
+
+The precise canonical fix provisions the existing pinned Node action and hash-verified uv
+installer in infra's native CI/setup before checks, reusing the same source as Conformance.
+This changes only those two infra workflow bytes; no consumer profile or workflow changes.
+Missing Node/npm/uv in the real suite is an explicit setup error before scratch or commands;
+real executions print their actual Node/npm/Vitest and uv/pytest versions. The existing native
+`CI` name, triggers, permissions, action pins, runner and ten-minute bound are preserved.
+A source commit followed by a registry-only commit binds infra's entry to a full source SHA
+that actually renders the changed workflow. The eight other entries stay unchanged.
+Fresh native CI on the final bound head is required; old local success or a skipped uv suite
+cannot replace it. Conformance dispatch remains prohibited until separately accepted integration.
 
 ## Remaining for infra#24
 

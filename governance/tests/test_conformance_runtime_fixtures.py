@@ -2,7 +2,7 @@
 
 These integration tests install only the fake consumers' declared test-runner dependencies in
 temporary trees. They prove the planted-defect mechanics, not hosted metadata or consumer main.
-Missing local toolchains are explicit skips; the hosted Conformance workflow exercises all three.
+Native infra CI/setup and Conformance provision their toolchains; missing tools fail explicitly.
 """
 
 import json
@@ -29,6 +29,18 @@ def execute(command, root):
     return result
 
 
+def require_tools(*names):
+    missing = [name for name in names if shutil.which(name) is None]
+    if missing:
+        raise RuntimeError("Real conformance fixture coverage requires " + ", ".join(missing))
+
+
+def print_versions(root, *commands):
+    for command in commands:
+        result = execute(command, root)
+        print(f"fixture runtime {command}: {result.output.strip()}", flush=True)
+
+
 def records_for(root, name):
     context = defects.Context(name, support.generator.profile_for(name), root, support.GOVERNANCE.parent)
     selected = [item for item in defects.applicable_fixtures(context) if item.toolchain in ("node", "uv")]
@@ -43,10 +55,10 @@ def records_for(root, name):
     return records
 
 
-@unittest.skipUnless(shutil.which("node") and shutil.which("npm"), "Node and npm required for real Vitest fixtures")
 class RealNodeFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        require_tools("node", "npm")
         cls.temporary = tempfile.TemporaryDirectory(prefix="conformance-real-node-")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.records = {}
@@ -65,6 +77,7 @@ class RealNodeFixtureTests(unittest.TestCase):
             support.git(root, "add", "package-lock.json")
             support.git(root, "commit", "-q", "-m", "fake consumer dependency lock")
             execute(support.generator.profile_for(name)["install"][0], root)
+            print_versions(root, "node --version", "npm --version", "npm exec -- vitest --version")
             execute("npm test", root)
             cls.records[name] = records_for(root, name)
 
@@ -86,10 +99,10 @@ class RealNodeFixtureTests(unittest.TestCase):
                 self.assertIn("No test files found", record["probes"][-1]["output_tail"])
 
 
-@unittest.skipUnless(shutil.which("uv"), "uv required for real locked pytest fixtures")
 class RealUvFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        require_tools("uv")
         cls.temporary = tempfile.TemporaryDirectory(prefix="conformance-real-uv-")
         cls.addClassCleanup(cls.temporary.cleanup)
         root = support.make_consumer(Path(cls.temporary.name) / "ai-service", "ai-service", {
@@ -103,6 +116,7 @@ class RealUvFixtureTests(unittest.TestCase):
         support.git(root, "add", "uv.lock")
         support.git(root, "commit", "-q", "-m", "fake consumer dependency lock")
         execute("uv sync --locked", root)
+        print_versions(root, "uv --version", "uv run --locked pytest --version")
         execute("uv run --locked pytest", root)
         cls.records = records_for(root, "ai-service")
 

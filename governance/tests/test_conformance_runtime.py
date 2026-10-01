@@ -206,7 +206,7 @@ class RuntimeRenderingTests(unittest.TestCase):
             with self.subTest(node=node), self.assertRaises(ValueError):
                 support.generator.validate_profile("infra", profile)
 
-    def test_all_eighteen_ci_and_setup_bytes_and_eight_consumer_profiles_are_unchanged(self):
+    def test_all_sixteen_consumer_ci_and_setup_bytes_and_eight_profiles_are_unchanged(self):
         historical = registry.render_workflow_at(support.GOVERNANCE.parent, BASE, "infra")
         if historical is None:
             self.skipTest("accepted base not in shallow history; native workflow source binding not exercised")
@@ -220,11 +220,12 @@ class RuntimeRenderingTests(unittest.TestCase):
                 )
             old = run.generator_module.load(root / "generate.py", name="runtime_accepted_generator")
             for name in support.generator.PROFILES["repositories"]:
+                if name == "infra":
+                    continue
                 with self.subTest(profile=name):
                     for setup in (False, True):
                         self.assertEqual(old.workflow(name, setup=setup), support.generator.workflow(name, setup=setup))
-                    if name != "infra":
-                        self.assertEqual(profiles["repositories"][name], support.generator.PROFILES["repositories"][name])
+                    self.assertEqual(profiles["repositories"][name], support.generator.PROFILES["repositories"][name])
         self.assertEqual("python", registry.expected_language("infra", support.generator.profile_for("infra")))
 
 

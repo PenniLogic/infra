@@ -9,7 +9,7 @@
 `.gitignore`, `scripts/setup.py` and `scripts/check_repository.py`). Consumers never hand-edit those
 files: a profile or template change lands here through a reviewed generator PR, then each consumer
 regenerates from the merged `main` in its own PR. Additionally, infra alone has 22 files: its third
-workflow is `.github/workflows/conformance.yml`, and `.nvmrc` pins its Conformance-only Node runtime.
+workflow is `.github/workflows/conformance.yml`, and `.nvmrc` pins its real governance-fixture Node runtime.
 `governance/tests/test_rule_table.py` keeps this per-profile list equal to what `artifacts()` renders.
 
 ```text
@@ -146,10 +146,23 @@ Its checkout has `persist-credentials: false` and full history for registry comm
 Python, Node `24.14.0` and uv `0.11.33` are set up before the harness runs with
 `--github-client gh --exercise python,node,uv`. Node uses the existing pinned setup action and
 the infra profile's generated `.nvmrc`. The uv install reuses the ai-service profile's exact
-verified, hash-required, binary-only, dependency-free pip line. These toolchain/install steps
-are Conformance-only: all eighteen existing native CI/setup workflows and all eight consumer
-profiles remain byte-identical to accepted source `e96eb757beeb02b0a802e7545ca781669e85deb8`.
-Infra's registry language remains Python and its native `CI` source binding is unchanged.
+verified, hash-required, binary-only, dependency-free pip line. Infra's native CI and setup
+provision the same Node and uv before checks because the governance tests execute real fixtures.
+The other sixteen consumer CI/setup workflows and all eight consumer profiles remain byte-identical
+to accepted source `e96eb757beeb02b0a802e7545ca781669e85deb8`. The native `CI` name, triggers,
+read-only permissions, hosted runner and ten-minute bound are unchanged. Infra's primary registry
+language remains Python. Its updated native `CI` source binding is recorded in a separate commit
+after the source commit that actually renders the new workflow; no self-referential SHA is used.
+
+Unaccepted head `c9fceee` passed locally with Node `24.14.0`/npm `11.9.0`, but native PR CI
+`36795639431` failed real Node fixture lock preparation (`edgesOut`), with 227 tests reported,
+one setup error and 13 skips. That run did not provision Node or uv. Its exact runner image
+`ubuntu24/20260927.320` documents default Node `22.23.3`/npm `10.9.9`. A clean Linux reproduction
+with checksum-verified distributions reproduced npm's Arborist `loadPeerSet` failure on that
+pair and succeeded on `24.14.0`/`11.9.0` using the identical manifest/command. This is a toolchain
+dependency mismatch, not presumed transient; the native setup fix adds no retry, cache deletion,
+peer bypass or suite skip. Missing Node/npm/uv now fails fixture setup before scratch/execution,
+and the real suite prints the actual runtime and test-runner versions.
 
 The automatically issued, short-lived Actions `github.token` reaches only the `Run conformance`
 step as `GH_TOKEN`. The reused `GhClient` invokes `gh api --hostname github.com -X GET` with a
@@ -210,10 +223,12 @@ inputs, every profile's artifact count, deterministic all-nine baselines, profil
 the existing expression/action/condition/permission evasions. It executes the Bash run/final steps
 with a synthetic harness for successful reports, findings, report-less errors and denied dispatches.
 `test_conformance_runtime.py` asserts the leaf-bound exception, GET client, hostile environment,
-redaction and unchanged native workflow/profile bytes. `test_conformance_runtime_fixtures.py`
+redaction and unchanged consumer workflow/profile bytes. `test_conformance_native_runtime.py`
+checks native infra runtime provisioning and missing-tool/preparation failures.
+`test_conformance_runtime_fixtures.py`
 executes the real profile commands on temporary minimal consumers with actual Vitest/pytest
-dependencies, including a passing baseline and both planted refusals; missing local toolchains
-are explicit skips. These are local mechanics proofs, not hosted token permissions or nine-main
+dependencies, including a passing baseline and both planted refusals; missing toolchains are
+errors, never successful skips. These are mechanics proofs, not hosted token permissions or nine-main
 acceptance. Only an accepted, reviewed merge followed by actual hosted verification can prove
 that. No workflow activation or manual dispatch is part of this implementation.
 

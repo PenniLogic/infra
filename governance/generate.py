@@ -115,7 +115,7 @@ def validate_profile(repo, profile):
         if value is not None and not (isinstance(value, str) and PATTERNS[field].fullmatch(value)):
             raise ValueError(f"{repo}: {field} has an unexpected value")
     if repo == "infra" and profile.get("node") is None:
-        raise ValueError("infra: node is required for the Conformance runtime")
+        raise ValueError("infra: node is required for the real governance fixtures")
     if ".." in profile.get("developer_guide", ""):
         raise ValueError(f"{repo}: developer_guide must stay inside the repository")
     timeout = profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES)
@@ -196,7 +196,7 @@ else
 fi"""
 
 
-def tool_steps(profile, *, include_node=True):
+def tool_steps(profile):
     actions = PROFILES["actions"]
     steps = [
         {"name": "Checkout", "uses": f"actions/checkout@{actions['checkout']}",
@@ -204,7 +204,7 @@ def tool_steps(profile, *, include_node=True):
         {"name": "Python", "uses": f"actions/setup-python@{actions['setup-python']}",
          "with": {"python-version": PROFILES["python"]}},
     ]
-    if include_node and "node" in profile:
+    if "node" in profile:
         steps.append({
             "name": "Node", "uses": f"actions/setup-node@{actions['setup-node']}",
             "with": {"node-version-file": ".nvmrc"},
@@ -220,10 +220,15 @@ def tool_steps(profile, *, include_node=True):
     return steps
 
 
+def uv_install_step():
+    return {"name": "Install uv", "run": profile_for("ai-service")["install"][0]}
+
+
 def workflow(repo, setup=False):
     profile = profile_for(repo)
-    # Infra's Node pin is for Conformance only; preserve its native CI registry binding and setup.
-    steps = tool_steps(profile, include_node=repo != "infra")
+    steps = tool_steps(profile)
+    if repo == "infra":
+        steps.append(uv_install_step())
     if "gradle_wrapper_jar_sha256" in profile and not setup:
         steps.append({
             "name": "Verify Gradle wrapper",
@@ -269,7 +274,7 @@ def conformance_workflow():
     """Render the infra-only authenticated report job and its Python, Node and uv exercises."""
     steps = tool_steps(profile_for("infra"))
     steps.extend([
-        {"name": "Install uv", "run": profile_for("ai-service")["install"][0]},
+        uv_install_step(),
         {"name": "Run conformance", "env": {"GH_TOKEN": "${{ github.token }}"}, "run": """mkdir -p conformance-report
 if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$GITHUB_REF_PROTECTED" != "true" ]; then
   echo "::error::Conformance requires protected main; no harness was executed."

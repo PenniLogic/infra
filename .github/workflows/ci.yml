@@ -42,6 +42,17 @@
           }
         },
         {
+          "name": "Node",
+          "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+          "with": {
+            "node-version-file": ".nvmrc"
+          }
+        },
+        {
+          "name": "Install uv",
+          "run": "printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n' | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin"
+        },
+        {
           "name": "Run checks",
           "run": "python scripts/check_repository.py\npython governance/generate.py --repository infra --check\npython -m unittest discover -s governance/tests\ndocker compose -f docker-compose.yml config --quiet\npython -m unittest discover -s scripts/tests"
         }

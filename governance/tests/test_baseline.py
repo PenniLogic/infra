@@ -157,7 +157,7 @@ class BaselineTests(unittest.TestCase):
                     job = json.loads(generator.workflow(repo, setup=setup))["jobs"]
                     steps = job["copilot-setup-steps" if setup else "ci"]["steps"]
                     node = [step for step in steps if step.get("uses", "").startswith("actions/setup-node@")]
-                    if "node" in profile and repo != "infra":
+                    if "node" in profile:
                         self.assertEqual([{"name": "Node", "uses": f"actions/setup-node@{pin}",
                                            "with": {"node-version-file": ".nvmrc"}}], node)
                         self.assertNotIn("cache", node[0]["with"])
