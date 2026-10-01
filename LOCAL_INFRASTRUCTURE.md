@@ -11,6 +11,14 @@ Schema migrations and seed data are **not** part of this stack; see
   `docker compose version`.
 - Python 3.14 (the scripts use only the standard library).
 
+The separate **governance** test suite also needs Node `24.14.0` (generated `.nvmrc`, bundled npm
+`11.9.0`) and uv `0.11.33`, plus a network to prepare its temporary Vitest/pytest consumers.
+Infra's generated native CI/setup provisions Node with the existing pinned action and uv with
+the ai-service profile's hash-verified installer. Missing tools are explicit fixture-setup errors,
+not successful skips. Those dependencies are for the real repository-automation fixtures, not the
+stdlib Compose/bootstrap scripts. Details and preserved failure evidence:
+[CI_CONFORMANCE.md](CI_CONFORMANCE.md#native-pr-ci-failure-and-required-runtime-repair).
+
 ## Commands at a glance
 
 | Command | What it does |

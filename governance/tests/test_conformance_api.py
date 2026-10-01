@@ -92,22 +92,22 @@ class GhClientTests(unittest.TestCase):
             calls.append(command)
             return subprocess.CompletedProcess(command, 0, json.dumps([{"id": 1}]).encode(), b"")
 
-        client = github_api.GhClient(run)
+        client = github_api.GhClient(run, environ={})
         self.assertEqual([{"id": 1}], client.get("/repos/PenniLogic/infra/rulesets"))
-        self.assertEqual(["gh", "api", "-X", "GET", "/repos/PenniLogic/infra/rulesets"], calls[0])
+        self.assertEqual(["gh", "api", "--hostname", "github.com", "-X", "GET", "/repos/PenniLogic/infra/rulesets"], calls[0])
 
     def test_gh_failure_and_unparsable_output_become_api_errors(self):
         def failing(command, **kwargs):
             return subprocess.CompletedProcess(command, 1, b"", b"gh: Not Found")
 
         with self.assertRaises(github_api.ApiError):
-            github_api.GhClient(failing).get("/x")
+            github_api.GhClient(failing, environ={}).get("/x")
 
         def garbage(command, **kwargs):
             return subprocess.CompletedProcess(command, 0, b"not json", b"")
 
         with self.assertRaises(github_api.ApiError):
-            github_api.GhClient(garbage).get("/x")
+            github_api.GhClient(garbage, environ={}).get("/x")
 
     def test_gh_subprocesses_have_a_timeout_and_a_hang_becomes_an_api_error(self):
         """S3: every external call is bounded; a hanging gh is reported, not waited for."""
@@ -117,29 +117,29 @@ class GhClientTests(unittest.TestCase):
             seen.append(kwargs.get("timeout"))
             return subprocess.CompletedProcess(command, 0, b"[]", b"")
 
-        github_api.GhClient(spy).get("/x")
+        github_api.GhClient(spy, environ={}).get("/x")
         self.assertEqual([github_api.GH_TIMEOUT_SECONDS], seen)
-        self.assertEqual("gh", github_api.choose_client("auto", run=spy, which=lambda name: "/usr/bin/gh").name)
+        self.assertEqual("gh", github_api.choose_client("auto", run=spy, which=lambda name: "/usr/bin/gh", environ={}).name)
         self.assertEqual([github_api.GH_TIMEOUT_SECONDS] * 2, seen)
 
         def hanging(command, **kwargs):
             raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
 
         with self.assertRaises(github_api.ApiError) as caught:
-            github_api.GhClient(hanging).get("/x")
+            github_api.GhClient(hanging, environ={}).get("/x")
         self.assertEqual("gh api GET /x timed out", str(caught.exception))
-        self.assertEqual("anonymous", github_api.choose_client("auto", run=hanging, which=lambda name: "/usr/bin/gh").name)
+        self.assertEqual("anonymous", github_api.choose_client("auto", run=hanging, which=lambda name: "/usr/bin/gh", environ={}).name)
 
     def test_choose_client_prefers_gh_only_when_installed_and_authenticated(self):
         ok = lambda command, **kwargs: subprocess.CompletedProcess(command, 0, b"basiltt\n", b"")  # noqa: E731
         denied = lambda command, **kwargs: subprocess.CompletedProcess(command, 1, b"", b"not logged in")  # noqa: E731
-        self.assertEqual("anonymous", github_api.choose_client("anonymous", run=ok, which=lambda name: "/usr/bin/gh").name)
-        self.assertEqual("gh", github_api.choose_client("auto", run=ok, which=lambda name: "/usr/bin/gh").name)
-        self.assertEqual("anonymous", github_api.choose_client("auto", run=denied, which=lambda name: "/usr/bin/gh").name)
-        self.assertEqual("anonymous", github_api.choose_client("auto", run=ok, which=lambda name: None).name)
-        self.assertEqual("gh", github_api.choose_client("gh", run=denied, which=lambda name: "/usr/bin/gh").name)
+        self.assertEqual("anonymous", github_api.choose_client("anonymous", run=ok, which=lambda name: "/usr/bin/gh", environ={}).name)
+        self.assertEqual("gh", github_api.choose_client("auto", run=ok, which=lambda name: "/usr/bin/gh", environ={}).name)
+        self.assertEqual("anonymous", github_api.choose_client("auto", run=denied, which=lambda name: "/usr/bin/gh", environ={}).name)
+        self.assertEqual("anonymous", github_api.choose_client("auto", run=ok, which=lambda name: None, environ={}).name)
+        self.assertEqual("gh", github_api.choose_client("gh", run=denied, which=lambda name: "/usr/bin/gh", environ={}).name)
         with self.assertRaises(github_api.ApiError):
-            github_api.choose_client("gh", run=ok, which=lambda name: None)
+            github_api.choose_client("gh", run=ok, which=lambda name: None, environ={})
 
 
 class RulesTests(unittest.TestCase):

@@ -37,8 +37,22 @@
           }
         },
         {
+          "name": "Node",
+          "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+          "with": {
+            "node-version-file": ".nvmrc"
+          }
+        },
+        {
+          "name": "Install uv",
+          "run": "printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n' | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin"
+        },
+        {
           "name": "Run conformance",
-          "run": "mkdir -p conformance-report\nif [ \"$GITHUB_REF\" != \"refs/heads/main\" ] || [ \"$GITHUB_REF_PROTECTED\" != \"true\" ]; then\n  echo \"::error::Conformance requires protected main; no harness was executed.\"\n  touch conformance-report/FAILED\nelse\n  python governance/conformance/run.py --scratch \"$RUNNER_TEMP/conformance-scratch\" --output conformance-report --github-client anonymous --exercise python || touch conformance-report/FAILED\nfi"
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "mkdir -p conformance-report\nif [ \"$GITHUB_REF\" != \"refs/heads/main\" ] || [ \"$GITHUB_REF_PROTECTED\" != \"true\" ]; then\n  echo \"::error::Conformance requires protected main; no harness was executed.\"\n  touch conformance-report/FAILED\nelse\n  python governance/conformance/run.py --scratch \"$RUNNER_TEMP/conformance-scratch\" --output conformance-report --github-client gh --exercise python,node,uv || touch conformance-report/FAILED\nfi"
         },
         {
           "name": "Upload report",

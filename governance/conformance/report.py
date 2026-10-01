@@ -100,7 +100,15 @@ def _user_pattern():
 USER_IN_PATH = _user_pattern()
 
 
-def redact_text(text, replacements):
+def credential_values(environ=None):
+    environ = os.environ if environ is None else environ
+    return tuple(value for name in ("GH_TOKEN", "GITHUB_TOKEN") for value in (environ.get(name),)
+                 if isinstance(value, str) and value.strip())
+
+
+def redact_text(text, replacements, credentials=()):
+    for credential in credentials:
+        text = text.replace(credential, "[redacted]")
     for needle, placeholder in replacements:
         text = re.sub(re.escape(needle), lambda match: placeholder, text, flags=re.IGNORECASE)
     if USER_IN_PATH is not None:
@@ -123,11 +131,11 @@ def strings_of(value):
         yield value
 
 
-def redaction_survivors(value, replacements):
+def redaction_survivors(value, replacements, credentials=()):
     """Fail-closed self-scan of a redacted document: the kinds of local marker that still appear.
 
-    Returns kinds only (``path needle``, ``user in path``, ``drive path``), never the text, so the
-    caller can refuse to write the document without echoing what leaked.
+    Returns kinds only (including ``credential``), never the text, so the caller can refuse to
+    write the document without echoing what leaked.
     """
     survivors = set()
     needles = [needle.lower() for needle, _ in replacements]
@@ -139,17 +147,20 @@ def redaction_survivors(value, replacements):
             survivors.add("user in path")
         if DRIVE_PATH.search(text):
             survivors.add("drive path")
+        if any(credential in text for credential in credentials) or any(pattern.search(text) for pattern in SECRET_PATTERNS):
+            survivors.add("credential")
     return sorted(survivors)
 
 
-def redact(value, replacements):
+def redact(value, replacements, credentials=()):
     """Apply ``redact_text`` to every string in a JSON-like structure (keys included)."""
     if isinstance(value, dict):
-        return {redact_text(key, replacements): redact(item, replacements) for key, item in value.items()}
+        return {redact_text(key, replacements, credentials): redact(item, replacements, credentials)
+                for key, item in value.items()}
     if isinstance(value, list):
-        return [redact(item, replacements) for item in value]
+        return [redact(item, replacements, credentials) for item in value]
     if isinstance(value, str):
-        return redact_text(value, replacements)
+        return redact_text(value, replacements, credentials)
     return value
 
 

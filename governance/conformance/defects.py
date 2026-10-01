@@ -32,7 +32,7 @@ import tempfile
 import time
 import uuid
 
-from conformance import steps
+from conformance import report, steps
 
 
 LANGUAGES = ("workflow", "python", "documentation", "typescript", "kotlin")
@@ -248,7 +248,20 @@ def _finish_windows_tree(helpers, job, process):
     return detail
 
 
-def _windows_runner(command, cwd, environ, timeout):
+def _capture_redactor(cwd, replacements=None, credentials=None):
+    replacements = (report.path_replacements(cwd, Path(__file__).resolve().parents[2])
+                    if replacements is None else replacements)
+    credentials = report.credential_values() if credentials is None else credentials
+    return lambda text: report.redact_text(text, replacements, credentials)
+
+
+def _captured_tail(output, redact_output):
+    # The whole captured value must be redacted before its first cut can destroy a matching prefix.
+    return redact_output(output.decode("utf-8", errors="replace"))[-OUTPUT_TAIL:]
+
+
+def _windows_runner(command, cwd, environ, timeout, redact_output=None):
+    redact_output = _capture_redactor(cwd) if redact_output is None else redact_output
     helpers = windows_helpers()
     try:
         job = helpers.WindowsJob()
@@ -276,8 +289,7 @@ def _windows_runner(command, cwd, environ, timeout):
             # Windows reader threads populate their buffers only at EOF; after confirmed release,
             # collect the cached output without an additional drain wait.
             output = process.communicate(timeout=0)[0] if detail is None else expired.output or b""
-            output = output.decode("utf-8", errors="replace")
-            return Result(None, output[-OUTPUT_TAIL:], timed_out=True, error=detail,
+            return Result(None, _captured_tail(output, redact_output), timed_out=True, error=detail,
                           restoration_safe=detail is None)
         except OSError as error:
             stopped = (_finish_windows_tree(helpers, job, process) is None if owned else
@@ -293,7 +305,7 @@ def _windows_runner(command, cwd, environ, timeout):
                 raise UnsafeProcessTreeError("interrupted probe process-tree exit not confirmed") from None
             raise
         detail = _finish_windows_tree(helpers, job, process)
-        output = output.decode("utf-8", errors="replace")[-OUTPUT_TAIL:]
+        output = _captured_tail(output, redact_output)
         if detail is not None:
             return Result(None, output, error=detail, restoration_safe=False)
         try:
@@ -308,11 +320,12 @@ def _windows_runner(command, cwd, environ, timeout):
         return Result(status["exit_code"], output)
 
 
-def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS):
-    """Run a probe with merged output; on Windows own its lifetime before releasing consumer code."""
+def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS, *, replacements=None, credentials=None):
+    """Redact before the first capture tail; on Windows own the lifetime before releasing consumer code."""
+    redact_output = _capture_redactor(cwd, replacements, credentials)
     try:
         if os.name == "nt":
-            result = _windows_runner(command, cwd, probe_environment(), timeout)
+            result = _windows_runner(command, cwd, probe_environment(), timeout, redact_output)
             if not result.restoration_safe:
                 raise UnsafeProcessTreeError(result.error or "probe process-tree exit not confirmed")
             return result
@@ -321,12 +334,11 @@ def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS):
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout,
         )
     except subprocess.TimeoutExpired as expired:
-        output = (expired.output or b"").decode("utf-8", errors="replace")
-        return Result(None, output[-OUTPUT_TAIL:], timed_out=True)
+        return Result(None, _captured_tail(expired.output or b"", redact_output), timed_out=True)
     except OSError as error:
         detail = f"{error.__class__.__name__}: command could not start"
         return Result(None, detail, error=detail)
-    return Result(completed.returncode, completed.stdout.decode("utf-8", errors="replace")[-OUTPUT_TAIL:])
+    return Result(completed.returncode, _captured_tail(completed.stdout, redact_output))
 
 
 def git_status(root, run=subprocess.run):

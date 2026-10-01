@@ -1,4 +1,4 @@
-"""The preserved infra#24 PR-G request, without changing the conformance harness."""
+"""Infra#24's generated report workflow, guarded token channel and failure publication."""
 
 import copy
 import importlib.util
@@ -23,7 +23,7 @@ if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$GITHUB_REF_PROTECTED" != "true"
   echo "::error::Conformance requires protected main; no harness was executed."
   touch conformance-report/FAILED
 else
-  python governance/conformance/run.py --scratch "$RUNNER_TEMP/conformance-scratch" --output conformance-report --github-client anonymous --exercise python || touch conformance-report/FAILED
+  python governance/conformance/run.py --scratch "$RUNNER_TEMP/conformance-scratch" --output conformance-report --github-client gh --exercise python,node,uv || touch conformance-report/FAILED
 fi"""
 
 
@@ -39,6 +39,15 @@ generator = load("generated_conformance_generator", HERE / "generate.py")
 
 def document():
     return json.loads(generator.artifacts("infra")[CONFORMANCE])
+
+
+def step_of(value, name):
+    return next(step for step in value["jobs"]["conformance"]["steps"] if step.get("name") == name)
+
+
+def without_token(value):
+    step_of(value, "Run conformance").pop("env", None)
+    return value
 
 
 def rendered_checker(repo):
@@ -57,7 +66,7 @@ class GeneratedConformanceTests(unittest.TestCase):
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 output = generator.artifacts(repo)
-                self.assertEqual(21 if repo == "infra" else 20, len(output))
+                self.assertEqual(22 if repo == "infra" else 20, len(output))
                 self.assertEqual({CI, SETUP, CONFORMANCE} if repo == "infra" else {CI, SETUP},
                                  {name for name in output if name.startswith(".github/workflows/")})
 
@@ -74,7 +83,10 @@ class GeneratedConformanceTests(unittest.TestCase):
                      "with": {"persist-credentials": False, "fetch-depth": 0}},
                     {"name": "Python", "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
                      "with": {"python-version": "3.14"}},
-                    {"name": "Run conformance", "run": RUN},
+                    {"name": "Node", "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                     "with": {"node-version-file": ".nvmrc"}},
+                    {"name": "Install uv", "run": generator.PROFILES["repositories"]["ai-service"]["install"][0]},
+                    {"name": "Run conformance", "env": {"GH_TOKEN": "${{ github.token }}"}, "run": RUN},
                     {"name": "Upload report", "uses": f"actions/upload-artifact@{UPLOAD_PIN}",
                      "with": {"name": "conformance-report", "path": "conformance-report",
                               "retention-days": 3, "if-no-files-found": "error"}},
@@ -155,7 +167,7 @@ class GeneratedConformanceTests(unittest.TestCase):
                     validate(value)
 
     def test_conformance_job_set_and_both_names_are_exact(self):
-        job = document()["jobs"]["conformance"]
+        job = without_token(document())["jobs"]["conformance"]
         for jobs in ({"other": job}, {"Conformance": job}, {"conformance ": job},
                      {"conformance": job, "other": copy.deepcopy(job)}):
             with self.subTest(jobs=list(jobs)):
@@ -180,7 +192,7 @@ class GeneratedConformanceTests(unittest.TestCase):
                     validate(value)
 
     def test_artifact_upload_is_reserved_for_infra_conformance(self):
-        upload = document()["jobs"]["conformance"]["steps"][3]
+        upload = step_of(document(), "Upload report")
         for repo in generator.PROFILES["repositories"]:
             for name, setup in ((CI, False), (SETUP, True)):
                 with self.subTest(repo=repo, name=name):
@@ -196,7 +208,7 @@ class GeneratedConformanceTests(unittest.TestCase):
                      f"actions/github-script@{UPLOAD_PIN}", "./.github/actions/upload", "docker://alpine:3.20"):
             with self.subTest(uses=uses):
                 value = document()
-                value["jobs"]["conformance"]["steps"][3]["uses"] = uses
+                step_of(value, "Upload report")["uses"] = uses
                 with self.assertRaisesRegex(ValueError, "immutable|generated pin"):
                     validate(value)
         for index in (0, 1):
@@ -213,12 +225,12 @@ class GeneratedConformanceTests(unittest.TestCase):
         for key in ("token", "overwrite", "include-hidden-files", "compression-level", "archive", "path ", "Name"):
             with self.subTest(key=key):
                 value = document()
-                value["jobs"]["conformance"]["steps"][3]["with"][key] = "x"
+                step_of(value, "Upload report")["with"][key] = "x"
                 with self.assertRaisesRegex(ValueError, "unreviewed action input"):
                     validate(value)
         for inputs in (None, [], "path: conformance-report", True):
             value = document()
-            value["jobs"]["conformance"]["steps"][3]["with"] = inputs
+            step_of(value, "Upload report")["with"] = inputs
             with self.assertRaisesRegex(ValueError, "unreviewed action input"):
                 validate(value)
 
@@ -230,13 +242,15 @@ class GeneratedConformanceTests(unittest.TestCase):
             for placement in ("run", "env", "upload", "cron"):
                 with self.subTest(form=form, placement=placement):
                     value = document()
-                    job = value["jobs"]["conformance"]
                     if placement == "run":
-                        job["steps"][2]["run"] += "\n" + form
+                        step_of(value, "Run conformance")["run"] += "\n" + form
                     elif placement == "env":
-                        job["steps"][2]["env"] = {"GH_TOKEN": form}
+                        step_of(value, "Run conformance")["env"] = {"GH_TOKEN": form}
+                        if form == "${{ github.token }}":
+                            validate(value)
+                            continue
                     elif placement == "upload":
-                        job["steps"][3]["with"]["path"] = form
+                        step_of(value, "Upload report")["with"]["path"] = form
                     else:
                         value["on"]["schedule"][0]["cron"] = form
                     with self.assertRaisesRegex(ValueError, "secrets"):
@@ -259,7 +273,8 @@ class GeneratedConformanceTests(unittest.TestCase):
                 for key in path:
                     target = target[key]
                 target["if"] = "always()"
-                rule = "read-only workflow token" if path == ("permissions",) else "conditions|unreviewed action input"
+                rule = ("read-only workflow token" if path == ("permissions",)
+                        else "conditions|unreviewed action input|secrets")
                 with self.assertRaisesRegex(ValueError, rule):
                     validate(value)
 
@@ -279,8 +294,8 @@ class GeneratedConformanceTests(unittest.TestCase):
                 validate(value)
         for extra in ({"shell": "bash"}, {"working-directory": "sub"}, {"id": "probe"},
                       {"continue-on-error": True}):
-            value = document()
-            value["jobs"]["conformance"]["steps"][2].update(extra)
+            value = without_token(document())
+            step_of(value, "Run conformance").update(extra)
             with self.assertRaisesRegex(ValueError, "step-level key"):
                 validate(value)
 
@@ -322,7 +337,10 @@ class GeneratedConformanceTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("bash"), "Bash is required to execute the generated hosted-runner steps")
 class ConformanceRunStepTests(unittest.TestCase):
     def exercise(self, ref="refs/heads/main", protected="true", code=0, report=True):
-        steps = document()["jobs"]["conformance"]["steps"]
+        value = document()
+        run_step = step_of(value, "Run conformance")
+        upload_step = step_of(value, "Upload report")
+        final_step = step_of(value, "Fail on findings")
         env = {key: value for key, value in os.environ.items()
                if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "HOME", "TEMP", "TMP"}}
         env.update({"GITHUB_REF": ref, "GITHUB_REF_PROTECTED": protected, "RUNNER_TEMP": "/tmp/synthetic-runner",
@@ -336,21 +354,21 @@ class ConformanceRunStepTests(unittest.TestCase):
 }
 """
         with tempfile.TemporaryDirectory() as tmp:
-            run = subprocess.run([shutil.which("bash"), "-e", "-c", fixture + steps[2]["run"]],
+            run = subprocess.run([shutil.which("bash"), "-e", "-c", fixture + run_step["run"]],
                                  cwd=tmp, env=env, capture_output=True, text=True, check=False, timeout=15)
             root = Path(tmp)
             invoked = (root / "harness-arguments.txt").exists()
             arguments = (root / "harness-arguments.txt").read_text() if invoked else None
             self.assertEqual(0, run.returncode, run.stderr)
-            self.assertEqual("conformance-report", steps[3]["with"]["path"])
+            self.assertEqual("conformance-report", upload_step["with"]["path"])
             failed = (root / "conformance-report" / "FAILED").exists()
             written = (root / "conformance-report" / "conformance-report.json").exists()
-            final = subprocess.run([shutil.which("bash"), "-e", "-c", steps[4]["run"]],
+            final = subprocess.run([shutil.which("bash"), "-e", "-c", final_step["run"]],
                                    cwd=tmp, env=env, capture_output=True, check=False, timeout=15)
         self.assertEqual(1 if failed else 0, final.returncode)
         if invoked:
             self.assertEqual("governance/conformance/run.py --scratch /tmp/synthetic-runner/conformance-scratch "
-                             "--output conformance-report --github-client anonymous --exercise python\n", arguments)
+                             "--output conformance-report --github-client gh --exercise python,node,uv\n", arguments)
         return invoked, failed, written, run.stdout
 
     def test_protected_main_success_uploads_the_report_then_succeeds(self):

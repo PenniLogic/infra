@@ -8,9 +8,9 @@
 `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/*` (two files), `.gitattributes`,
 `.gitignore`, `scripts/setup.py` and `scripts/check_repository.py`). Consumers never hand-edit those
 files: a profile or template change lands here through a reviewed generator PR, then each consumer
-regenerates from the merged `main` in its own PR. Additionally, infra alone has 21 files: its third
-workflow is `.github/workflows/conformance.yml`. `governance/tests/test_rule_table.py` keeps this
-per-profile list equal to what `artifacts()` renders.
+regenerates from the merged `main` in its own PR. Additionally, infra alone has 22 files: its third
+workflow is `.github/workflows/conformance.yml`, and `.nvmrc` pins its real governance-fixture Node runtime.
+`governance/tests/test_rule_table.py` keeps this per-profile list equal to what `artifacts()` renders.
 
 ```text
 python governance/generate.py --repository <name> --root <checkout>          # regenerate one consumer
@@ -67,8 +67,8 @@ so a rule moved or added in the template fails that test until the row moves wit
 | 2 | `Duplicate JSON key` | a repeated key at any depth, which parsers resolve differently |
 | 3 | `workflow document must be one JSON object` | a top-level array, string, number, boolean or `null` |
 | 4 | `expected read-only workflow token` | any workflow `permissions` other than `{"contents": "read"}` |
-| 5 | `unreviewed workflow expression; public jobs must not receive secrets` | every `${{ ... }}` outside `WORKFLOW_EXPRESSIONS`, at any depth |
-| 6 | `public candidate jobs must not receive secrets` | the `secrets` context or `github.token` in any key or string, including whitespace-split and whole-context forms (tripwire behind rule 5) |
+| 5 | `unreviewed workflow expression; public jobs must not receive secrets` | every `${{ ... }}` outside `WORKFLOW_EXPRESSIONS`, at any depth, except the exact, separately path-bound Conformance token value described below |
+| 6 | `public candidate jobs must not receive secrets` | the `secrets` context or `github.token` in any key or string outside that same single token leaf, including whitespace-split and whole-context forms (tripwire behind rule 5) |
 | 7 | `conditions are not part of the generated workflows` | the key `if` in any mapping (job, step, snapshot or any other depth) |
 | 8 | `action must be immutable and one of the generated GitHub-owned actions` | any `uses` that is not one of `WORKFLOW_ACTIONS` followed by `@` and a lowercase 40-hex commit, including reusable-workflow jobs, local and `docker://` actions, tags, branches, short or upper-case commits |
 | 9 | `action commit differs from the generated pin; regenerate instead of editing it` | a listed action at any 40-hex commit other than its entry in `WORKFLOW_ACTION_PINS` (compared exactly and case-sensitively), including a listed action at another listed action's pin and a fork's commit reachable by SHA through the upstream repository |
@@ -94,7 +94,19 @@ so a rule moved or added in the template fails that test until the row moves wit
 | 29 | `Conformance must contain its documented single job` | infra conformance with any job set other than `conformance` |
 | 30 | `Keep the Conformance workflow and job names stable` | infra conformance whose workflow or job name is not `Conformance` |
 | 31 | `Conformance must keep its bounded 60-minute timeout` | infra conformance whose timeout is not the integer `60`, including a missing timeout, a string or a float |
-| 32 | `workflow file outside the generated pair or infra-only conformance.yml` | every other path under `.github/workflows/`, including a consumer conformance file, `.yaml` twin, differently cased name or subdirectory |
+| 32 | `Conformance must keep one authenticated harness step and no other environment` | a missing, duplicate, renamed or action-based harness step, any harness key set other than `name`, `run`, `env`, any environment other than exactly `GH_TOKEN: ${{ github.token }}` on that step, a job environment or another step environment |
+| 33 | `workflow file outside the generated pair or infra-only conformance.yml` | every other path under `.github/workflows/`, including a consumer conformance file, `.yaml` twin, differently cased name or subdirectory |
+
+The token expression is **not** in `WORKFLOW_EXPRESSIONS`. Before rules 5-6, the checker computes
+one exception only when its generated `WORKFLOW_REPOSITORY` is `infra`, the path is exactly
+`.github/workflows/conformance.yml`, the sole job id is `conformance`, and its sole plain run step
+named `Run conformance` has keys exactly `name`, `run`, `env`, a string `run`, and `env` exactly
+`{"GH_TOKEN": "${{ github.token }}"}`. No job or other step may have an environment. Only that
+value leaf is omitted from the expression walk and the independent secret tripwire; mapping keys
+have distinct paths and cannot borrow the exception. Other spellings, whole/computed/bracket
+contexts, other token variables, extra environments and other workflow/profile paths remain
+refused. A malformed placement carrying a token is consequently refused by rules 5-6 before
+the later shape rule; rule 32 also catches a missing token or a static environment.
 
 Rules 13-18 accept exactly the keys the generator emits, as the union over all profiles: job-level
 and step-level `env` are emitted only by some profiles (web/admin telemetry opt-out, api coverage
@@ -109,7 +121,7 @@ Rules 8-9 bind each `uses` to one of five names at one commit each; `test_workfl
 derives both mappings from the rendered workflows of every profile, so a pin bump or a new action
 in `generate.py` fails until the checker carries it. Rule 12 restricts upload to infra conformance;
 its only allowlisted inputs are `name`, `path`, `retention-days` and `if-no-files-found`.
-Rules 22-32 bind each generated workflow file to its own trigger set and single job. CI/setup
+Rules 22-33 bind each generated workflow file to its own trigger set and single job. CI/setup
 event filters (`branches`, `paths`, `types`, dispatch `inputs`) remain unbound (their strings are
 still walked by rules 5-6); conformance's dispatch and schedule values are exact. Other action
 input values, run text, step order and concurrency still rely on infra's byte-level `--check`
@@ -122,19 +134,46 @@ object). Passing the checker is a repository-foundation result, never product ac
 The existing required-file subset is unchanged; infra's generator `--check` detects a missing
 conformance file as well as any changed generated byte.
 
-## Infra-only report workflow (infra#24, preserved Generator PR G)
+## Infra-only report workflow (infra#24, PR G and bounded runtime expansion)
 
-The preserved request in `CI_CONFORMANCE.md`, "Generated-setup request: the scheduled workflow",
+The preserved request in `CI_CONFORMANCE.md`, "Preserved generated-setup request: the initial scheduled workflow",
 is rendered only for infra. It does not alter any profile's `ci.yml` or Copilot setup workflow,
 the required native `CI` context, consumer profiles, rulesets or review restrictions.
 
 `Conformance` has one job id `conformance`, also named `Conformance`, on `ubuntu-24.04` with a
 60-minute timeout, `contents: read`, manual dispatch and the weekly UTC cron `17 5 * * 1`.
 Its checkout has `persist-credentials: false` and full history for registry commit rendering.
-Only Python is set up. The harness runs with `--github-client anonymous --exercise python`,
-using its anonymous GET-only client and public consumer `main` clones. No GH token or secret
-expression is emitted. Anonymous requests can fail closed on the shared 60-request/hour limit;
-the preserved harness request estimates 45 reads per run.
+Python, Node `24.14.0` and uv `0.11.33` are set up before the harness runs with
+`--github-client gh --exercise python,node,uv`. Node uses the existing pinned setup action and
+the infra profile's generated `.nvmrc`. The uv install reuses the ai-service profile's exact
+verified, hash-required, binary-only, dependency-free pip line. Infra's native CI and setup
+provision the same Node and uv before checks because the governance tests execute real fixtures.
+The other sixteen consumer CI/setup workflows and all eight consumer profiles remain byte-identical
+to accepted source `e96eb757beeb02b0a802e7545ca781669e85deb8`. The native `CI` name, triggers,
+read-only permissions, hosted runner and ten-minute bound are unchanged. Infra's primary registry
+language remains Python. Its updated native `CI` source binding is recorded in a separate commit
+after the source commit that actually renders the new workflow; no self-referential SHA is used.
+
+Unaccepted head `c9fceee` passed locally with Node `24.14.0`/npm `11.9.0`, but native PR CI
+`36795639431` failed real Node fixture lock preparation (`edgesOut`), with 227 tests reported,
+one setup error and 13 skips. That run did not provision Node or uv. Its exact runner image
+`ubuntu24/20260927.320` documents default Node `22.23.3`/npm `10.9.9`. A clean Linux reproduction
+with checksum-verified distributions reproduced npm's Arborist `loadPeerSet` failure on that
+pair and succeeded on `24.14.0`/`11.9.0` using the identical manifest/command. This is a toolchain
+dependency mismatch, not presumed transient; the native setup fix adds no retry, cache deletion,
+peer bypass or suite skip. Missing Node/npm/uv now fails fixture setup before scratch/execution,
+and the real suite prints the actual runtime and test-runner versions.
+
+The automatically issued, short-lived Actions `github.token` reaches only the `Run conformance`
+step as `GH_TOKEN`. The reused `GhClient` invokes `gh api --hostname github.com -X GET` with a
+60-second subprocess bound and captured output, an empty gh config directory and that token.
+Other GH/GITHUB/ACTIONS selectors are scrubbed. Actions requires explicit `gh` and a non-empty
+step token; no user-endpoint authentication probe, stored credential, personal credential or
+anonymous fallback is used there. Missing tooling/token and unreadable metadata fail explicitly.
+No actions, id-token or contents write permission is granted, and no repository secret is used.
+This replaces the shared anonymous quota path that failed in hosted run `36784511111`; it is not
+proof that the job token can read every public cross-repository endpoint. An inaccessible endpoint
+still fails its row, and unreadable repository identity still prevents clone/execution.
 
 The existing run step additionally checks the runtime `GITHUB_REF` is `refs/heads/main` and
 `GITHUB_REF_PROTECTED` is `true` before invoking the harness. An off-main or unprotected dispatch
@@ -144,6 +183,28 @@ select another ref and checkout runs before this guard. The unmodified generated
 that ref; a branch that edits away the guard can still execute branch code. Neither the guard nor
 the editable checker is a platform security boundary. Read-only permissions, no persisted checkout
 credential, no application secrets and the harness's credential-isolated probes remain necessary.
+There is no OS sandbox: the trusted infra process and trusted consumer `main` code can open files
+and process resources accessible to their OS user. Environment scrubbing is not an in-process,
+file-store or OS-level credential boundary. The step token remains short-lived and read-only.
+Every scratch git command and consumer command uses the existing isolated `probe_environment()`,
+without the metadata token or Actions state selectors; real child/descendant tests assert that.
+Exact in-process token values as well as credential shapes are redacted before truncation,
+stdout or report publication, and the final scan refuses a surviving credential.
+The redactor now runs inside capture, before every initial normal/timeout tail on Windows and
+POSIX, not after `Result.output` has already lost a matching prefix. `redacting_runner()` supplies
+the report's exact known-path/token scope; direct probes use the same shared redactor with their
+own default scope. The retained 3000-character result and 400-character report caps and report
+shape remain unchanged. No additional full-output store, altered process ownership or new OS
+sandbox claim is added.
+
+Coordinator-confirmed c9 evidence used synthetic output with a credential crossing the first
+3000-character cut. Initial plain-padding tests showed a suffix in `Result.output` but not the
+later 400-character tail. Further credential/path-padding compression pulled that suffix into
+the JSON sink with zero scanner survivors, demonstrating a publication-sanitizer defect.
+No real credentials, upload or consumer-environment token exposure was demonstrated. The named
+normal/timeout, known-path, credential-shape, unsafe-Windows-result and end-to-end JSON shortening
+regressions include opaque/shaped values and unsplit controls; no exploit-severity judgment is
+claimed here. The original negative evidence remains preserved.
 
 A harness failure also writes `FAILED` instead of immediately failing the run step. Upload therefore
 precedes the final `test ! -f conformance-report/FAILED`, without an `if` key or `if: always()`.
@@ -163,17 +224,28 @@ inputs and runs the Node 24 upload entry point. The canonical pin and template p
 the tag is verification evidence, never the executable workflow ref.
 
 This is report-only. No required `Conformance` context, ruleset mutation, paid service or deployment
-is added. The scheduled phase does not exercise Node, uv, JDK or Android fixtures. Phase 2 toolchains,
-Kotlin evidence, owner-administered wiring, opt-out expiry and budget decisions remain under infra#24;
+is added. The expanded job exercises actual failing/removed Vitest suites for web/admin and locked pytest
+suites for ai-service. JDK/Android fixtures are not added. Kotlin evidence, owner-administered
+wiring, opt-out expiry and budget decisions remain under infra#24;
 this bounded change references that issue, not closes it. Consumers regenerate only in later
-coordinator-scheduled PRs. Rollback removes the infra-only workflow rendering and regenerates,
-then explicitly removes the now-unlisted generated file in infra's reviewed rollback PR.
+coordinator-scheduled PRs. This runtime unit rolls back by reviewed revert/regeneration to accepted
+`e96eb757`, explicitly removing the new `.nvmrc` while retaining the original anonymous/Python-only
+Conformance workflow and its known quota limit. The earlier PR-G whole-workflow removal is a
+different rollback, preserved in the original request.
 
-`test_generated_conformance_workflow.py` checks the exact request plus the guard and supported storage
+`test_generated_conformance_workflow.py` checks the expanded request plus the guard and supported storage
 inputs, every profile's artifact count, deterministic all-nine baselines, profile-bound refusals and
 the existing expression/action/condition/permission evasions. It executes the Bash run/final steps
-with a synthetic harness for successful reports, findings, report-less errors and denied dispatches;
-it does not upload an artifact, execute the live harness or claim product/load/accessibility acceptance.
+with a synthetic harness for successful reports, findings, report-less errors and denied dispatches.
+`test_conformance_runtime.py` asserts the leaf-bound exception, GET client, hostile environment,
+redaction and unchanged consumer workflow/profile bytes. `test_conformance_native_runtime.py`
+checks native infra runtime provisioning and missing-tool/preparation failures.
+`test_conformance_runtime_fixtures.py`
+executes the real profile commands on temporary minimal consumers with actual Vitest/pytest
+dependencies, including a passing baseline and both planted refusals; missing toolchains are
+errors, never successful skips. These are mechanics proofs, not hosted token permissions or nine-main
+acceptance. Only an accepted, reviewed merge followed by actual hosted verification can prove
+that. No workflow activation or manual dispatch is part of this implementation.
 
 ## Provenance
 
@@ -185,4 +257,7 @@ listed action to its generated pin (rule 9, rendered from `repository-profiles.j
 workflow file to its trigger set and single job, and made this table's order and the generated-file
 list above test-enforced. PR G extends only the infra file/profile exception, scopes upload (rule 12),
 and binds its weekly trigger shape, job, names and timeout (rules 27-31); the updated table records
-the new evaluation order rather than retaining historical rule numbers as current ones.
+the new evaluation order rather than retaining historical rule numbers as current ones. The runtime
+expansion adds the sole step-token exception and rule 32, without widening the global expression
+set, action/input channels, consumer CI/setup tokens or permissions. It requires separate
+non-author Core, QA, Security, Privacy and Reliability review before integration.

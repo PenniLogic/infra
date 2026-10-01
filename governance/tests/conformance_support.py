@@ -13,7 +13,7 @@ GOVERNANCE = Path(__file__).resolve().parents[1]
 if str(GOVERNANCE) not in sys.path:
     sys.path.insert(0, str(GOVERNANCE))
 
-from conformance import generator as generator_module  # noqa: E402
+from conformance import defects, generator as generator_module  # noqa: E402
 
 generator = generator_module.load()
 ORGANIZATION = generator.PROFILES["organization"]
@@ -27,7 +27,8 @@ class BaselineTest(unittest.TestCase):
 
 
 def git(root, *args):
-    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False)
+    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False,
+                            env=defects.probe_environment(), timeout=60)
     if result.returncode:
         raise AssertionError(f"git {' '.join(args)} failed: {result.stderr.decode('utf-8', 'replace')}")
     return result.stdout.decode("utf-8", "replace")
@@ -48,7 +49,8 @@ def make_consumer(root, name, extra_files=None):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True,
+                   env=defects.probe_environment(), timeout=60)
     git(root, "config", "core.autocrlf", "false")
     git(root, "config", "user.name", "conformance-test")
     git(root, "config", "user.email", "conformance-test@example.invalid")

@@ -40,9 +40,10 @@ Do not reintroduce reusable-workflow adoption.
 9. records the last completed push run of the `CI` workflow on `main`, its conclusion and wall-clock
    (`run_started_at` to `updated_at`, queue time excluded) against the ten-minute budget;
 10. writes `conformance-report.json` (schema `pennilogic.infra.conformance/1`) and
-    `conformance-summary.md` with every local path and credential-shaped string redacted, after a
+    `conformance-summary.md` with local paths, exact in-process GH/GITHUB token values and
+    credential-shaped strings redacted, after a
     fail-closed self-scan: if any local marker survives redaction (a path spelling, the account name as a
-    path component, or an absolute drive path) the job names the kind of marker, writes nothing and
+    path component, an absolute drive path or a credential) the job names the kind of marker, writes nothing and
     exits 2; otherwise it exits 1 when any repository fails.
 
 It never pushes, comments, or writes to any repository. The harness refuses to plant into a tree that
@@ -89,13 +90,17 @@ credentials that live in files or stores a consumer command can open by itself �
 an OS keyring or Git Credential Manager store, `~/.npmrc`, `~/.pypirc`, `~/.docker/config.json`, or a
 credential helper the command configures in its own process. The disabled push URL means those
 credentials cannot push through the scratch clone, but a command could still use them elsewhere.
-That is why the job is meant for a disposable tokenless runner or for local runs against the
-organization's own repositories only, and why consumer `main` code is inside the trust boundary.
+That is why the job is meant for a disposable runner with no application/provider secrets or
+personal credential, or for local runs against the organization's own repositories only.
+Consumer `main` code is inside the trust boundary. Environment scrubbing is not an OS sandbox:
+the trusted infra process and executed trusted-main code can open files and process resources
+accessible to their OS user. The step-scoped workflow token is short-lived and read-only;
+no stronger in-process or file-credential separation is claimed.
 
 Trust boundary: proving that a consumer's real command refuses a defect means executing that consumer's
 code (`scripts/check_repository.py`, `check_docs.py`, `npm ci` lifecycle scripts, `uv sync`, Gradle). Run
-the job on a disposable runner with `contents: read` and no token, as the requested workflow does, or
-locally only against the organization's own repositories. The fixtures prove the honest failure modes
+the job on a disposable runner with `contents: read` and only the metadata step token described below,
+or locally only against the organization's own repositories. The fixtures prove the honest failure modes
 (a removed, stubbed or skipped test step, an empty suite, a failing test that is really executed); a
 consumer whose maintainers deliberately rewrite their own test runner to fake those outputs is a review
 finding, not something a probe can prove from outside. Do not share one scratch directory between
@@ -106,24 +111,41 @@ concurrent runs.
 ```text
 python governance/conformance/registry.py                       # validate the check-name registry alone
 python governance/conformance/run.py --scratch <dir> --output <dir> --github-client anonymous
-python governance/conformance/run.py --scratch <dir> --output <dir> --exercise python,node,uv --refresh
+python governance/conformance/run.py --scratch <dir> --output <dir> --github-client gh --exercise python,node,uv --refresh
 python -m unittest discover -s governance/tests -p "test_conformance_*.py"
 ```
 
 Options: `--repository <profile>` (repeatable) limits the run; `--github-client auto|gh|anonymous`
-(`auto` uses the `gh` CLI's stored credential when it is installed and authenticated, else anonymous);
+(`auto` locally uses the `gh` CLI's stored credential when it is installed and authenticated, else anonymous);
 `--exercise` names the toolchains whose planted defects run (`python` by default; `node`, `uv`, `java`,
 `android` need the matching toolchain on the machine and a network for `npm ci` / `uv sync`);
 `--command-timeout`, `--budget-minutes` (the wall-clock budget recorded per row and applied to the last
 `main` run; default 10), `--generated-at`. Exit status: 0 pass, 1 at least one repository failed, 2 the
-job itself could not run (registry invalid, unknown profile, `gh` requested but absent, or the redaction
+job itself could not run (registry invalid, unknown profile, `gh` requested but absent, missing Actions
+step token, wrong Actions client, or the redaction
 self-scan found a surviving local marker — nothing is written in that case).
 
-The anonymous client is the design the scheduled job uses (generated workflows never receive a token):
-five GET requests per repository (identity, ruleset list, ruleset detail, branch rules, runs), 45 for nine
-repositories, against GitHub's limit of 60 unauthenticated requests per hour per address. A second run
-within the hour from the same address can exhaust the limit; the job then fails closed with
-`read-only API unavailable` for the repositories it could not read.
+The scheduled job now uses the existing `GhClient` with only the automatically issued Actions
+`github.token`, passed as `GH_TOKEN` on `Run conformance`, never job/global env or a repository secret.
+On Actions, explicit `--github-client gh` and a non-empty `GH_TOKEN` are mandatory: no `/user` probe,
+personal/stored credential or anonymous fallback is used. Every metadata subprocess is
+`gh api --hostname github.com -X GET`, captured and bounded to 60 seconds, with other GH/GITHUB/ACTIONS
+selectors removed and an empty gh configuration directory. Every scratch git and consumer command
+instead receives `probe_environment()` without that token or Actions selectors. The workflow's only
+grant stays `contents: read`; actions/id-token/contents write grants are not added.
+
+The public anonymous client remains an explicit local option. A normal run needs five GETs per
+repository (identity, ruleset list, ruleset detail, branch rules, runs), 45 for nine repositories,
+against its shared 60/hour/address quota. Hosted run
+[36784511111](https://github.com/PenniLogic/infra/actions/runs/36784511111) at accepted generator commit
+`e96eb757beeb02b0a802e7545ca781669e85deb8` made 19 anonymous reads and reported
+`api_rate_limit_remaining: 0`: .github/docs passed, the contracts ruleset GET returned 403,
+and six remaining identity GETs returned 403 and prevented any clone/execution. Its real
+[failure artifact 11128554489](https://github.com/PenniLogic/infra/actions/runs/36784511111/artifacts/11128554489)
+contains JSON, Markdown and `FAILED`, uploaded before the final job failure with three-day retention.
+That report is preserved, not retried into a passing result or replaced by local fixtures.
+Quota exhaustion is observed there; a future authenticated 403 is not automatically classified
+as quota exhaustion. Inaccessible metadata still fails explicitly, with no grant escalation.
 
 A run that is killed while a defect is planted cannot restore the tree (the process never reaches its
 restore step); the next run refuses to plant into that clone (`scratch checkout is not clean`) and fails
@@ -195,7 +217,7 @@ security acceptance.
 | `kotlin-test-failing` | kotlin | java | api | `python scripts/quality.py test` must fail on a planted JUnit 5 test |
 | `kotlin-android-self-test` | kotlin | android | android | consumer evidence, not a defect this job plants: the consumer-owned `quality_gates.py self-test` (a failing test, spotless and lint defects, UP-TO-DATE and FROM-CACHE results) must exit 0; recorded as `consumer_evidence`, never as `proved`; needs the Android SDK |
 
-Kotlin fixtures are not exercised by the Python-only job; their evidence is the consumer's last `main`
+Kotlin fixtures are not exercised by the expanded Python/Node/uv job; their evidence is the consumer's last `main`
 CI run (api runs `quality.py build`, android runs its own `self-test` on every run) recorded in the
 report, and the warning says so explicitly. The python fixtures still run for api and android
 (`scripts/tests`). Consumer-owned planted-defect commands present in the profiles are listed under
@@ -219,7 +241,9 @@ renders the current workflow from Git history; the job verifies the same against
 Update the registry in the same PR as a profile change that alters a workflow: set `workflow_ref` to the
 merged generator commit the consumer regenerates from (the eight consumers record
 `4e6e749fd849ae58f2b13c21215022c1bc410b9f`, the last commit that changed their rendered `ci.yml`; infra
-records `56d78eebf34e368d14e6c60158a95f5b9f3ba09f`, the commit that last changed its own `ci.yml`).
+records the full source commit that renders its current `ci.yml`. When source changes that workflow,
+an ordinary source commit is followed by a registry-only binding commit pointing to the source commit;
+never try to embed a commit's own unknown SHA in its contents).
 
 ## Onboarding a new repository
 
@@ -273,7 +297,12 @@ Proposed changes (text only; an agent session does not apply ruleset changes):
 - **Rulesets keep requiring `CI` from integration 15368 only**; the report fails if a context appears that
   no workflow produces, which protects against a stale required context after a rename.
 
-## Generated-setup request: the scheduled workflow
+## Preserved generated-setup request: the initial scheduled workflow
+
+This is the original request from the harness PR, retained as historical scope. The infra-only
+workflow was subsequently accepted in [#58](https://github.com/PenniLogic/infra/pull/58) at `e96eb757`.
+Its anonymous/Python-only preference and refusal-table numbers below describe that earlier
+request, not the current runtime expansion. The successor request and remaining proof are below.
 
 `.github/workflows/conformance.yml` cannot be added by this PR. Every workflow file is validated by the
 generated `scripts/check_repository.py`, which runs first in CI, and its rules refuse the file regardless of
@@ -355,12 +384,120 @@ through the generator). Making it blocking is an owner decision recorded above. 
 generated workflow from the infra profile and regenerate; the registry and the job code are inert
 without it.
 
-## Remaining for infra#24 after this pull request
+## Bounded runtime expansion after accepted PR 58
 
-- The generated scheduled workflow with its artifact upload (the request above; generator owner).
+The hosted quota failure makes dependable authenticated read-only metadata necessary. The canonical
+generator now emits one intentional exception: only the infra profile's exact
+`.github/workflows/conformance.yml`, sole `conformance` job and unique plain `Run conformance` step
+may receive `env` exactly `{"GH_TOKEN": "${{ github.token }}"}`. The expression is not added to
+the global allowlist. Keys and every other string still pass the expression and secret tripwires;
+whole/computed/bracket contexts, renamed/duplicate/action harnesses, other token variables, extra
+environments, consumer CI/setup workflows and reusable/default-input action channels remain refused.
+The source-bound ordered refusal table and generated artifact-count/shape assertions are updated
+with it (`governance/README.md`, 33 rules, 22 infra files versus 20 per consumer).
+
+Before the guarded harness step, Conformance sets up Node `24.14.0` from infra's new canonical
+profile pin and generated `.nvmrc`, using the existing setup-node SHA, and installs uv `0.11.33`
+using the existing ai-service hash-required, binary-only, no-dependency install line. Its arguments
+are `--github-client gh --exercise python,node,uv`: web/admin Vitest and ai-service locked pytest
+failing/removed-suite fixtures run, not `not_exercised`. JDK/Android fixtures and consumer profiles
+are unchanged. The other sixteen native consumer CI/setup workflow bytes and all eight consumer
+profiles are preserved. Infra CI/setup also provisions these runtimes for the real governance
+fixtures, as the native failure and repair below require. Infra's primary registry language remains
+Python; its native `CI` workflow source reference binds the preceding source commit.
+
+The protected-default-main guard, weekly schedule, input-free dispatch, concurrency, standard
+runner, 60-minute job bound, ten-minute reporting budget, sentinel-before-failure upload, three-day
+retention and missing-file error remain. Report schema `/1` and all eight consumer registry references
+are unchanged; only infra's native workflow source binding changes with its runtime provisioning.
+No ruleset, entitlement, purchase, deployment, reviewer mechanism or required Conformance context
+is added. No unreviewed workflow is activated or manually dispatched by this unit.
+
+Named regressions were RED against unchanged accepted source `e96eb757`: the intended token
+leaf was refused, missing/static harness env was unbound, historical/support git inherited
+selectors, a synthetic unshaped token survived publication, and all six Node/uv refusals were
+`not_exercised`. The new runtime tests cover those boundaries, actual consumer/child environment
+scrubbing and fail-closed credential scanning. Real minimal fake web/admin/AI consumers run their
+unchanged `npm ci`/`npm test` and `uv sync --locked`/`uv run --locked pytest` commands against actual
+Vitest/pytest, with passing baselines, executed failures and removed-suite refusals. Dependencies
+stay in temporary fixture trees; missing toolchains now fail before setup, not skip as proof.
+This proves mechanics only, not nine current-main rows or hosted job-token read permissions.
+
+Separate non-author Core, QA, Security, Privacy and Reliability review is required for this
+intentional credential-channel change before merge. Actual hosted verification is allowed only
+after the reviewed merge. If cross-repository job-token reads fail, preserve the failure and
+request a reviewed decision; do not add personal credentials, permissions or silent fallback.
+Rollback is a reviewed revert/regeneration to accepted `e96eb757` (remove the new generated
+`.nvmrc` explicitly), restoring the anonymous/Python-only workflow and its known quota limit.
+The original failure artifact remains evidence either way.
+
+### Native PR CI failure and required runtime repair
+
+The local results on unaccepted `c9fceee` were not native acceptance.
+[PR CI run 36795639431](https://github.com/PenniLogic/infra/actions/runs/36795639431)
+([job 110158325561](https://github.com/PenniLogic/infra/actions/runs/36795639431/job/110158325561))
+failed `RealNodeFixtureTests.setUpClass` at `npm install --package-lock-only --ignore-scripts
+--no-audit --no-fund`, with `Cannot read properties of null (reading 'edgesOut')`. It reported
+227 tests, one error and 13 skips; uv had not been provisioned. Its immutable image
+`ubuntu24/20260927.320` documents default Node `22.23.3`/npm `10.9.9`, while that native infra
+workflow had deliberately remained Python-only.
+
+A Linux reproduction downloaded checksum-verified Node distributions, recorded actual
+`node --version`/`npm --version`, and ran the same minimal Vitest `5.0.2` manifest and preparation
+command. `22.23.3`/`10.9.9` reproduced the exact `edgesOut` error with no lock file; its debug
+stack is npm Arborist's `loadPeerSet`. `24.14.0`/`11.9.0` completed the same command with a lock
+file. No retry, cache deletion, `--legacy-peer-deps`, altered fixture dependency or successful
+fallback was used. The original native log, declared image metadata and reproduction stderr/debug
+logs are preserved as evidence rather than calling the failure transient.
+
+The precise canonical fix provisions the existing pinned Node action and hash-verified uv
+installer in infra's native CI/setup before checks, reusing the same source as Conformance.
+This changes only those two infra workflow bytes; no consumer profile or workflow changes.
+Missing Node/npm/uv in the real suite is an explicit setup error before scratch or commands;
+real executions print their actual Node/npm/Vitest and uv/pytest versions. The existing native
+`CI` name, triggers, permissions, action pins, runner and ten-minute bound are preserved.
+A source commit followed by a registry-only commit binds infra's entry to a full source SHA
+that actually renders the changed workflow. The eight other entries stay unchanged.
+Fresh native CI on the final bound head is required; old local success or a skipped uv suite
+cannot replace it. Conformance dispatch remains prohibited until separately accepted integration.
+
+Pinned Linux validation also exposed why the real fixture assertion must inspect the full probe
+output used by the harness's matcher, not the intentionally truncated 400-character report tail:
+Vitest's colored summary can push the actual failing-test marker outside that tail. The fixtures
+were already `proved` from the real exit/text match; the corrected tests retain and assert that
+executed output directly, without changing report truncation or refusal semantics. The missing-token
+unit test independently supplies the synthetic installed-gh seam so it tests missing authentication,
+not availability of a CLI it never executes.
+
+### Redaction before the first capture tail
+
+The c9 implementation applied exact-token redaction in `run.redacting_runner()` after
+`defects.subprocess_runner()` had already kept only 3000 characters. Synthetic 3001-character
+normal and timeout output on Windows/POSIX showed a credential suffix surviving when the first
+cut destroyed the full-value/shape prefix. Plain padding initially kept the fragment outside
+the later 400-character tail, but further credential/path-padding compression pulled it into the
+actual JSON sink while the scanner reported zero survivors. This demonstrates a publication
+sanitizer defect with synthetic fragments, not real-token, upload or consumer-environment exposure.
+Original coordinator evidence and new RED output are retained; no exploit-severity judgment is
+claimed by the author.
+
+Capture now applies the shared exact-value, credential-shape and known-path redactor before
+every initial normal/timeout slice, including the Windows unsafe-result branch.
+`run.redacting_runner()` supplies its exact report scope to capture; direct probes use the same
+redactor with their own scope. The first retained result still has at most 3000 characters,
+report probes at most 400, and the report schema/shape is unchanged. No new full-output store,
+weaker final privacy scan, altered Windows lifetime/ownership rules, sandbox or confidentiality
+boundary is claimed. Synthetic cut-boundary tests cover real normal/timeout subprocesses on
+each native platform and preserve the unsafe Windows flag. End-to-end `run.main` tests exercise
+the real report redaction, self-scan and JSON/Markdown writing with opaque/shaped tokens,
+credential/path compression and unsplit controls.
+
+## Remaining for infra#24
+
+- Reviewed integration and actual hosted verification of the authenticated Python/Node/uv runtime:
+  the nine real consumer-main rows and job-token metadata permissions are not proved by local tests.
 - Ruleset wiring decisions and any change to the `Protect main` rulesets (owner; proposals above).
-- Phase 2: Node and uv on the runner so the TypeScript and pytest fixtures run in the scheduled job.
-- Kotlin evidence on the runner: `java` and `android` are never exercised by the Python-only scheduled
+- Kotlin evidence on the runner: `java` and `android` are never exercised by the Python/Node/uv scheduled
   job; the api `kotlin-test-failing` fixture has been proved only in local runs, and the android
   self-test remains consumer evidence. A JDK/Android SDK setup in the conformance workflow is a later
   generator request with a real cost in runner minutes.
@@ -391,12 +528,10 @@ without it.
   9 min 28 s and 9 min 33 s in the two live runs, inside the ten-minute budget but close; its reviewed
   profile timeout is 30 minutes, so an overrun would be a warning, not a failure, until the budget is
   reviewed.
-- Kotlin planted defects are not exercised by the Python-only job (evidence: last `main` runs). Node and uv
-  planted defects were exercised in the local live run because those toolchains were present; the
-  scheduled job would run `--exercise python` until the generator adds Node and uv to the conformance
-  workflow (phase 2 above). A consumer that stubs `npm test` in `package.json` or `pytest` in its lock
-  file therefore is not caught by the Python-only scheduled job — its own `main` run stays green — until
-  phase 2 or a local run with those toolchains.
+- Kotlin planted defects are not exercised by the Python/Node/uv job (evidence: last `main` runs).
+  The old accepted Python-only hosted job did not catch a consumer stubbing `npm test` or pytest.
+  The expanded runtime invokes their existing failing/removed-suite fixtures; hosted effectiveness
+  still needs actual post-merge evidence, not a local fake-consumer success.
 - The job reads consumers' `main`, never the pull request under review, so it cannot gate a consumer PR;
   it reports the state of what was merged.
 - The registry `workflow_ref` verification needs the commit in local history; a shallow infra checkout

@@ -221,7 +221,7 @@ class RunnerContractTests(unittest.TestCase):
         completed = subprocess.CompletedProcess("echo ok", 0, b"ok\n")
         with mock.patch.object(defects.os, "name", "posix"), \
                 mock.patch.object(defects.subprocess, "run", return_value=completed) as run:
-            result = defects.subprocess_runner("echo ok", ".", timeout=2)
+            result = defects.subprocess_runner("echo ok", ".", timeout=2, replacements=(), credentials=())
         self.assertEqual((0, "ok\n", False), (result.exit_code, result.output, result.timed_out))
         options = run.call_args.kwargs
         self.assertTrue(options["shell"])

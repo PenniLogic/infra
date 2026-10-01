@@ -190,13 +190,10 @@ def inspect_repository(name, profile, generator, client, registry_document, scra
     return record
 
 
-def redacting_runner(timeout, replacements):
-    """A probe runner whose output is redacted before the harness keeps its tail, so a local path cut
-    in half by truncation can never survive into the report."""
+def redacting_runner(timeout, replacements, credentials=None):
+    """Supply the report's exact scope to capture-time redaction, before either retained tail."""
     def runner(command, cwd):
-        result = defects.subprocess_runner(command, cwd, timeout)
-        result.output = report_module.redact_text(result.output, replacements)
-        return result
+        return defects.subprocess_runner(command, cwd, timeout, replacements=replacements, credentials=credentials)
     return runner
 
 
@@ -248,7 +245,8 @@ def main(argv=None):
     args.scratch.mkdir(parents=True, exist_ok=True)
     args.output.mkdir(parents=True, exist_ok=True)
     replacements = report_module.path_replacements(args.scratch, infra_root)
-    runner = redacting_runner(args.command_timeout, replacements)
+    credentials = report_module.credential_values()
+    runner = redacting_runner(args.command_timeout, replacements, credentials)
     head = git(infra_root, "rev-parse", "HEAD")
     generator_commit = head.stdout.decode("utf-8").strip() if head.returncode == 0 else None
     records = []
@@ -278,8 +276,8 @@ def main(argv=None):
         records, generator_commit, client.name, args.exercise, args.budget_minutes, generated_at,
         api_requests=client.requests, rate_limit_remaining=client.rate_limit_remaining, not_run=not_run,
     )
-    document = report_module.redact(document, replacements)
-    survivors = report_module.redaction_survivors(document, replacements)
+    document = report_module.redact(document, replacements, credentials)
+    survivors = report_module.redaction_survivors(document, replacements, credentials)
     if survivors:
         # Fail closed without echoing what survived: the kinds are named, the text is not written anywhere.
         print(f"Redaction incomplete ({', '.join(survivors)}); nothing written", file=sys.stderr)

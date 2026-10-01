@@ -23,8 +23,9 @@ SECRET_PATTERNS = (
     re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
-# Generated workflows contain exactly these reviewed expressions. Every other
-# `${{` is refused wherever it appears, so whole-context forms such as
+# Generated workflows contain these reviewed expressions; the separate infra
+# Conformance exception binds one exact token leaf, never this global allowlist.
+# Every other `${{` is refused wherever it appears, so whole-context forms such as
 # toJSON(github) or github[format('to{0}', 'ken')] cannot reach the token without
 # naming it, and the key `if` is refused at any nesting level because a condition
 # evaluates expressions without `${{`.
@@ -33,6 +34,7 @@ WORKFLOW_EXPRESSIONS = {
     "${{ github.event.pull_request.number || github.ref }}",
     "${{ github.event.pull_request.base.sha || github.sha }}",
 }
+CONFORMANCE_TOKEN_ENV = {"GH_TOKEN": "${{ github.token }}"}
 # Tripwire behind the allowlist: any form of the secrets context or the workflow
 # token stays refused even if the allowlist above is ever widened by mistake. It
 # runs over the decoded strings because GitHub's expression lexer skips any
@@ -143,17 +145,46 @@ def json_document(content):
     return json.loads(text, object_pairs_hook=unique)
 
 
-def workflow_strings(value):
-    """Yield every key and string of a parsed workflow document at any nesting level."""
+def workflow_string_locations(value, path=()):
+    """Yield paths with every key and string; a key never has its value's leaf path."""
     if isinstance(value, dict):
         for key, item in value.items():
-            yield key
-            yield from workflow_strings(item)
+            yield path + (key, None), key
+            yield from workflow_string_locations(item, path + (key,))
     elif isinstance(value, list):
-        for item in value:
-            yield from workflow_strings(item)
+        for index, item in enumerate(value):
+            yield from workflow_string_locations(item, path + (index,))
     elif isinstance(value, str):
-        yield value
+        yield path, value
+
+
+def workflow_strings(value, token_path=None):
+    """Yield every key and string except a caller-validated, single token value leaf."""
+    for path, text in workflow_string_locations(value):
+        if path != token_path:
+            yield text
+
+
+def conformance_token_path(value):
+    """Return the token leaf only for one plain harness step with its exact, token-only environment."""
+    jobs = value.get("jobs")
+    if not isinstance(jobs, dict) or set(jobs) != {"conformance"}:
+        return None
+    job = jobs["conformance"]
+    if not isinstance(job, dict) or "env" in job:
+        return None
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
+        return None
+    candidates = [(index, step) for index, step in enumerate(steps) if step.get("name") == "Run conformance"]
+    if len(candidates) != 1:
+        return None
+    index, step = candidates[0]
+    if (set(step) != {"name", "run", "env"} or not isinstance(step["run"], str)
+            or step["env"] != CONFORMANCE_TOKEN_ENV
+            or any("env" in other for position, other in enumerate(steps) if position != index)):
+        return None
+    return ("jobs", "conformance", "steps", index, "env", "GH_TOKEN")
 
 
 def workflow_mappings(value):
@@ -167,8 +198,8 @@ def workflow_mappings(value):
             yield from workflow_mappings(item)
 
 
-def validate_expressions(value):
-    for text in workflow_strings(value):
+def validate_expressions(value, token_path=None):
+    for text in workflow_strings(value, token_path):
         start = text.find("${{")
         while start != -1:
             end = text.find("}}", start)
@@ -226,10 +257,11 @@ def validate_workflow(name, data):
         raise Refused("workflow document must be one JSON object")
     if value.get("permissions") != {"contents": "read"}:
         raise Refused("expected read-only workflow token")
-    validate_expressions(value)
-    if any(WORKFLOW_SECRET_ACCESS.search(text) for text in workflow_strings(value)):
-        raise Refused("public candidate jobs must not receive secrets")
     conformance = WORKFLOW_REPOSITORY == "infra" and name == ".github/workflows/conformance.yml"
+    token_path = conformance_token_path(value) if conformance else None
+    validate_expressions(value, token_path)
+    if any(WORKFLOW_SECRET_ACCESS.search(text) for text in workflow_strings(value, token_path)):
+        raise Refused("public candidate jobs must not receive secrets")
     validate_mappings(value, conformance=conformance)
     validate_shape(value)
     events = value.get("on", {})
@@ -272,6 +304,8 @@ def validate_workflow(name, data):
             raise Refused("Keep the Conformance workflow and job names stable")
         if type(job.get("timeout-minutes")) is not int or job["timeout-minutes"] != 60:
             raise Refused("Conformance must keep its bounded 60-minute timeout")
+        if token_path is None:
+            raise Refused("Conformance must keep one authenticated harness step and no other environment")
     else:
         raise Refused("workflow file outside the generated pair or infra-only conformance.yml")
 

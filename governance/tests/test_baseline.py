@@ -164,7 +164,7 @@ class BaselineTests(unittest.TestCase):
                         self.assertEqual("Python", steps[steps.index(node[0]) - 1]["name"])
                     else:
                         self.assertEqual([], node)
-        self.assertEqual({"web", "admin", "contracts"}, {
+        self.assertEqual({"web", "admin", "contracts", "infra"}, {
             repo for repo, profile in generator.PROFILES["repositories"].items() if "node" in profile
         })
 
@@ -211,7 +211,8 @@ class BaselineTests(unittest.TestCase):
         web = generator.artifacts("web")
         self.assertIn("Install Python 3.14, Git, and Node 24.14.0 (see `.nvmrc`), then run:", web["CONTRIBUTING.md"])
         self.assertIn("Install Python 3.14, Git, and JDK 21, then run:", generator.artifacts("api")["CONTRIBUTING.md"])
-        self.assertIn("Install Python 3.14, Git, then run:", generator.artifacts("infra")["CONTRIBUTING.md"])
+        self.assertIn("Install Python 3.14, Git, and Node 24.14.0 (see `.nvmrc`), then run:",
+                      generator.artifacts("infra")["CONTRIBUTING.md"])
         contracts = generator.artifacts("contracts")
         self.assertIn("Install Python 3.14, Git, Node 24.14.0 (see `.nvmrc`), and JDK 21, then run:",
                       contracts["CONTRIBUTING.md"])
