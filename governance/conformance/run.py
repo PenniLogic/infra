@@ -190,13 +190,10 @@ def inspect_repository(name, profile, generator, client, registry_document, scra
     return record
 
 
-def redacting_runner(timeout, replacements, credentials=()):
-    """A probe runner whose output is redacted before the harness keeps its tail, so a local path cut
-    in half by truncation can never survive into the report."""
+def redacting_runner(timeout, replacements, credentials=None):
+    """Supply the report's exact scope to capture-time redaction, before either retained tail."""
     def runner(command, cwd):
-        result = defects.subprocess_runner(command, cwd, timeout)
-        result.output = report_module.redact_text(result.output, replacements, credentials)
-        return result
+        return defects.subprocess_runner(command, cwd, timeout, replacements=replacements, credentials=credentials)
     return runner
 
 

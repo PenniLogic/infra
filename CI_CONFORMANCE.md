@@ -469,6 +469,29 @@ executed output directly, without changing report truncation or refusal semantic
 unit test independently supplies the synthetic installed-gh seam so it tests missing authentication,
 not availability of a CLI it never executes.
 
+### Redaction before the first capture tail
+
+The c9 implementation applied exact-token redaction in `run.redacting_runner()` after
+`defects.subprocess_runner()` had already kept only 3000 characters. Synthetic 3001-character
+normal and timeout output on Windows/POSIX showed a credential suffix surviving when the first
+cut destroyed the full-value/shape prefix. Plain padding initially kept the fragment outside
+the later 400-character tail, but further credential/path-padding compression pulled it into the
+actual JSON sink while the scanner reported zero survivors. This demonstrates a publication
+sanitizer defect with synthetic fragments, not real-token, upload or consumer-environment exposure.
+Original coordinator evidence and new RED output are retained; no exploit-severity judgment is
+claimed by the author.
+
+Capture now applies the shared exact-value, credential-shape and known-path redactor before
+every initial normal/timeout slice, including the Windows unsafe-result branch.
+`run.redacting_runner()` supplies its exact report scope to capture; direct probes use the same
+redactor with their own scope. The first retained result still has at most 3000 characters,
+report probes at most 400, and the report schema/shape is unchanged. No new full-output store,
+weaker final privacy scan, altered Windows lifetime/ownership rules, sandbox or confidentiality
+boundary is claimed. Synthetic cut-boundary tests cover real normal/timeout subprocesses on
+each native platform and preserve the unsafe Windows flag. End-to-end `run.main` tests exercise
+the real report redaction, self-scan and JSON/Markdown writing with opaque/shaped tokens,
+credential/path compression and unsplit controls.
+
 ## Remaining for infra#24
 
 - Reviewed integration and actual hosted verification of the authenticated Python/Node/uv runtime:

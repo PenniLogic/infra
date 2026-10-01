@@ -190,6 +190,21 @@ Every scratch git command and consumer command uses the existing isolated `probe
 without the metadata token or Actions state selectors; real child/descendant tests assert that.
 Exact in-process token values as well as credential shapes are redacted before truncation,
 stdout or report publication, and the final scan refuses a surviving credential.
+The redactor now runs inside capture, before every initial normal/timeout tail on Windows and
+POSIX, not after `Result.output` has already lost a matching prefix. `redacting_runner()` supplies
+the report's exact known-path/token scope; direct probes use the same shared redactor with their
+own default scope. The retained 3000-character result and 400-character report caps and report
+shape remain unchanged. No additional full-output store, altered process ownership or new OS
+sandbox claim is added.
+
+Coordinator-confirmed c9 evidence used synthetic output with a credential crossing the first
+3000-character cut. Initial plain-padding tests showed a suffix in `Result.output` but not the
+later 400-character tail. Further credential/path-padding compression pulled that suffix into
+the JSON sink with zero scanner survivors, demonstrating a publication-sanitizer defect.
+No real credentials, upload or consumer-environment token exposure was demonstrated. The named
+normal/timeout, known-path, credential-shape, unsafe-Windows-result and end-to-end JSON shortening
+regressions include opaque/shaped values and unsplit controls; no exploit-severity judgment is
+claimed here. The original negative evidence remains preserved.
 
 A harness failure also writes `FAILED` instead of immediately failing the run step. Upload therefore
 precedes the final `test ! -f conformance-report/FAILED`, without an `if` key or `if: always()`.
