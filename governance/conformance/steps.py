@@ -4,7 +4,8 @@ Classification is a reviewed table of command patterns, evaluated against the ex
 of ``repository-profiles.json`` (the same lines the generator renders into the ``Run checks`` step).
 A command may carry several categories: ``python scripts/quality.py build`` runs Gradle ``build``,
 which executes the test and spotless tasks, so it is build, test and lint at once. Anything the
-table does not know is ``other`` and never counts as a test.
+table does not know is ``other`` and never counts as a test. Android's CI-only grouped command
+counts as build, test and lint only for the exact canonical invocation, not an alias or shell stub.
 """
 
 import json
@@ -25,6 +26,7 @@ STEP_PATTERNS = (
     (r"^npm test\b", {"test"}),
     (r"\bnpm run smoke\b", {"test"}),
     (r"\bscripts/smoke\.py\b", {"test"}),
+    (r"\Apython scripts/quality_gates\.py ci\Z", {"build", "test", "lint"}),
     (r"\bquality_gates\.py test\b", {"test"}),
     (r"\bquality_gates\.py coverage\b", {"test"}),
     (r"\bquality_gates\.py self-test\b", {"test"}),
