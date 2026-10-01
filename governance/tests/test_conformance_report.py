@@ -386,6 +386,29 @@ class OrchestratorTests(support.ConsumerCase):
         self.assertIsNone(missing["entry"])
         self.assertIn("no check-name registry entry", report.evaluate_repository(passing_record(registry=missing))["failures"])
 
+    def test_optional_native_gate_source_and_actual_producer_fail_closed(self):
+        document = run.registry_module.load_registry()
+        entry = next(item for item in document["entries"] if item["repo"] == "PenniLogic/infra")
+        self.assertIn("pr_gate", entry, "final source binding B is required")
+        ci = support.generator.workflow("infra").encode("utf-8")
+        gate = support.generator.pr_integrity_workflow("infra").encode("utf-8")
+        status = run.registry_status(document, support.GOVERNANCE.parent, "infra", "PenniLogic/infra",
+                                     {"CI", "PR workflow integrity"}, ci, gate)
+        self.assertTrue(status["check_name_produced"])
+        self.assertTrue(status["workflow_ref_renders_current_workflow"])
+        self.assertTrue(status["pr_gate"]["workflow_ref_renders_current_workflow"])
+        for content, produced in ((None, {"CI"}), (b"changed", {"CI", "PR workflow integrity"})):
+            status = run.registry_status(document, support.GOVERNANCE.parent, "infra", "PenniLogic/infra",
+                                         produced, ci, content)
+            self.assertFalse(status["workflow_ref_renders_current_workflow"])
+            self.assertEqual("fail", report.evaluate_repository(passing_record(registry=status))["result"])
+        unavailable = copy.deepcopy(document)
+        next(item for item in unavailable["entries"] if item["repo"] == "PenniLogic/infra")["pr_gate"]["workflow_ref"] = "0" * 40
+        status = run.registry_status(unavailable, support.GOVERNANCE.parent, "infra", "PenniLogic/infra",
+                                     {"CI", "PR workflow integrity"}, ci, gate)
+        self.assertFalse(status["workflow_ref_renders_current_workflow"])
+        self.assertIn("unavailable", status["note"])
+
     def test_redacting_runner_removes_a_path_before_the_harness_truncates_the_output(self):
         """Regression: the 400-character tail kept per probe could start in the middle of a local path,
         leaving its second half in the report; redaction therefore happens before truncation."""

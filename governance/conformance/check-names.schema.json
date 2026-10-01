@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/PenniLogic/infra/governance/conformance/check-names.schema.json",
   "title": "PenniLogic required check-name registry",
-  "description": "One entry per repository of the PenniLogic organization: the native check name its generated CI workflow produces and its branch ruleset requires, the PenniLogic/infra generator commit that rendered the workflow currently on main, and the stack whose build, test and lint the workflow runs. Validated by governance/conformance/registry.py with the standard library only.",
+  "description": "One primary CI entry per repository. Opted-in profiles additionally bind their native PR workflow integrity producer to the immutable generator source. This is data for owner-administered activation, not a permission grant.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "entries"],
@@ -35,6 +35,22 @@
             "type": "string",
             "description": "Full commit SHA of PenniLogic/infra whose generator rendered the workflow currently on the repository's main.",
             "pattern": "[0-9a-f]{40}"
+          },
+          "pr_gate": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["check_name", "workflow_ref"],
+            "properties": {
+              "check_name": {
+                "type": "string",
+                "const": "PR workflow integrity"
+              },
+              "workflow_ref": {
+                "type": "string",
+                "description": "Real source commit rendering the additive native workflow; recorded by a subsequent registry-only commit.",
+                "pattern": "[0-9a-f]{40}"
+              }
+            }
           },
           "language": {
             "type": "string",

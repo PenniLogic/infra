@@ -70,6 +70,21 @@ class ProducedCheckTests(unittest.TestCase):
         self.assertEqual([{"context": "CI", "integration_id": 15368}],
                          github_api.missing_required_checks([{"context": "CI", "integration_id": 15368}], set()))
 
+    def test_actual_adopted_target_gate_counts_but_scheduled_reports_do_not(self):
+        for name in support.generator.PROFILES["repositories"]:
+            files = {path: text.encode("utf-8") for path, text in support.generator.artifacts(name).items()
+                     if path.startswith(".github/workflows/")}
+            with self.subTest(profile=name):
+                expected = {"CI", "PR workflow integrity"} if name == "infra" else {"CI"}
+                self.assertEqual(expected, steps.produced_pr_check_names(files))
+                files.pop(".github/workflows/pr-workflow-integrity.yml", None)
+                self.assertEqual({"CI"}, steps.produced_pr_check_names(files))
+        self.assertEqual(set(), steps.produced_pr_check_names({
+            ".github/workflows/pr-workflow-integrity.yml":
+                b'{"on":{"workflow_dispatch":{}},"jobs":{"g":{"name":"PR workflow integrity"}}}',
+            ".github/workflows/conformance.yml": support.generator.conformance_workflow().encode("utf-8"),
+        }))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -143,6 +143,49 @@ class RegistryTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 128, b"", b"fatal: invalid object name")
         self.assertIsNone(registry.render_workflow_at(support.GOVERNANCE.parent, "0" * 40, "infra", run=run))
 
+    def test_opt_in_gate_binding_is_schema_checked_and_never_added_to_unopted_profiles(self):
+        document = copy.deepcopy(self.document)
+        infra = next(entry for entry in document["entries"] if entry["repo"] == "PenniLogic/infra")
+        infra["pr_gate"] = {"check_name": "PR workflow integrity", "workflow_ref": "a" * 40}
+        self.assertEqual([], registry.validate_registry(document, self.schema))
+        self.assertEqual([], registry.cross_check(document))
+        for key in ("check_name", "workflow_ref"):
+            broken = copy.deepcopy(document)
+            entry = next(entry for entry in broken["entries"] if entry["repo"] == "PenniLogic/infra")
+            del entry["pr_gate"][key]
+            self.assertTrue(registry.validate_registry(broken, self.schema))
+        for value in ({"check_name": "CI", "workflow_ref": "a" * 40},
+                      {"check_name": "PR workflow integrity", "workflow_ref": "short"},
+                      {"check_name": "PR workflow integrity", "workflow_ref": "a" * 40, "token": "denied"}):
+            infra["pr_gate"] = value
+            self.assertTrue(registry.validate_registry(document, self.schema))
+        infra["pr_gate"] = {"check_name": "PR workflow integrity", "workflow_ref": "a" * 40}
+        document["entries"][0]["pr_gate"] = dict(infra["pr_gate"])
+        self.assertTrue(any("has not opted in" in message for message in registry.cross_check(document)))
+        del document["entries"][0]["pr_gate"]
+        del infra["pr_gate"]
+        self.assertTrue(any("needs its source binding" in message for message in registry.cross_check(document)))
+
+    def test_gate_ref_is_a_real_source_commit_containing_its_native_rendering(self):
+        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/infra")
+        self.assertIn("pr_gate", entry, "source A must be followed by a real registry-only binding B")
+        rendered = registry.render_workflow_at(
+            support.GOVERNANCE.parent, entry["pr_gate"]["workflow_ref"], "infra",
+            workflow_file=registry.PR_GATE_WORKFLOW,
+        )
+        self.assertIsNotNone(rendered, "missing source history is a failure, not skipped gate proof")
+        self.assertEqual(support.generator.pr_integrity_workflow("infra").encode("utf-8"), rendered)
+        committed = subprocess.run(
+            ["git", "show", entry["pr_gate"]["workflow_ref"] + ":" + registry.PR_GATE_WORKFLOW],
+            cwd=support.GOVERNANCE.parent, capture_output=True, check=False, timeout=30,
+            env=support.defects.probe_environment(),
+        )
+        self.assertEqual(0, committed.returncode)
+        self.assertEqual(rendered, committed.stdout)
+        self.assertIsNone(registry.render_workflow_at(
+            support.GOVERNANCE.parent, "0" * 40, "infra", workflow_file=registry.PR_GATE_WORKFLOW,
+        ))
+
     def test_cli_reports_validity_and_rejects_a_broken_registry(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

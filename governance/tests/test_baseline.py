@@ -412,7 +412,13 @@ class BaselineTests(unittest.TestCase):
                     for path in root.rglob("*") if path.is_file()
                 }
                 files["migration-source.json"] = b"{}\n"
-                self.assertEqual([], checker.check(files))
+                if generator.profile_for(repo).get("pr_workflow_integrity", False):
+                    self.assertEqual([
+                        "Invalid or unsafe workflow: .github/workflows/pr-workflow-integrity.yml: "
+                        "unreviewed workflow expression; public jobs must not receive secrets",
+                    ], checker.check(files))
+                else:
+                    self.assertEqual([], checker.check(files))
                 generated_checker = load(f"generated_checker_{repo.strip('.')}", root / "scripts/check_repository.py")
                 self.assertEqual([], generated_checker.check(files))
 

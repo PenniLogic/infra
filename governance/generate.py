@@ -1,6 +1,7 @@
 """Generate the small public-repository baseline from one canonical source."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -31,6 +32,8 @@ WORKFLOW_REPOSITORY_LINE = re.compile(r'^WORKFLOW_REPOSITORY = "[^"\n]*"\n', re.
 # installs, so only reviewed telemetry opt-outs are accepted; extend by generator change.
 ENV_KEYS = {"NEXT_TELEMETRY_DISABLED"}
 DEFAULT_TIMEOUT_MINUTES = 10
+PR_GATE_FILE = ".github/workflows/pr-workflow-integrity.yml"
+PR_GATE_NAME = "PR workflow integrity"
 IGNORE = [
     ".env", ".env.*", "!.env.example", "!.env.sample", ".venv/", "__pycache__/", "*.pyc",
     ".gradle/", "build/", "node_modules/", ".next/", "coverage/", ".idea/", ".DS_Store",
@@ -110,6 +113,8 @@ def validate_profile(repo, profile):
     for field in ("purpose", "state"):
         if not _line(profile.get(field)):
             raise ValueError(f"{repo}: {field} must be one printable line without expressions")
+    if "pr_workflow_integrity" in profile and type(profile["pr_workflow_integrity"]) is not bool:
+        raise ValueError(f"{repo}: pr_workflow_integrity must be a boolean")
     for field in ("node", "java", "developer_guide", "gradle_wrapper_jar_sha256"):
         value = profile.get(field)
         if value is not None and not (isinstance(value, str) and PATTERNS[field].fullmatch(value)):
@@ -156,7 +161,7 @@ def action_pins():
     return pins
 
 
-def checker(repo="infra"):
+def checker(repo="infra", integrity=None):
     """Render the checker with the canonical pins and its repository-bound workflow exception.
 
     The block is replaced, not trusted: the consumer checker binds exactly the commits that
@@ -170,12 +175,25 @@ def checker(repo="infra"):
     rendered, count = ACTION_PINS_BLOCK.subn(lambda match: block, template)
     if count != 1:
         raise ValueError("templates/check_repository.py must define WORKFLOW_ACTION_PINS exactly once")
-    profile_for(repo)
+    profile = profile_for(repo)
     rendered, count = WORKFLOW_REPOSITORY_LINE.subn(
         lambda match: f"WORKFLOW_REPOSITORY = {json.dumps(repo)}\n", rendered,
     )
     if count != 1:
         raise ValueError("templates/check_repository.py must define WORKFLOW_REPOSITORY exactly once")
+    if integrity is None:
+        integrity = profile.get("pr_workflow_integrity", False)
+    if integrity:
+        extension = (HERE / "templates/pr_workflow_integrity_checker.py").read_text(encoding="utf-8")
+        if extension.count("__PR_GATE_SHA256__") != 1:
+            raise ValueError("PR workflow integrity checker must have one digest placeholder")
+        digest = hashlib.sha256(pr_integrity_workflow(repo).encode("utf-8")).hexdigest()
+        extension = extension.replace("__PR_GATE_SHA256__", digest)
+        definition, insertion = "def validate_workflow(name, data):\n", "def check(files):\n"
+        if rendered.count(definition) != 1 or rendered.count(insertion) != 1:
+            raise ValueError("PR workflow integrity checker extension needs exact insertion points")
+        rendered = rendered.replace(definition, "def validate_standard_workflow(name, data):\n")
+        rendered = rendered.replace(insertion, extension.rstrip() + "\n\n\n" + insertion)
     return rendered
 
 
@@ -298,6 +316,68 @@ fi"""},
     })
 
 
+def agent_policy(repo):
+    profile = profile_for(repo)
+    return {
+        "version": 1, "repository": f"PenniLogic/{repo}", "repository_id": profile["id"],
+        "required_native_check": "CI", "review_roles": ROLES,
+        "commands": profile["commands"],
+        "review_floor": ["core"], "behavior_changes_add": ["qa"],
+        "review_identity": "Separate non-author AI sessions; one GitHub user, not two-human approval.",
+        "github_approving_review_count": 0, "mandatory_commit_signatures": False,
+        "no_bypass": True,
+    }
+
+
+def pr_integrity_contract(repo):
+    profile = profile_for(repo)
+    if (type(profile["id"]) is not int or not 0 < profile["id"] < 2**63
+            or type(PROFILES["organization_id"]) is not int or not 0 < PROFILES["organization_id"] < 2**63):
+        raise ValueError("PR workflow integrity needs numeric repository and organization identities")
+    if PROFILES["organization"] != "PenniLogic" or PROFILES["runner"] != "ubuntu-24.04":
+        raise ValueError("PR workflow integrity requires the canonical public organization and hosted runner")
+    files = {
+        ".github/workflows/ci.yml": workflow(repo),
+        ".github/workflows/copilot-setup-steps.yml": workflow(repo, setup=True),
+        ".github/agent-policy.json": encoded(agent_policy(repo)),
+    }
+    if repo == "infra":
+        files[".github/workflows/conformance.yml"] = conformance_workflow()
+    return {
+        "repository": f"{PROFILES['organization']}/{repo}", "repository_id": profile["id"],
+        "organization": PROFILES["organization"], "organization_id": PROFILES["organization_id"],
+        "files": {path: hashlib.sha256(content.encode("utf-8")).hexdigest() for path, content in files.items()},
+    }
+
+
+def pr_integrity_program(repo):
+    template = (HERE / "templates/pr_workflow_integrity.py").read_text(encoding="utf-8")
+    marker = "CONTRACT = None\n"
+    if template.count(marker) != 1 or "\nPY\n" in template:
+        raise ValueError("PR workflow integrity program needs one safe contract insertion point")
+    contract = json.dumps(pr_integrity_contract(repo), sort_keys=True, separators=(",", ":"))
+    return template.replace(marker, f"CONTRACT = json.loads({contract!r})\n")
+
+
+def pr_integrity_workflow(repo):
+    return encoded({
+        "name": PR_GATE_NAME,
+        "on": {"pull_request_target": {"branches": ["main"],
+                                      "types": ["opened", "synchronize", "reopened", "ready_for_review", "edited"]}},
+        "permissions": {"contents": "read"},
+        "concurrency": {
+            "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
+            "cancel-in-progress": True,
+        },
+        "jobs": {"pr-workflow-integrity": {
+            "name": PR_GATE_NAME, "runs-on": PROFILES["runner"], "timeout-minutes": 5,
+            "steps": [{"name": "Validate candidate workflow bindings",
+                       "env": {"GH_TOKEN": "${{ github.token }}"},
+                       "run": "python3 -I -S - <<'PY'\n" + pr_integrity_program(repo) + "\nPY"}],
+        }},
+    })
+
+
 def toolchain(profile):
     tools = [f"Python {PROFILES['python']}", "Git"]
     if "node" in profile:
@@ -331,15 +411,7 @@ def artifacts(repo):
         if repo == "infra" else
         "No release publishing, artifact upload or cache allowance increase is configured."
     )
-    policy = {
-        "version": 1, "repository": f"PenniLogic/{repo}", "repository_id": profile["id"],
-        "required_native_check": "CI", "review_roles": ROLES,
-        "commands": profile["commands"],
-        "review_floor": ["core"], "behavior_changes_add": ["qa"],
-        "review_identity": "Separate non-author AI sessions; one GitHub user, not two-human approval.",
-        "github_approving_review_count": 0, "mandatory_commit_signatures": False,
-        "no_bypass": True,
-    }
+    policy = agent_policy(repo)
     output = {
         ".gitignore": "\n".join(IGNORE + profile.get("ignore", [])) + "\n",
         "AGENTS.md": HEADER + f"""# PenniLogic/{repo}
@@ -581,6 +653,8 @@ alone is not a license grant. Existing source notices are preserved.
     if repo == "infra":
         output[".nvmrc"] = profile["node"] + "\n"
         output[".github/workflows/conformance.yml"] = conformance_workflow()
+    if profile.get("pr_workflow_integrity", False):
+        output[PR_GATE_FILE] = pr_integrity_workflow(repo)
     return output
 
 

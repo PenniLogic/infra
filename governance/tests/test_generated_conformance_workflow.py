@@ -17,6 +17,7 @@ HERE = Path(__file__).resolve().parents[1]
 CI = ".github/workflows/ci.yml"
 SETUP = ".github/workflows/copilot-setup-steps.yml"
 CONFORMANCE = ".github/workflows/conformance.yml"
+PR_GATE = ".github/workflows/pr-workflow-integrity.yml"
 UPLOAD_PIN = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 RUN = """mkdir -p conformance-report
 if [ "$GITHUB_REF" != "refs/heads/main" ] || [ "$GITHUB_REF_PROTECTED" != "true" ]; then
@@ -66,8 +67,8 @@ class GeneratedConformanceTests(unittest.TestCase):
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 output = generator.artifacts(repo)
-                self.assertEqual(22 if repo == "infra" else 20, len(output))
-                self.assertEqual({CI, SETUP, CONFORMANCE} if repo == "infra" else {CI, SETUP},
+                self.assertEqual(23 if repo == "infra" else 20, len(output))
+                self.assertEqual({CI, SETUP, CONFORMANCE, PR_GATE} if repo == "infra" else {CI, SETUP},
                                  {name for name in output if name.startswith(".github/workflows/")})
 
     def test_workflow_matches_the_preserved_request_and_explicit_safety_additions(self):
@@ -104,11 +105,11 @@ class GeneratedConformanceTests(unittest.TestCase):
         for stale in (template.replace(line, 'WORKFLOW_REPOSITORY = "web"\n'),
                       template.replace(line, 'WORKFLOW_REPOSITORY = ""\n')):
             with mock.patch.object(generator.Path, "read_text", return_value=stale):
-                self.assertEqual(template, generator.checker("infra"))
+                self.assertEqual(template, generator.checker("infra", integrity=False))
         for invalid in (template.replace(line, ""), template.replace(line, line + line)):
             with mock.patch.object(generator.Path, "read_text", return_value=invalid):
                 with self.assertRaisesRegex(ValueError, "WORKFLOW_REPOSITORY exactly once"):
-                    generator.checker("infra")
+                    generator.checker("infra", integrity=False)
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 checker = rendered_checker(repo)
