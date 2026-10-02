@@ -223,9 +223,33 @@ class RuntimeRenderingTests(unittest.TestCase):
                 if name == "infra":
                     continue
                 with self.subTest(profile=name):
+                    previous_profile = copy.deepcopy(profiles["repositories"][name])
+                    previous_commands = [
+                        "python scripts/check_repository.py",
+                        "python scripts/quality_gates.py build",
+                        "python scripts/quality_gates.py test",
+                        "python scripts/quality_gates.py lint",
+                        "python scripts/quality_gates.py coverage",
+                        "python scripts/quality_gates.py self-test",
+                        'python -m unittest discover -s scripts/tests -p "test_*.py"',
+                    ]
+                    if name == "android":
+                        self.assertEqual(previous_commands, previous_profile["commands"])
+                        previous_profile["commands"] = [
+                            previous_commands[0], "python scripts/quality_gates.py ci", *previous_commands[-2:],
+                        ]
                     for setup in (False, True):
-                        self.assertEqual(old.workflow(name, setup=setup), support.generator.workflow(name, setup=setup))
-                    self.assertEqual(profiles["repositories"][name], support.generator.PROFILES["repositories"][name])
+                        expected = old.workflow(name, setup=setup)
+                        if name == "android" and not setup:
+                            run_checks = next(step for step in json.loads(expected)["jobs"]["ci"]["steps"]
+                                              if step["name"] == "Run checks")
+                            self.assertEqual(previous_commands, run_checks["run"].split("\n"))
+                            standalone = r"\n".join(previous_commands[1:5])
+                            self.assertEqual(1, expected.count(standalone))
+                            expected = expected.replace(standalone, "python scripts/quality_gates.py ci", 1)
+                        self.assertEqual(expected.encode("utf-8"),
+                                         support.generator.workflow(name, setup=setup).encode("utf-8"))
+                    self.assertEqual(previous_profile, support.generator.PROFILES["repositories"][name])
         self.assertEqual("python", registry.expected_language("infra", support.generator.profile_for("infra")))
 
 
