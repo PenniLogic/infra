@@ -30,6 +30,8 @@ REGISTRY_PATH = HERE / "check-names.json"
 SCHEMA_PATH = HERE / "check-names.schema.json"
 REGISTRY_SCHEMA_ID = "pennilogic.infra.check-names/1"
 REQUIRED_FIELDS = ("repo", "check_name", "workflow_ref", "language")
+CI_WORKFLOW = ".github/workflows/ci.yml"
+PR_GATE_WORKFLOW = ".github/workflows/pr-workflow-integrity.yml"
 # Primary native-CI stacks not inferred from every declared report toolchain.
 LANGUAGE_OVERRIDES = {"docs": "documentation", "contracts": "openapi", "infra": "python"}
 
@@ -125,10 +127,20 @@ def cross_check(document, generator=None):
             errors.append(f"/entries/{index}/check_name: differs from the policy's required native check")
         if entry["language"] != expected_language(name, profile):
             errors.append(f"/entries/{index}/language: expected {expected_language(name, profile)} for profile {name}")
+        gate = entry.get("pr_gate")
+        if profile.get("pr_workflow_integrity", False):
+            if gate is None:
+                errors.append(f"/entries/{index}/pr_gate: opted-in profile needs its source binding")
+            else:
+                produced_gate = steps.produced_check_names(artifacts[PR_GATE_WORKFLOW].encode("utf-8"))
+                if gate["check_name"] not in produced_gate or gate["check_name"] != generator.PR_GATE_NAME:
+                    errors.append(f"/entries/{index}/pr_gate/check_name: not the native PR gate producer")
+        elif gate is not None:
+            errors.append(f"/entries/{index}/pr_gate: profile has not opted in")
     return errors
 
 
-def render_workflow_at(infra_root, ref, name, run=subprocess.run):
+def render_workflow_at(infra_root, ref, name, run=subprocess.run, workflow_file=CI_WORKFLOW):
     """Render ``.github/workflows/ci.yml`` for profile ``name`` with the generator as of commit ``ref``.
 
     Reads ``generate.py`` and ``repository-profiles.json`` from Git history (no checkout) into a
@@ -139,6 +151,8 @@ def render_workflow_at(infra_root, ref, name, run=subprocess.run):
         result = run(["git", "-C", str(infra_root), "show", f"{ref}:{path}"], capture_output=True, check=False,
                      env=defects.probe_environment(), timeout=60)
         return None if result.returncode else result.stdout
+    if workflow_file not in (CI_WORKFLOW, PR_GATE_WORKFLOW):
+        raise RegistryError("historical rendering supports only the two native PR producers")
     source = show("governance/generate.py")
     profiles = show("governance/repository-profiles.json")
     if source is None or profiles is None:
@@ -147,9 +161,23 @@ def render_workflow_at(infra_root, ref, name, run=subprocess.run):
         root = Path(scratch)
         (root / "generate.py").write_bytes(source)
         (root / "repository-profiles.json").write_bytes(profiles)
+        if workflow_file == PR_GATE_WORKFLOW:
+            template = show("governance/templates/pr_workflow_integrity.py")
+            if template is None:
+                return None
+            (root / "templates").mkdir()
+            (root / "templates" / "pr_workflow_integrity.py").write_bytes(template)
         historical = generator_module.load(root / "generate.py", name=f"generator_at_{ref}")
         if name not in historical.PROFILES["repositories"]:
             return None
+        if workflow_file == PR_GATE_WORKFLOW:
+            if not hasattr(historical, "pr_integrity_workflow"):
+                return None
+            rendered = historical.pr_integrity_workflow(name).encode("utf-8")
+            committed = show(workflow_file)
+            if committed != rendered:
+                raise RegistryError("PR gate source commit does not contain its rendered native workflow")
+            return rendered
         return historical.workflow(name).encode("utf-8")
 
 

@@ -110,7 +110,7 @@ def required_checks(client, full_name, produced):
     }
 
 
-def registry_status(document, infra_root, name, full_name, produced, workflow_bytes):
+def registry_status(document, infra_root, name, full_name, produced, workflow_bytes, gate_bytes=None):
     entry = next((item for item in document["entries"] if item["repo"] == full_name), None)
     status = {"entry": entry, "check_name_produced": None, "workflow_ref_renders_current_workflow": None}
     if entry is None:
@@ -126,6 +126,23 @@ def registry_status(document, infra_root, name, full_name, produced, workflow_by
         status["note"] = "workflow_ref is not in the local infra history (shallow clone) or predates the profile"
     else:
         status["workflow_ref_renders_current_workflow"] = rendered == workflow_bytes
+    gate = entry.get("pr_gate")
+    if gate is not None:
+        binding = {"check_name_produced": gate["check_name"] in produced,
+                   "workflow_ref_renders_current_workflow": False}
+        status["pr_gate"] = binding
+        status["check_name_produced"] = status["check_name_produced"] and binding["check_name_produced"]
+        if gate_bytes is not None:
+            try:
+                rendered_gate = registry_module.render_workflow_at(
+                    infra_root, gate["workflow_ref"], name, workflow_file=registry_module.PR_GATE_WORKFLOW,
+                )
+            except registry_module.RegistryError:
+                rendered_gate = None
+            binding["workflow_ref_renders_current_workflow"] = rendered_gate is not None and rendered_gate == gate_bytes
+        if not binding["workflow_ref_renders_current_workflow"]:
+            status["workflow_ref_renders_current_workflow"] = False
+            status["note"] = "native PR gate source binding missing, unavailable or different"
     return status
 
 
@@ -162,10 +179,14 @@ def inspect_repository(name, profile, generator, client, registry_document, scra
     record["reused_existing_clone"] = reused
     record["main_sha"] = main_sha
     record["clone_error"] = clone_error
-    workflow_on_main = None
+    workflow_on_main, gate_on_main = None, None
     if root is not None and clone_error is None:
         workflow_path = root / ".github/workflows/ci.yml"
         workflow_on_main = workflow_path.read_bytes() if workflow_path.is_file() else b"{}"
+        if profile.get("pr_workflow_integrity", False):
+            gate_path = root / registry_module.PR_GATE_WORKFLOW
+            if gate_path.is_file() and not gate_path.is_symlink():
+                gate_on_main = gate_path.read_bytes()
         record["generated_baseline"] = generated_baseline(generator, name, root, infra_root, runner)
         check = runner([sys.executable, "scripts/check_repository.py"], root)
         record["repository_check"] = {"command": "python scripts/check_repository.py",
@@ -175,11 +196,15 @@ def inspect_repository(name, profile, generator, client, registry_document, scra
         record["language_coverage"] = defects.language_coverage(record["planted_defects"])
     try:
         # Without a checkout the required-check comparison uses the rendering; the row fails on clone_error anyway.
-        produced = steps.produced_check_names(workflow_on_main if workflow_on_main is not None else rendered_workflow)
+        workflows = {registry_module.CI_WORKFLOW: workflow_on_main if workflow_on_main is not None else rendered_workflow}
+        if gate_on_main is not None:
+            workflows[registry_module.PR_GATE_WORKFLOW] = gate_on_main
+        produced = steps.produced_pr_check_names(workflows)
     except (ValueError, UnicodeDecodeError):
         produced = set()
     record["produced_check_names"] = sorted(produced)
-    record["registry"] = registry_status(registry_document, infra_root, name, full_name, produced, workflow_on_main)
+    record["registry"] = registry_status(registry_document, infra_root, name, full_name, produced,
+                                         workflow_on_main, gate_on_main)
     if record["api_error"] is None:
         try:
             record["required_checks"] = required_checks(client, full_name, produced)

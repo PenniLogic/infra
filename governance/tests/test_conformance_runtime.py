@@ -178,7 +178,7 @@ class RuntimeRenderingTests(unittest.TestCase):
         for name in support.generator.PROFILES["repositories"]:
             with self.subTest(profile=name):
                 self.assertEqual(name == "infra", ".nvmrc" in support.generator.artifacts(name))
-                self.assertEqual(22 if name == "infra" else 20, len(support.generator.artifacts(name)))
+                self.assertEqual(23 if name == "infra" else 20, len(support.generator.artifacts(name)))
 
     def test_node_and_verified_uv_install_precede_the_authenticated_three_toolchain_run(self):
         value = document()

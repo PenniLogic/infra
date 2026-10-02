@@ -377,7 +377,10 @@ class FileRuleTests(unittest.TestCase):
                 validate(ci, CI)
                 validate(setup, SETUP)
                 names = sorted(name for name in generator.artifacts(repo) if name.startswith(".github/workflows/"))
-                self.assertEqual([CI, ".github/workflows/conformance.yml", SETUP] if repo == "infra" else [CI, SETUP], names)
+                self.assertEqual([
+                    CI, ".github/workflows/conformance.yml", SETUP,
+                    ".github/workflows/pr-workflow-integrity.yml",
+                ] if repo == "infra" else [CI, SETUP], names)
 
     def test_ci_with_a_job_set_other_than_ci_is_refused_for_every_profile(self):
         plain = {"name": "Extra", "runs-on": "ubuntu-24.04", "timeout-minutes": 10,

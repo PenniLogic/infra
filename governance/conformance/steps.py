@@ -97,6 +97,21 @@ def produced_check_names(workflow_bytes):
     return names
 
 
+def produced_pr_check_names(workflows):
+    """Only the CI and opted-in target-event file produce eligible native PR checks."""
+    produced = set()
+    for path, event in ((".github/workflows/ci.yml", "pull_request"),
+                        (".github/workflows/pr-workflow-integrity.yml", "pull_request_target")):
+        content = workflows.get(path)
+        if content is None:
+            continue
+        document = json.loads(content.decode("utf-8"))
+        events = document.get("on") if isinstance(document, dict) else None
+        if isinstance(events, dict) and event in events:
+            produced |= produced_check_names(content)
+    return produced
+
+
 def workflow_run_commands(workflow_bytes, step_name="Run checks"):
     """The command lines of the named run step (the generator joins profile commands with newlines)."""
     document = json.loads(workflow_bytes.decode("utf-8"))

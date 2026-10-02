@@ -250,7 +250,7 @@ def validate_shape(value):
                 raise Refused("step-level key outside the generated step keys name, uses, with, run, env")
 
 
-def validate_workflow(name, data):
+def validate_standard_workflow(name, data):
     # Generated workflow files use JSON syntax, which is valid YAML.
     value = json_document(data)
     if not isinstance(value, dict):
@@ -308,6 +308,22 @@ def validate_workflow(name, data):
             raise Refused("Conformance must keep one authenticated harness step and no other environment")
     else:
         raise Refused("workflow file outside the generated pair or infra-only conformance.yml")
+
+
+import hashlib
+
+
+PR_GATE_FILE = ".github/workflows/pr-workflow-integrity.yml"
+PR_GATE_SHA256 = "6fc63acc21e26d23ac08bf5a52b37cb9950f04b5fe4a868e2d2ab9361dd60981"
+REQUIRED += (PR_GATE_FILE,)
+
+
+def validate_workflow(name, data):
+    if name == PR_GATE_FILE:
+        if hashlib.sha256(data).hexdigest() != PR_GATE_SHA256:
+            raise Refused("PR workflow integrity must match its generated data-only workflow")
+    else:
+        validate_standard_workflow(name, data)
 
 
 def check(files):

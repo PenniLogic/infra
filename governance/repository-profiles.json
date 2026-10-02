@@ -137,6 +137,7 @@
     },
     "infra": {
       "id": 1394135059,
+      "pr_workflow_integrity": true,
       "purpose": "Local development infrastructure and canonical repository setup",
       "state": "Development-only Compose and public repository automation; no production deployment.",
       "node": "24.14.0",

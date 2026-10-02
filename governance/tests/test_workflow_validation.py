@@ -587,11 +587,9 @@ class ActionPinTests(unittest.TestCase):
 
     def test_rendered_checker_carries_the_generated_pins_and_refuses_the_same_negatives(self):
         template = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
-        rendered_texts = set()
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 text = generator.artifacts(repo)["scripts/check_repository.py"]
-                rendered_texts.add(text)
                 rendered = load_text(f"rendered_checker_{repo.strip('.')}", text)
                 self.assertEqual(repo, rendered.WORKFLOW_REPOSITORY)
                 self.assertEqual(PINS, rendered.WORKFLOW_ACTION_PINS)
@@ -606,17 +604,18 @@ class ActionPinTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
                         rendered.validate_workflow(name, json.dumps(document).encode())
                 self.assertEqual([], rendered.check(complete_repository(repo)))
-        # Only the repository-bound workflow exception differs between consumers.
+        # Normalize the common layer; opted-in extensions have their own exact-byte tests.
         self.assertEqual({template}, {
-            generator.WORKFLOW_REPOSITORY_LINE.sub('WORKFLOW_REPOSITORY = "infra"\n', text)
-            for text in rendered_texts
+            generator.WORKFLOW_REPOSITORY_LINE.sub('WORKFLOW_REPOSITORY = "infra"\n',
+                                                   generator.checker(repo, integrity=False))
+            for repo in generator.PROFILES["repositories"]
         })
 
     def test_template_mirrors_the_block_the_generator_renders(self):
         # The template carries the current pins so it can be imported and tested unrendered; the
         # rendered copy must be byte-identical, so a pin bump that forgets the template fails here.
         template = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
-        self.assertEqual(template, generator.checker())
+        self.assertEqual(template, generator.checker(integrity=False))
         block = generator.ACTION_PINS_BLOCK.findall(template)
         self.assertEqual(1, len(block))
         expected = "WORKFLOW_ACTION_PINS = {\n" + "".join(
@@ -638,14 +637,14 @@ class ActionPinTests(unittest.TestCase):
         for variant in (stale, emptied, reordered):
             self.assertNotEqual(template, variant)
             with mock.patch.object(generator.Path, "read_text", lambda self, encoding=None: variant):
-                self.assertEqual(template, generator.checker())
+                self.assertEqual(template, generator.checker(integrity=False))
         # A template that lost the block, or defines it twice, is refused rather than copied.
         for variant in (template.replace(block, ""), template.replace(block, block + block),
                         template.replace(block, block.replace("WORKFLOW_ACTION_PINS", "PINS")),
                         template.replace(block, block.replace('    "actions/checkout"', '  "actions/checkout"'))):
             with mock.patch.object(generator.Path, "read_text", lambda self, encoding=None: variant):
                 with self.assertRaisesRegex(ValueError, "WORKFLOW_ACTION_PINS exactly once"):
-                    generator.checker()
+                    generator.checker(integrity=False)
 
     def test_a_pin_bump_changes_the_workflows_and_the_checker_in_one_regeneration(self):
         new = "f" * 40
@@ -677,7 +676,7 @@ class ActionPinTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 with mock.patch.dict(generator.PROFILES["actions"], {"checkout": bad}):
                     with self.assertRaisesRegex(ValueError, "actions.checkout must be a lowercase 40-hex commit"):
-                        generator.checker()
+                        generator.checker(integrity=False)
                     with self.assertRaisesRegex(ValueError, "lowercase 40-hex commit"):
                         generator.artifacts("web")
                     with tempfile.TemporaryDirectory() as tmp:

@@ -297,6 +297,142 @@ adoption, Android also regenerates from the prior accepted workflow source
 the self-test and script tests. No consumer adoption, dispatch, ruleset mutation or trusted gate
 deployment is automatic.
 
+## Infra-only trusted PR command-binding bootstrap
+
+This is bounded preparation for [#24](https://github.com/PenniLogic/infra/issues/24) and
+[#22](https://github.com/PenniLogic/infra/issues/22), not closure or activation.
+The exact gap is preserved: accepted consumer checkers accept removed/echo-stubbed
+Run checks commands while external generation refuses them. Scheduled Conformance
+inspects main after merge and is not a candidate-PR guard. Another assertion in the
+candidate's own CI would be removable with its checker step.
+
+The canonical source now adds an **opt-in, base-trusted** native workflow. Only Infra
+opts in; all 160 artifacts of the eight unopted profiles, eighteen existing CI/setup
+workflows and Conformance remain byte-identical to accepted source
+`f3331d5bc24556d11b9f3ad0b517db37e9caac9d`. Infra has one new workflow and a generated
+checker extension. No stack commands, Android SDK/quality gates, paid service, reviewer
+mechanism, ruleset, secret or deployment changes are part of this unit.
+
+The authorized current-base integration is a normal two-parent merge of that accepted
+Android-caller source into the frozen gate branch, not a rebase or replacement of either
+history. Android's exact four-line grouped caller, literal seven-to-four historical
+runtime expectation and primary CI source `2832988d641137b65d32e4f51491157e9e09be4f`
+are preserved, as are every other accepted primary CI reference. Earlier gate source
+and binding commits, original failures and frozen-head evidence remain historical;
+they are not current-base results. Regeneration uses the merged canonical generator,
+then a registry-only commit binds the optional Infra gate to the real merged source.
+This compatibility step neither accepts consumer adoption nor activates the gate.
+
+### Trust boundary and output
+
+`.github/workflows/pr-workflow-integrity.yml` has exactly one job named
+**PR workflow integrity**, distinct from CI. `pull_request_target` runs its workflow
+from protected default main; it filters only main and opened/synchronize/reopened/
+ready_for_review/edited events, with no paths, conditional, dispatch, default input
+or reusable job. It performs no checkout or actions. `python3 -I -S` runs its embedded
+trusted stdlib program and profile-rendered expectations with exactly `contents: read`
+and one `Validate candidate workflow bindings.env.GH_TOKEN = ${{ github.token }}` leaf.
+No candidate program is imported, interpolated, evaluated, installed or executed.
+
+Native runtime/source/host/ref and positive numeric identities are validated first.
+Repository ID and organization ID are verified before candidate Git-object reads.
+PR event/live base/head identities must agree; fork contents are data, not authority.
+Fixed HTTPS API GET endpoints, no redirects/proxy selection, immutable SHA/tree/blob
+checks, strict JSON, regular-file modes and bounded inventories prevent candidate
+URLs, encoded paths, symlinks, unknown workflows or metadata defaults from selecting
+code or credentials. Current head/base is checked again at the end.
+
+CI/setup/policy bytes are bound to their canonical rendering, including the complete
+Run checks program. The checker and validator workflow must equal protected-base blobs;
+their candidate removal/stubbing cannot omit the base-sourced validation. Infra's
+identity/command/toolchain/pin/opt-in source-profile fields are compared as data,
+without freezing unrelated purpose/state prose. Changing a trusted command/checker/
+validator contract intentionally fails and needs a separately reviewed owner maintenance
+transition, not candidate approval of its own replacement.
+
+The job timeout is five minutes; local checks enforce a 180-second deadline, 32 GETs,
+ten-second socket/request timeouts and one-MiB responses. The native job is the outer
+bound for platform blocking behavior; no stronger DNS/process/OS isolation is claimed.
+Missing Python/token, malformed/unreadable metadata, stale identities or exceeded
+limits fail explicitly. The only input file is the runner-owned event JSON.
+
+JSON schema `pennilogic.infra.pr-workflow-integrity/1` reports canonical repository/check,
+expected/verified identity, validated PR/base/head/source SHAs, fixed-path binding
+outcomes, static violation codes, observed required-context activation, request count,
+elapsed seconds and result. Exit 0 means pass, 1 binding failure, 2 startup/metadata error.
+A refusal before loading the trusted contract uses a minimal static error envelope.
+No candidate commands/names/prose, API exception bodies, host paths or credentials
+are printed, uploaded or executed. Scheduled report schema `/1` and retention are unchanged.
+
+### Source and local evidence
+
+The primary CI registry/ref is unchanged. Only the opted-in Infra entry gains
+`pr_gate: {check_name: "PR workflow integrity", workflow_ref: <real source A>}`.
+Actual source A contains its renderer, program and generated native bytes; later
+registry-only B records A's full SHA. Historical rendering reads A's trusted template
+and verifies the committed workflow too. No self/placeholder SHA or fake check publisher
+is involved. A missing/unavailable/different new gate binding is a failing scheduled row,
+not a skipped source proof; undeployed consumers do not acquire new drift expectations.
+
+The focused test command is
+`python -m unittest discover -s governance/tests -p "test*pr_workflow_integrity*.py"`.
+Its all-nine clean/negative controls bind every required build/test/lint/checker command,
+whole Run checks omission, masking/reordering, names/filters/skips/continue-on-error,
+pins/env/runner changes, forged policy/profile identity, combined checker+step removal,
+validator deletion/stubbing and duplicate-context workflow data. Typed denied/mismatched/
+missing identity, host/path/redirect, token/tooling, Git blob/tree, deadline/size/request
+and stale-revision cases must fail without candidate/credential echo.
+
+Actual isolated Python CLI and emitted Bash-step executions run the real validator
+against finite owned Git-shaped metadata fixtures. Only the fixture driver's HTTP
+transport is replaced; the production validator has no fixture mode. This is not
+native CheckRun/protection evidence. Root's separate immutable-65 five-toolchain report
+(75 proved fixtures, one recorded docs-body-link observation, one Android consumer
+evidence result and 139 probes) stays separately attributed. Its history warning and
+separate renderer proof are not rewritten or rerun by this author.
+
+### Reviewed activation request, native proof and rollback
+
+The current protection still requires **CI/App 15368 only**. Code/registry presence is
+preparation, not an automatic merge block. The proposed owner-only change is to add
+`{"context": "PR workflow integrity", "integration_id": 15368}` beside CI, preserving
+strict current-base, PR-only/resolved-thread/linear/no-force/no-delete rules, zero
+human-approval count and empty bypass. An agent never applies this request.
+
+Root separately arranges non-author Core/Security/QA and actual affected-risk review,
+protected bootstrap integration, and a safe native qualification unit. That unit must
+verify actual automatic read-only job-token endpoints, base-sourced workflow execution,
+PR-head check/job identity, clean baselines, actual negative native failures and ordinary
+protected refusal, plus strictly under-600-second job/combined-PR timing. Consumer adoption
+and each owner's activation are separate. The historical 650-second Android PR task is
+not cleared by newer 579-second main observation or this metadata job.
+
+Required context plus Actions App ID is not workflow identity. Duplicate/late same-App
+green and skipped-job cases need actual platform evidence; Free-plan workflow-name
+binding is not assumed to prevent spoofing. GitHub's
+[target-event documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target)
+also warns that SHA-like head branch names may prevent this event from triggering.
+Required checks may accept success/skipped/neutral, and names/App identity do not select
+the trusted workflow. The qualification matrix must therefore combine a suppressed/
+SHA-looking head branch, **missing trusted job**, and a candidate-authored same-App green
+integrity context, not just a collision where both jobs execute. The validator cannot
+refuse when it is not invoked; a local CLI refusal is no substitute. If that missing-
+producer/green-context state appears clean, no automatic-blocking claim is allowed.
+No replacement trigger, App key, paid workflow rule or settings grant is authorized to
+hide the limitation. **Never send a merge PUT or other merge
+request for unsafe/ambiguous negative content. Unexpected clean mergeability alone
+is a stop, not permission to land a bad candidate and repair it.** Root decides a
+separately reviewed safe qualification method. If a candidate green can supersede the
+trusted failure, retain that limitation and stop; do not add custom publishers, broaden
+grants, purchase a plan, or claim automatic blocking from mocks.
+
+Rollback after activation first needs the owner's reviewed removal of only the new
+context requirement, preserving CI and every existing safeguard, then an ordinary
+reviewed source revert/regeneration and explicit removal of the additive workflow.
+Keep negative evidence and history; no force/delete, fabricated green, bypass or
+unreviewed maintenance transition. Before activation the same revert is preparation
+rollback, not proof that a required gate was safely disabled.
+
 ## Onboarding a new repository
 
 A repository adopts the baseline by adding a generator profile, never by copying steps:
