@@ -239,11 +239,63 @@ profile toolchain. The tests reject an entry missing any required field, an unkn
 renders the current workflow from Git history; the job verifies the same against each consumer's `main`.
 
 Update the registry in the same PR as a profile change that alters a workflow: set `workflow_ref` to the
-merged generator commit the consumer regenerates from (the eight consumers record
-`4e6e749fd849ae58f2b13c21215022c1bc410b9f`, the last commit that changed their rendered `ci.yml`; infra
-records the full source commit that renders its current `ci.yml`. When source changes that workflow,
+generator source commit the consumer regenerates from (unchanged consumer workflows retain
+`4e6e749fd849ae58f2b13c21215022c1bc410b9f`; infra and Android's grouped caller record the full source
+commits that render their respective `ci.yml`). When source changes that workflow,
 an ordinary source commit is followed by a registry-only binding commit pointing to the source commit;
-never try to embed a commit's own unknown SHA in its contents).
+never try to embed a commit's own unknown SHA in its contents.
+
+### Android grouped caller: source preparation, not adoption
+
+This bounded continuation of [#22](https://github.com/PenniLogic/infra/issues/22) and
+[#24](https://github.com/PenniLogic/infra/issues/24) changes only Android's canonical command list:
+
+```text
+python scripts/check_repository.py
+python scripts/quality_gates.py ci
+python scripts/quality_gates.py self-test
+python -m unittest discover -s scripts/tests -p "test_*.py"
+```
+
+The checker remains first. The single `ci` invocation replaces the four standalone `build`, `test`,
+`lint` and `coverage` invocations; the self-test and full script-test command are unchanged.
+`ci` is an intentional CI-only provider contract: one captured Gradle graph covering full debug and
+release checks, with fresh producer/session/hash-bound reports. Standalone gates, `all` and the
+five-probe self-test keep their existing provider-owned behavior. Coverage counters do not imply
+a threshold verifier; this caller adds no coverage floor or hardware acceptance.
+
+Only the exact `python scripts/quality_gates.py ci` line is classified as build, test and lint.
+Echoes, stubs, suffixes and unknown aliases do not qualify. These are three categories of one
+command, not four separately measured duration rows. The independent defect adapter still selects
+`python scripts/quality_gates.py self-test`: success is `consumer_evidence`, never an externally
+planted proof, and a failing self-test is still `not_proved`.
+
+The accepted renderer changes five Android artifacts: `AGENTS.md`, `.github/agent-policy.json`,
+`.github/workflows/ci.yml`, `CONTRIBUTING.md` and `README.md`. The app's manual scripts remain
+byte-identical, as do the other 177 generated artifacts (including all 22 infra outputs) and the
+other 17 native CI/setup workflows. The generator algorithm, common checker rules, action pins,
+events, permissions, secret channels, toolchains, SDK/cache settings and timing/report contracts
+are unchanged. Consumer files are regenerated in the consumer's own reviewed PR, not committed here.
+
+Commit source A first, then bind only Android's `workflow_ref` in registry-only commit B to the full,
+actual A that renders this workflow. Do not bind B to itself, guess a SHA, skip the prebinding RED
+or manufacture a Git object. The other eight registry entries stay unchanged, including infra's
+`d62cbdfbc9c84202e48da5013b272a966180e301`. A source binding is not evidence that Android `main`
+adopted it; before regeneration, the conformance drift check must still report the old caller.
+
+Adoption and integration remain held until the Android provider is accepted at an owner-supplied
+main pin and the actual regenerated native CI is accepted. Unaccepted
+[PenniLogic/android#77](https://github.com/PenniLogic/android/pull/77) must not be executed or used
+as acceptance evidence for this source unit. Root owns publication, independent reviews and later
+consumer acceptance: both the grouped full hosted job and workflow must be under 600 seconds.
+Old standalone hosted runs, local warm/isolated timings and dated main runs are not new grouped
+hosted evidence, a causal cure or a budget waiver. This source preparation closes neither issue.
+
+Rollback is a reviewed reversal of the caller source and its matching registry binding; after
+adoption, Android also regenerates from the prior accepted workflow source
+`4e6e749fd849ae58f2b13c21215022c1bc410b9f`, restoring the four standalone commands while preserving
+the self-test and script tests. No consumer adoption, dispatch, ruleset mutation or trusted gate
+deployment is automatic.
 
 ## Infra-only trusted PR command-binding bootstrap
 
@@ -257,9 +309,19 @@ candidate's own CI would be removable with its checker step.
 The canonical source now adds an **opt-in, base-trusted** native workflow. Only Infra
 opts in; all 160 artifacts of the eight unopted profiles, eighteen existing CI/setup
 workflows and Conformance remain byte-identical to accepted source
-`65d0a95b9dd06dae7145c14e6952a6cdb6dd7f19`. Infra has one new workflow and a generated
+`f3331d5bc24556d11b9f3ad0b517db37e9caac9d`. Infra has one new workflow and a generated
 checker extension. No stack commands, Android SDK/quality gates, paid service, reviewer
 mechanism, ruleset, secret or deployment changes are part of this unit.
+
+The authorized current-base integration is a normal two-parent merge of that accepted
+Android-caller source into the frozen gate branch, not a rebase or replacement of either
+history. Android's exact four-line grouped caller, literal seven-to-four historical
+runtime expectation and primary CI source `2832988d641137b65d32e4f51491157e9e09be4f`
+are preserved, as are every other accepted primary CI reference. Earlier gate source
+and binding commits, original failures and frozen-head evidence remain historical;
+they are not current-base results. Regeneration uses the merged canonical generator,
+then a registry-only commit binds the optional Infra gate to the real merged source.
+This compatibility step neither accepts consumer adoption nor activates the gate.
 
 ### Trust boundary and output
 

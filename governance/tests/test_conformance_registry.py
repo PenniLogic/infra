@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 import conformance_support as support
-from conformance import registry, schema
+from conformance import registry, schema, steps
 
 
 class SchemaValidatorTests(unittest.TestCase):
@@ -137,6 +137,33 @@ class RegistryTests(unittest.TestCase):
                 if rendered is None:
                     self.skipTest("commit not present in this (shallow) history")
                 self.assertEqual(support.generator.artifacts(name)[".github/workflows/ci.yml"].encode("utf-8"), rendered)
+
+    def test_android_workflow_ref_exists_and_renders_the_exact_grouped_caller(self):
+        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")
+        rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "android")
+        self.assertIsNotNone(rendered, "the Android source binding must exist in real Git history")
+        self.assertEqual(support.generator.workflow("android").encode("utf-8"), rendered)
+        self.assertEqual([
+            "python scripts/check_repository.py",
+            "python scripts/quality_gates.py ci",
+            "python scripts/quality_gates.py self-test",
+            'python -m unittest discover -s scripts/tests -p "test_*.py"',
+        ], steps.workflow_run_commands(rendered))
+
+    def test_previous_android_standalone_ref_cannot_bind_the_grouped_workflow(self):
+        previous = registry.render_workflow_at(
+            support.GOVERNANCE.parent, "4e6e749fd849ae58f2b13c21215022c1bc410b9f", "android",
+        )
+        self.assertIsNotNone(previous, "the accepted standalone workflow must be present for this regression")
+        self.assertNotEqual(support.generator.workflow("android").encode("utf-8"), previous)
+        commands = steps.workflow_run_commands(previous)
+        self.assertNotIn("python scripts/quality_gates.py ci", commands)
+        for gate in ("build", "test", "lint", "coverage"):
+            self.assertIn(f"python scripts/quality_gates.py {gate}", commands)
+        self.assertEqual([
+            "python scripts/quality_gates.py self-test",
+            'python -m unittest discover -s scripts/tests -p "test_*.py"',
+        ], commands[-2:])
 
     def test_render_workflow_at_returns_none_for_an_unknown_commit(self):
         def run(command, **kwargs):

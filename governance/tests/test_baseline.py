@@ -1,10 +1,13 @@
+import copy
 import importlib.util
 import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 HERE = Path(__file__).resolve().parents[1]
@@ -34,6 +37,12 @@ CONTRACTS_COMMANDS = [
 CONTRACTS_STATE = ("Repository foundation plus the OpenAPI lint, deterministic client-generation, breaking-change "
                    "and tag-publication scaffold from PenniLogic/contracts#2; no product endpoints, registry "
                    "publication credentials or published version tags are implemented.")
+ANDROID_COMMANDS = [
+    "python scripts/check_repository.py",
+    "python scripts/quality_gates.py ci",
+    "python scripts/quality_gates.py self-test",
+    'python -m unittest discover -s scripts/tests -p "test_*.py"',
+]
 
 
 class BaselineTests(unittest.TestCase):
@@ -84,10 +93,7 @@ class BaselineTests(unittest.TestCase):
             "ai-service": [UV_INSTALL, "uv sync --locked",
                            "uv run --locked ruff check .", "uv run --locked ruff format --check .",
                            "uv run --locked mypy", "uv run --locked pytest"],
-            "android": ["python scripts/quality_gates.py build", "python scripts/quality_gates.py test",
-                        "python scripts/quality_gates.py lint", "python scripts/quality_gates.py coverage",
-                        "python scripts/quality_gates.py self-test",
-                        'python -m unittest discover -s scripts/tests -p "test_*.py"'],
+            "android": ANDROID_COMMANDS[1:],
             "infra": ["python governance/generate.py --repository infra --check",
                       "python -m unittest discover -s governance/tests",
                       "docker compose -f docker-compose.yml config --quiet",
@@ -115,6 +121,69 @@ class BaselineTests(unittest.TestCase):
         for flag in ("uv==0.11.33", "--hash=sha256:", "--only-binary :all:", "--require-hashes", "--no-deps"):
             self.assertIn(flag, UV_INSTALL)
         self.assertNotIn('"uv>=', json.dumps(generator.PROFILES["repositories"]["ai-service"]))
+
+    def test_android_grouped_ci_changes_only_five_command_derived_artifacts(self):
+        current = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
+        previous_profiles = copy.deepcopy(generator.PROFILES)
+        previous_profiles["repositories"]["android"]["commands"] = [
+            ANDROID_COMMANDS[0],
+            *(f"python scripts/quality_gates.py {gate}" for gate in ("build", "test", "lint", "coverage")),
+            *ANDROID_COMMANDS[2:],
+        ]
+        with mock.patch.object(generator, "PROFILES", previous_profiles):
+            previous = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
+        android_changes = {
+            "AGENTS.md", ".github/agent-policy.json", ".github/workflows/ci.yml",
+            "CONTRIBUTING.md", "README.md",
+        }
+        for repo in current:
+            with self.subTest(repo=repo):
+                self.assertEqual(previous[repo].keys(), current[repo].keys())
+                changed = {name for name in current[repo]
+                           if current[repo][name].encode("utf-8") != previous[repo][name].encode("utf-8")}
+                self.assertEqual(android_changes if repo == "android" else set(), changed)
+        workflow = json.loads(previous["android"][".github/workflows/ci.yml"])
+        run_checks = next(step for step in workflow["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+        run_checks["run"] = "\n".join(ANDROID_COMMANDS)
+        self.assertEqual(workflow, json.loads(current["android"][".github/workflows/ci.yml"]))
+
+    def test_android_grouped_ci_cli_refuses_only_the_removed_or_stubbed_ci_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            command = [sys.executable, str(HERE / "generate.py"), "--repository", "android", "--root", str(root)]
+
+            def invoke(*extra):
+                return subprocess.run([*command, *extra], capture_output=True, text=True,
+                                      encoding="utf-8", timeout=60, check=False)
+
+            generated = invoke()
+            self.assertEqual(0, generated.returncode, generated.stderr)
+            clean = invoke("--check")
+            self.assertEqual(0, clean.returncode, clean.stderr)
+            self.assertIn("Public repository baseline verified.", clean.stdout)
+            path = root / ".github" / "workflows" / "ci.yml"
+            original = path.read_bytes()
+            document = json.loads(original)
+            run_checks = next(step for step in document["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+            self.assertEqual(ANDROID_COMMANDS, run_checks["run"].split("\n"))
+            for replacement in (None, "echo tests skipped"):
+                with self.subTest(replacement=replacement):
+                    changed = copy.deepcopy(document)
+                    run_checks = next(step for step in changed["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+                    commands = list(ANDROID_COMMANDS)
+                    if replacement is None:
+                        commands.remove(ANDROID_COMMANDS[1])
+                    else:
+                        commands[1] = replacement
+                    self.assertEqual(ANDROID_COMMANDS[2:], commands[-2:])
+                    run_checks["run"] = "\n".join(commands)
+                    path.write_bytes(generator.encoded(changed).encode("utf-8"))
+                    refused = invoke("--check")
+                    self.assertEqual(1, refused.returncode, refused.stdout)
+                    self.assertEqual("Generated setup differs: .github/workflows/ci.yml\n", refused.stderr)
+                    path.write_bytes(original)
+                    restored = invoke("--check")
+                    self.assertEqual(0, restored.returncode, restored.stderr)
 
     def test_every_readme_links_the_published_test_strategy(self):
         pointer = ("[PenniLogic/docs](https://github.com/PenniLogic/docs). Verification requirements:\n"

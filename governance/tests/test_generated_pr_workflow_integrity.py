@@ -15,7 +15,7 @@ from conformance import steps
 
 
 GATE = ".github/workflows/pr-workflow-integrity.yml"
-SOURCE = "65d0a95b9dd06dae7145c14e6952a6cdb6dd7f19"
+SOURCE = "f3331d5bc24556d11b9f3ad0b517db37e9caac9d"
 generator = support.generator
 
 

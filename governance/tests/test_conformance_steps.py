@@ -27,6 +27,46 @@ class ClassificationTests(unittest.TestCase):
         detected = steps.detect_steps(["python scripts/check_repository.py", "echo ok"])
         self.assertEqual(["test"], steps.missing_categories(detected))
 
+    def test_only_the_exact_android_ci_command_counts_as_build_test_and_lint(self):
+        self.assertEqual(["build", "lint", "test"], steps.classify("python scripts/quality_gates.py ci"))
+        unknown = [
+            "echo python scripts/quality_gates.py ci", "echo 'python scripts/quality_gates.py ci'",
+            "python scripts/quality_gates.py ci-stub", "python scripts/quality_gates.py ci_extra",
+            "python scripts/quality_gates.py ci --debug", "python scripts/quality_gates.py ci && true",
+            "python scripts/quality_gates.py ci; true", "python scripts/quality_gates.py ci # skipped",
+            "python scripts/quality_gates.py CI", "python scripts/quality_gates.py all",
+            "python scripts/quality_gates.py continuous-integration", "python scripts/quality_gates.py --ci",
+            "python3 scripts/quality_gates.py ci", "python -u scripts/quality_gates.py ci",
+            "python ./scripts/quality_gates.py ci", "python scripts\\quality_gates.py ci",
+            "python quality_gates.py ci", "python scripts/other_quality_gates.py ci",
+            " python scripts/quality_gates.py ci", "python  scripts/quality_gates.py ci",
+            "python scripts/quality_gates.py ci ", "python scripts/quality_gates.py ci\n",
+            "python scripts/quality_gates.py ci\r\n", "true",
+        ]
+        for command in unknown:
+            with self.subTest(command=command):
+                self.assertEqual(["other"], steps.classify(command))
+                self.assertEqual([], steps.detect_steps([command])["consumer_self_tests"])
+
+    def test_android_standalone_commands_keep_their_existing_classification(self):
+        expected = {"build": ["build"], "test": ["test"], "lint": ["lint"],
+                    "coverage": ["test"], "self-test": ["test"]}
+        for gate, categories in expected.items():
+            with self.subTest(gate=gate):
+                self.assertEqual(categories, steps.classify(f"python scripts/quality_gates.py {gate}"))
+
+    def test_removed_or_stubbed_android_ci_cannot_borrow_build_or_lint_from_the_self_test(self):
+        commands = support.generator.PROFILES["repositories"]["android"]["commands"]
+        ci = "python scripts/quality_gates.py ci"
+        for replacement in (None, "echo tests skipped"):
+            with self.subTest(replacement=replacement):
+                changed = [command for command in commands if command != ci]
+                if replacement is not None:
+                    changed.insert(1, replacement)
+                detected = steps.detect_steps(changed)
+                self.assertEqual(["build", "lint"], steps.missing_categories(detected, ("build", "test", "lint")))
+                self.assertEqual(["python scripts/quality_gates.py self-test"], detected["consumer_self_tests"])
+
     def test_known_profiles_classify_as_reviewed(self):
         web = steps.detect_steps(support.generator.PROFILES["repositories"]["web"]["commands"])
         self.assertEqual(["npm test", "npm run check:bundle:planted"], web["test"])
@@ -37,7 +77,12 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(["uv run --locked ruff check .", "uv run --locked ruff format --check .", "uv run --locked mypy"], ai["lint"])
         android = steps.detect_steps(support.generator.PROFILES["repositories"]["android"]["commands"])
         self.assertEqual(["python scripts/quality_gates.py self-test"], android["consumer_self_tests"])
-        self.assertIn("python scripts/quality_gates.py build", android["build"])
+        ci = "python scripts/quality_gates.py ci"
+        self.assertEqual([ci], android["build"])
+        self.assertEqual([ci], android["lint"])
+        self.assertEqual([ci, "python scripts/quality_gates.py self-test",
+                          'python -m unittest discover -s scripts/tests -p "test_*.py"'], android["test"])
+        self.assertEqual([], android["other"])
 
 
 class ProducedCheckTests(unittest.TestCase):
