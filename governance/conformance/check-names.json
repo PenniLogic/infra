@@ -56,7 +56,7 @@
       "language": "python",
       "pr_gate": {
         "check_name": "PR workflow integrity",
-        "workflow_ref": "031c832118ff0cd6f90f52631b9be7f3caa0428a"
+        "workflow_ref": "ff6a47835f27c73a403dab331d3f8dd7fd43b412"
       }
     }
   ]
