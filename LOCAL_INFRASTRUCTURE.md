@@ -4,6 +4,8 @@ Development-only. Nothing here deploys, configures or protects a production syst
 Schema migrations and seed data are **not** part of this stack; see
 [Out of scope](#out-of-scope-and-owners).
 
+Owner-only credential procedures: [Account security baseline](ACCOUNT_SECURITY.md).
+
 ## Prerequisites
 
 - Docker Engine with the Compose plugin (`docker compose`, any current version; Docker Desktop
