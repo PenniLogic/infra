@@ -37,11 +37,19 @@ CONTRACTS_COMMANDS = [
 CONTRACTS_STATE = ("Repository foundation plus the OpenAPI lint, deterministic client-generation, breaking-change "
                    "and tag-publication scaffold from PenniLogic/contracts#2; no product endpoints, registry "
                    "publication credentials or published version tags are implemented.")
-ANDROID_COMMANDS = [
+ANDROID_GROUPED_COMMANDS = [
     "python scripts/check_repository.py",
     "python scripts/quality_gates.py ci",
     "python scripts/quality_gates.py self-test",
     'python -m unittest discover -s scripts/tests -p "test_*.py"',
+]
+ANDROID_COMMANDS = [
+    ANDROID_GROUPED_COMMANDS[0],
+    "python -m pip install -r scripts/privacy_traffic/requirements.txt",
+    *ANDROID_GROUPED_COMMANDS[1:3],
+    "python scripts/privacy_traffic_harness.py self-test",
+    "python scripts/check_privacy_components.py",
+    ANDROID_GROUPED_COMMANDS[3],
 ]
 
 
@@ -123,12 +131,15 @@ class BaselineTests(unittest.TestCase):
         self.assertNotIn('"uv>=', json.dumps(generator.PROFILES["repositories"]["ai-service"]))
 
     def test_android_grouped_ci_changes_only_five_command_derived_artifacts(self):
-        current = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
+        grouped_profiles = copy.deepcopy(generator.PROFILES)
+        grouped_profiles["repositories"]["android"]["commands"] = ANDROID_GROUPED_COMMANDS
+        with mock.patch.object(generator, "PROFILES", grouped_profiles):
+            current = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
         previous_profiles = copy.deepcopy(generator.PROFILES)
         previous_profiles["repositories"]["android"]["commands"] = [
-            ANDROID_COMMANDS[0],
+            ANDROID_GROUPED_COMMANDS[0],
             *(f"python scripts/quality_gates.py {gate}" for gate in ("build", "test", "lint", "coverage")),
-            *ANDROID_COMMANDS[2:],
+            *ANDROID_GROUPED_COMMANDS[2:],
         ]
         with mock.patch.object(generator, "PROFILES", previous_profiles):
             previous = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
@@ -144,7 +155,7 @@ class BaselineTests(unittest.TestCase):
                 self.assertEqual(android_changes if repo == "android" else set(), changed)
         workflow = json.loads(previous["android"][".github/workflows/ci.yml"])
         run_checks = next(step for step in workflow["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
-        run_checks["run"] = "\n".join(ANDROID_COMMANDS)
+        run_checks["run"] = "\n".join(ANDROID_GROUPED_COMMANDS)
         self.assertEqual(workflow, json.loads(current["android"][".github/workflows/ci.yml"]))
 
     def test_android_grouped_ci_cli_refuses_only_the_removed_or_stubbed_ci_line(self):
@@ -172,10 +183,10 @@ class BaselineTests(unittest.TestCase):
                     run_checks = next(step for step in changed["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
                     commands = list(ANDROID_COMMANDS)
                     if replacement is None:
-                        commands.remove(ANDROID_COMMANDS[1])
+                        commands.remove(ANDROID_COMMANDS[2])
                     else:
-                        commands[1] = replacement
-                    self.assertEqual(ANDROID_COMMANDS[2:], commands[-2:])
+                        commands[2] = replacement
+                    self.assertEqual(ANDROID_COMMANDS[3:], commands[-4:])
                     run_checks["run"] = "\n".join(commands)
                     path.write_bytes(generator.encoded(changed).encode("utf-8"))
                     refused = invoke("--check")
@@ -300,7 +311,7 @@ class BaselineTests(unittest.TestCase):
                     self.assertEqual(["Checkout", "Python", "JDK", "Android SDK packages",
                                       "Verify Gradle wrapper", "Run checks"], names)
                     self.assertEqual(["Checkout", "Python", "JDK", "Android SDK packages",
-                                      "Verify repository", "Install managed hook"],
+                                      "Verify repository", "Install dependencies", "Install managed hook"],
                                      [step["name"] for step in setup])
                     self.assertEqual({"distribution": "temurin", "java-version": "21"}, ci[2]["with"])
                     sdk = ci[3]["run"]

@@ -653,6 +653,10 @@ alone is not a license grant. Existing source notices are preserved.
     if repo == "infra":
         output[".nvmrc"] = profile["node"] + "\n"
         output[".github/workflows/conformance.yml"] = conformance_workflow()
+    if repo == "android":
+        output["scripts/check_privacy_components.py"] = (
+            HERE / "templates/check_privacy_components.py"
+        ).read_text(encoding="utf-8")
     if profile.get("pr_workflow_integrity", False):
         output[PR_GATE_FILE] = pr_integrity_workflow(repo)
     return output

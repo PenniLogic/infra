@@ -123,12 +123,23 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             generator.artifacts(name)
 
-    def test_160_unopted_artifacts_and_all_18_existing_native_workflows_are_identical(self):
+    def test_only_explicit_android_adoption_and_infra_gate_differ_from_the_historical_baseline(self):
         with tempfile.TemporaryDirectory(prefix="pr-integrity-baseline-") as directory:
             accepted = historical_generator(Path(directory))
             unchanged = 0
             for name in generator.PROFILES["repositories"]:
                 old, new = accepted.artifacts(name), generator.artifacts(name)
+                if name == "android":
+                    changed = {
+                        "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json",
+                        ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml",
+                        "scripts/check_privacy_components.py",
+                    }
+                    self.assertEqual(changed, {
+                        path for path in set(old) | set(new) if old.get(path) != new.get(path)
+                    })
+                    unchanged += len(set(old) & set(new) - changed)
+                    continue
                 for relative in (".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml"):
                     self.assertEqual(old[relative], new[relative], (name, relative))
                 if name != "infra":
@@ -140,7 +151,7 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                                      {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
                     self.assertEqual(old[".github/workflows/conformance.yml"],
                                      new[".github/workflows/conformance.yml"])
-            self.assertEqual(160, unchanged)
+            self.assertEqual(154, unchanged)
 
     def test_exact_opt_in_checker_extension_never_widens_the_common_template(self):
         original = (support.GOVERNANCE / "templates" / "check_repository.py").read_bytes()

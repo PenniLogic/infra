@@ -178,7 +178,8 @@ class RuntimeRenderingTests(unittest.TestCase):
         for name in support.generator.PROFILES["repositories"]:
             with self.subTest(profile=name):
                 self.assertEqual(name == "infra", ".nvmrc" in support.generator.artifacts(name))
-                self.assertEqual(23 if name == "infra" else 20, len(support.generator.artifacts(name)))
+                self.assertEqual(23 if name == "infra" else 21 if name == "android" else 20,
+                                 len(support.generator.artifacts(name)))
 
     def test_node_and_verified_uv_install_precede_the_authenticated_three_toolchain_run(self):
         value = document()
@@ -206,7 +207,7 @@ class RuntimeRenderingTests(unittest.TestCase):
             with self.subTest(node=node), self.assertRaises(ValueError):
                 support.generator.validate_profile("infra", profile)
 
-    def test_all_sixteen_consumer_ci_and_setup_bytes_and_eight_profiles_are_unchanged(self):
+    def test_consumer_baselines_are_unchanged_except_explicit_android_adoptions(self):
         historical = registry.render_workflow_at(support.GOVERNANCE.parent, BASE, "infra")
         if historical is None:
             self.skipTest("accepted base not in shallow history; native workflow source binding not exercised")
@@ -235,8 +236,12 @@ class RuntimeRenderingTests(unittest.TestCase):
                     ]
                     if name == "android":
                         self.assertEqual(previous_commands, previous_profile["commands"])
+                        restore = "python -m pip install -r scripts/privacy_traffic/requirements.txt"
+                        previous_profile["install"] = [restore]
                         previous_profile["commands"] = [
-                            previous_commands[0], "python scripts/quality_gates.py ci", *previous_commands[-2:],
+                            previous_commands[0], restore, "python scripts/quality_gates.py ci",
+                            previous_commands[-2], "python scripts/privacy_traffic_harness.py self-test",
+                            "python scripts/check_privacy_components.py", previous_commands[-1],
                         ]
                     for setup in (False, True):
                         expected = old.workflow(name, setup=setup)
@@ -247,6 +252,19 @@ class RuntimeRenderingTests(unittest.TestCase):
                             standalone = r"\n".join(previous_commands[1:5])
                             self.assertEqual(1, expected.count(standalone))
                             expected = expected.replace(standalone, "python scripts/quality_gates.py ci", 1)
+                        if name == "android":
+                            document = json.loads(expected)
+                            native_steps = next(iter(document["jobs"].values()))["steps"]
+                            if setup:
+                                self.assertEqual("Install managed hook", native_steps[-1]["name"])
+                                native_steps.insert(-1, {"name": "Install dependencies", "run": restore})
+                            else:
+                                run_checks = next(step for step in native_steps if step["name"] == "Run checks")
+                                self.assertEqual([
+                                    previous_commands[0], "python scripts/quality_gates.py ci", *previous_commands[-2:],
+                                ], run_checks["run"].split("\n"))
+                                run_checks["run"] = "\n".join(previous_profile["commands"])
+                            expected = old.encoded(document)
                         self.assertEqual(expected.encode("utf-8"),
                                          support.generator.workflow(name, setup=setup).encode("utf-8"))
                     self.assertEqual(previous_profile, support.generator.PROFILES["repositories"][name])
