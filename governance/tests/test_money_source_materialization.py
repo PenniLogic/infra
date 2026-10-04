@@ -3,6 +3,7 @@
 import base64
 import contextlib
 import copy
+from email.message import Message
 import hashlib
 import importlib.util
 import io
@@ -43,6 +44,9 @@ class Response(io.BytesIO):
     def __init__(self, body, url):
         super().__init__(body)
         self.url = url
+        self.headers = Message()
+        self.headers["Content-Length"] = str(len(body))
+        self.chunked = False
 
     def geturl(self):
         return self.url

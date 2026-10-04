@@ -164,9 +164,13 @@ class Budget:
         self.clock, self.started = clock, clock()
         self.requests, self.bytes = 0, 0
 
-    def remaining(self):
-        remaining = DEADLINE_SECONDS - (self.clock() - self.started)
+    def remaining(self, request_deadline=None):
+        now = self.clock()
+        remaining = DEADLINE_SECONDS - (now - self.started)
         require(remaining > 0, "source-deadline")
+        if request_deadline is not None:
+            require(now < request_deadline, "source-request-deadline")
+            remaining = min(remaining, request_deadline - now)
         return remaining
 
     def request(self):
@@ -182,19 +186,54 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise MaterializationError("source-redirect")
 
 
+def local_mode(environ):
+    require("GITHUB_ACTIONS" not in environ, "local-authentication")
+
+
+def response_length(response):
+    lengths = response.headers.get_all("Content-Length", [])
+    transfer = response.headers.get_all("Transfer-Encoding", [])
+    require(len(lengths) <= 1 and len(transfer) <= 1 and not (lengths and transfer), "source-protocol")
+    if transfer:
+        require(transfer[0].strip().lower() == "chunked" and response.chunked, "source-protocol")
+    if lengths:
+        value = lengths[0].strip()
+        require(re.fullmatch(r"[0-9]{1,10}", value) is not None, "source-protocol")
+        length = int(value)
+        require(length <= MAX_RESPONSE_BYTES, "source-size")
+        return length
+    return None
+
+
+class ChunkedCompletion:
+    """Observe the stdlib parser's trailer terminator; it otherwise also accepts EOF there."""
+
+    def __init__(self, stream):
+        self.stream, self.last_line = stream, None
+
+    def readline(self, limit=-1):
+        self.last_line = self.stream.readline(limit)
+        return self.last_line
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 class ReadOnlyClient:
     """Use the accepted PR-validator's bounded Git-object GET pattern, without its gate policy."""
 
     def __init__(self, catalog, authenticated_local=False, budget=None, opener=None, environ=None):
         env = os.environ if environ is None else environ
+        if authenticated_local:
+            local_mode(env)
         self.budget = budget or Budget()
         self.authenticated_local = authenticated_local
         self.headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
                         "User-Agent": "PenniLogic-API-Money-source-materialization"}
         if authenticated_local:
             token = env.get("GH_TOKEN")
-            require(env.get("GITHUB_ACTIONS") != "true" and isinstance(token, str)
-                    and 20 <= len(token) <= 4096 and all(33 <= ord(char) <= 126 for char in token),
+            require(isinstance(token, str) and 20 <= len(token) <= 4096
+                    and all(33 <= ord(char) <= 126 for char in token),
                     "local-authentication")
             self.headers["Authorization"] = "Bearer " + token
         self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -211,23 +250,35 @@ class ReadOnlyClient:
     def get(self, path):
         require(isinstance(path, str) and self.paths.fullmatch(path) is not None, "source-api-path")
         request = urllib.request.Request("https://api.github.com" + path, method="GET", headers=self.headers)
+        started = self.budget.clock()
         timeout = self.budget.request()
+        deadline = started + timeout
         try:
             with self.opener.open(request, timeout=timeout) as response:
+                self.budget.remaining(deadline)
                 require(response.status == 200, "source-http")
                 require(response.geturl() == request.full_url, "source-redirect")
+                length = response_length(response)
+                completion = None
+                if response.chunked:
+                    completion = ChunkedCompletion(response.fp)
+                    response.fp = completion
                 parts, size = [], 0
                 while True:
-                    self.budget.remaining()
+                    self.budget.remaining(deadline)
                     part = response.read1(min(65536, MAX_RESPONSE_BYTES + 1 - size))
+                    self.budget.remaining(deadline)
                     if not part:
                         break
                     size += len(part)
                     self.budget.bytes += len(part)
                     require(size <= MAX_RESPONSE_BYTES and self.budget.bytes <= MAX_TOTAL_BYTES, "source-size")
                     parts.append(part)
-                self.budget.remaining()
-                return json_document(b"".join(parts))
+                require(length is None or size == length, "source-protocol")
+                require(completion is None or completion.last_line in (b"\r\n", b"\n"), "source-protocol")
+                value = json_document(b"".join(parts))
+            self.budget.remaining(deadline)
+            return value
         except urllib.error.HTTPError as error:
             error.close()
             raise MaterializationError("source-denied" if error.code in (401, 403, 404) else "source-http") from None
@@ -372,7 +423,57 @@ def verify_provider(root=ROOT, catalog=None):
     verify_directory(root, PROVIDER, provider_bindings(catalog))
 
 
+def rollback_attempt(root, created):
+    for relative, expected in reversed(created):
+        path = owned_path(root, relative)
+        actual = path.stat(follow_symlinks=False)
+        require((actual.st_dev, actual.st_ino, stat.S_IFMT(actual.st_mode))
+                == (expected.st_dev, expected.st_ino, stat.S_IFMT(expected.st_mode)), "materialization-cleanup")
+        if stat.S_ISDIR(expected.st_mode):
+            path.rmdir()
+        else:
+            require(stat.S_ISREG(actual.st_mode) and actual.st_nlink == 1, "materialization-cleanup")
+            path.unlink()
+
+
+def publish_inputs(root, catalog, contents, budget):
+    created = []
+
+    def directory(relative):
+        path = owned_path(root, relative)
+        path.mkdir()
+        created.append((relative, path.stat(follow_symlinks=False)))
+
+    try:
+        parent = owned_path(root, INPUTS.parent)
+        if not parent.exists():
+            directory(INPUTS.parent)
+        directory(INPUTS)
+        files = {**contents, "materialization.json": catalog_bytes(catalog)}
+        for name, content in files.items():
+            budget.remaining()
+            relative = INPUTS / name
+            for ancestor in reversed(relative.parents):
+                if ancestor == Path(".") or owned_path(root, ancestor).exists():
+                    continue
+                directory(ancestor)
+            path = owned_path(root, relative)
+            with path.open("xb") as stream:
+                created.append((relative, os.fstat(stream.fileno())))
+                stream.write(content)
+        verify_inputs(root, catalog)
+        budget.remaining()
+    except (OSError, MaterializationError):
+        try:
+            rollback_attempt(root, created)
+        except (OSError, MaterializationError):
+            raise MaterializationError("materialization-cleanup") from None
+        raise
+
+
 def materialize(root=ROOT, client=None, authenticated_local=False):
+    if authenticated_local or (client is not None and client.authenticated_local):
+        local_mode(os.environ)
     catalog = validate_catalog(CATALOG)
     client = client or ReadOnlyClient(catalog, authenticated_local=authenticated_local)
     target = owned_path(root, INPUTS)
@@ -394,19 +495,7 @@ def materialize(root=ROOT, client=None, authenticated_local=False):
         for binding in source["files"]:
             contents[source["snapshot"] + "/" + binding["path"]] = snapshot.blob(binding)
     client.budget.remaining()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    owned_path(root, INPUTS).mkdir()
-    for name, content in contents.items():
-        client.budget.remaining()
-        path = owned_path(root, INPUTS / name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("xb") as stream:
-            stream.write(content)
-    receipt = owned_path(root, INPUTS / "materialization.json")
-    with receipt.open("xb") as stream:
-        stream.write(catalog_bytes(catalog))
-    verify_inputs(root, catalog)
-    client.budget.remaining()
+    publish_inputs(root, catalog, contents, client.budget)
     return {"event": "money_sources", "status": "materialized", "inputs": 11,
             "catalog_sha256": hashlib.sha256(catalog_bytes(catalog)).hexdigest(), "source_trees": roots,
             "requests": client.budget.requests, "response_bytes": client.budget.bytes,

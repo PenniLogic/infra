@@ -63,15 +63,28 @@ so a changed receipt or partial/tampered output cannot be silently overwritten.
 Existing snapshots are verified without fetching or rewriting. Missing, partial,
 extra, mismatched, linked or hardlinked files refuse explicitly; there is no repair,
 floating-main substitute, normalization, threshold fallback or tool installation.
+On an ordinary write/publication failure, rollback removes only this attempt's
+exclusively created, identity-checked files and empty directories. Existing or
+unexpected artifacts are never recursively removed or repaired; unsafe cleanup
+refuses explicitly. This is recoverable publication, not atomic visibility or a
+hostile-concurrent-filesystem guarantee. A process killed before rollback can leave
+a partial snapshot; that retry refuses rather than repairing unknown inputs.
 
 Fetch mechanics reuse the accepted validator's fixed GitHub HTTPS GET, numeric
 identity, commit/tree/blob and bounded-read patterns, without changing that validator.
-Redirects and proxy selection are disabled. Limits are 32 requests, ten seconds per
-request, a 180-second checked deadline, two MiB per response and four MiB total.
-The native job remains the outer bound for platform DNS/socket behavior.
+Redirects and proxy selection are disabled. Declared Content-Length must be complete;
+chunked reads use the stdlib HTTP parser, and close-delimited responses remain bounded.
+Ambiguous/invalid length or transfer framing refuses with a static protocol code.
+Limits are 32 requests, a ten-second checked elapsed deadline for each complete GET
+(including open/read/JSON completion), a 180-second overall checked deadline, two MiB
+per response and four MiB total. Late progress or completed responses are not admitted.
+Socket timeouts bound individual waits, not guaranteed whole-GET interruption;
+platform DNS/socket blocking still has the native job as its outer bound.
 Public CI sends no credentials; no token environment is added to its workflow.
 Local authenticated reads require explicit `--authenticated-local`, a process-local
-`GH_TOKEN`, and verified `basiltt:54134686` identity. That option refuses on Actions,
+`GH_TOKEN`, and verified `basiltt:54134686` identity. That option refuses before
+client/provider/cache handling whenever `GITHUB_ACTIONS` is present, regardless of
+its value (including empty, false-like, case-variant or malformed markers),
 never consults stored auth or falls back, and never records credentials.
 HTTP/rate-limit/timeout/decoding failures report static refusal codes.
 
