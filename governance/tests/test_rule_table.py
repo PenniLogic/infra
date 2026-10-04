@@ -130,14 +130,17 @@ class RuleTableTests(unittest.TestCase):
         self.assertTrue(paragraph.startswith("`generate.py` renders"), paragraph)
         listed = [token for token in re.findall(r"`([^`]+)`", paragraph) if token not in NOT_GENERATED]
         infra_only = {".github/workflows/conformance.yml", ".github/workflows/pr-workflow-integrity.yml", ".nvmrc"}
+        api_only = {"scripts/materialize_money_sources.py"}
         self.assertTrue(infra_only <= set(listed))
         self.assertIn("20 common files", paragraph)
         self.assertIn("infra alone has 23 files", paragraph)
+        self.assertIn("api alone has 21 files", paragraph)
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 names = sorted(generator.artifacts(repo))
-                self.assertEqual(23 if repo == "infra" else 20, len(names))
-                applicable = [token for token in listed if token not in infra_only or repo == "infra"]
+                self.assertEqual(23 if repo == "infra" else 21 if repo == "api" else 20, len(names))
+                applicable = [token for token in listed if (token not in infra_only or repo == "infra")
+                              and (token not in api_only or repo == "api")]
                 self.assertIn(".github/instructions/source.instructions.md", names)
                 for name in names:
                     self.assertTrue(any(fnmatch.fnmatchcase(name, token) for token in applicable), name)

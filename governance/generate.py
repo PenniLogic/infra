@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -115,6 +116,9 @@ def validate_profile(repo, profile):
             raise ValueError(f"{repo}: {field} must be one printable line without expressions")
     if "pr_workflow_integrity" in profile and type(profile["pr_workflow_integrity"]) is not bool:
         raise ValueError(f"{repo}: pr_workflow_integrity must be a boolean")
+    if "money_source_materialization" in profile:
+        if repo != "api" or profile["money_source_materialization"] is not True:
+            raise ValueError(f"{repo}: Money source materialization is API-only and must be true")
     for field in ("node", "java", "developer_guide", "gradle_wrapper_jar_sha256"):
         value = profile.get(field)
         if value is not None and not (isinstance(value, str) and PATTERNS[field].fullmatch(value)):
@@ -401,6 +405,19 @@ Repository-specific setup, commands and troubleshooting are maintained by hand i
 """
 
 
+def money_materializer():
+    path = HERE / "templates/materialize_money_sources.py"
+    template = path.read_text(encoding="utf-8")
+    marker = "CATALOG = None\n"
+    if template.count(marker) != 1:
+        raise ValueError("Money materializer must have one catalog insertion point")
+    spec = importlib.util.spec_from_file_location("money_materializer_template", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    catalog = module.validate_catalog(module.json_document((HERE / "api-money-sources.json").read_bytes()))
+    return template.replace(marker, f"CATALOG = json.loads({encoded(catalog)!r})\n")
+
+
 def artifacts(repo):
     profile = profile_for(repo)
     commands = "\n".join(profile["commands"])
@@ -653,6 +670,8 @@ alone is not a license grant. Existing source notices are preserved.
     if repo == "infra":
         output[".nvmrc"] = profile["node"] + "\n"
         output[".github/workflows/conformance.yml"] = conformance_workflow()
+    if profile.get("money_source_materialization", False):
+        output["scripts/materialize_money_sources.py"] = money_materializer()
     if profile.get("pr_workflow_integrity", False):
         output[PR_GATE_FILE] = pr_integrity_workflow(repo)
     return output

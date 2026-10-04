@@ -1,0 +1,120 @@
+{
+  "schema": "pennilogic.api-money-sources/1",
+  "consumer": {
+    "repository": "PenniLogic/api",
+    "repository_id": 1394134582,
+    "organization_id": 335295566
+  },
+  "sources": [
+    {
+      "repository": "PenniLogic/contracts",
+      "repository_id": 1394134505,
+      "commit": "ea56c63d5c9b679537bd9205b04626049c20c572",
+      "snapshot": "contracts-ea56c63d5c9b679537bd9205b04626049c20c572",
+      "files": [
+        {
+          "path": "scripts/generate_clients.py",
+          "mode": "100644",
+          "bytes": 15699,
+          "sha256": "cdfa31079fb5d327348fa311ed28ecb6da1fd8d9d62b83602fcf640261f86130",
+          "git_blob": "dffb5adbbcb0c999d166f47cc44be2433fcb2198"
+        },
+        {
+          "path": "scripts/pl_contracts.py",
+          "mode": "100644",
+          "bytes": 5163,
+          "sha256": "ce38c232e82e2d221655709cf944fb0a226462e78b98276f1be39c2928a9be61",
+          "git_blob": "6bb0741530c5f19bd9093142989f40366f468478"
+        },
+        {
+          "path": "scripts/toolchain.py",
+          "mode": "100644",
+          "bytes": 7775,
+          "sha256": "9bbcb66cfd8d05de1b926872e653762c1eabe1a7395af55008b001e3184f46d7",
+          "git_blob": "a4047fdf2d3ccd6467b40743c3e52eae62158677"
+        },
+        {
+          "path": "runtime/kotlin/src/main/kotlin/com/pennilogic/contracts/money/Money.kt",
+          "mode": "100644",
+          "bytes": 8263,
+          "sha256": "7d973d9f2a43859cc20c79789c57ebb793c051b9e7ce7652126d32e79cb97459",
+          "git_blob": "8506b42b30d723472eccf2150fd5dcee06234c6d"
+        },
+        {
+          "path": "spec/currency-registry.v1.json",
+          "mode": "100644",
+          "bytes": 615,
+          "sha256": "d9fd1f021993feb4c4b4c8bb131372ea5bd278a456978e5386992879b9fd44d5",
+          "git_blob": "a5886fbf0be30ce81ce952d92499c5d69f6e02b6"
+        },
+        {
+          "path": "spec/fixtures/money-wire-fixtures.v1.json",
+          "mode": "100644",
+          "bytes": 14863,
+          "sha256": "3c95a95c290fd1aad5d58300c301ab3c8c6b3b2883a95fbb586b58336ab1cf1d",
+          "git_blob": "4a42fca4c7df678013d21226a3858834f663af11"
+        },
+        {
+          "path": "spec/fixtures/money-roundtrip-generated.v1.json",
+          "mode": "100644",
+          "bytes": 901529,
+          "sha256": "22ed8a8ff3204a8962c10c8fcfada7d20dd6ed147fc2a07f98edef827ea28efe",
+          "git_blob": "b59d89561ef51fb77f852144d9790320cf6bc621"
+        },
+        {
+          "path": "generator/golden.json",
+          "mode": "100644",
+          "bytes": 7609,
+          "sha256": "e33f2691b56e0c76ff40c0df67486b3b9d162f6dfbffe258c6fd43e681dda2d8",
+          "git_blob": "2672b81b62859cd8d7c2f8760c625505d6e28efd"
+        },
+        {
+          "path": "generator/kotlin.json",
+          "mode": "100644",
+          "bytes": 652,
+          "sha256": "8988671f62d532f76551c4bf25d8a46a2b0abc1ff8be8a834b427ad8cec5e248",
+          "git_blob": "81bc716d707a2effa9e4e05e2d0c73dadcda63d9"
+        },
+        {
+          "path": "spec/openapi.yaml",
+          "mode": "100644",
+          "bytes": 6875,
+          "sha256": "4f315bc28a8e1d25841f8110e5dd90126e7b101a76cbfcfba5b6348dd0bfaba9",
+          "git_blob": "14143ac409f3295c84c07845c747f988ea34db32"
+        }
+      ]
+    },
+    {
+      "repository": "PenniLogic/docs",
+      "repository_id": 1394134442,
+      "commit": "a700e639585c61a4610e7b99dbd02b2dab28bdcc",
+      "snapshot": "docs-a700e639585c61a4610e7b99dbd02b2dab28bdcc",
+      "files": [
+        {
+          "path": "governance/test-strategy.json",
+          "mode": "100644",
+          "bytes": 80953,
+          "sha256": "a0322e0337c7c0e496711f21a1aea01136c6047b787318fd805a0788c2239bb2",
+          "git_blob": "db7acd323db9b7807b749cda8c8378ebd274d4cb"
+        }
+      ]
+    }
+  ],
+  "provider_outputs": [
+    {
+      "path": "kotlin/src/main/kotlin/com/pennilogic/contracts/money/Money.kt",
+      "bytes": 8263,
+      "sha256": "7d973d9f2a43859cc20c79789c57ebb793c051b9e7ce7652126d32e79cb97459"
+    },
+    {
+      "path": "kotlin/src/main/kotlin/com/pennilogic/contracts/money/CurrencyRegistry.kt",
+      "bytes": 645,
+      "sha256": "10d491ae90bc8f077afe5d45be671af52a5b7891c88eacfccd437a10f4956b21"
+    },
+    {
+      "path": "provider.json",
+      "bytes": 2404,
+      "sha256": "dcc905e283109cbd849d4a97ce749365d5a64e84c7c9abc3b027a183e683170c"
+    }
+  ]
+}
