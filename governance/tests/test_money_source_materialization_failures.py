@@ -507,6 +507,55 @@ class PublicationFailureTests(unittest.TestCase):
                 self.assertEqual(before, {name: name.read_bytes() for name in before})
 
 
+class HostedEnvironmentIsolationTests(unittest.TestCase):
+    def test_local_fixture_suite_restores_inherited_actions_markers_and_production_refusal(self):
+        script = r"""
+import json,os,sys,unittest
+from unittest import mock
+sys.path.insert(0,sys.argv[1])
+from test_money_source_materialization import materializer
+before=dict(os.environ)
+suite=unittest.defaultTestLoader.loadTestsFromName('test_money_source_materialization')
+result=unittest.TextTestRunner().run(suite)
+if not result.wasSuccessful():
+    raise SystemExit(1)
+assert dict(os.environ)==before, 'Synthetic test environment escaped its scope'
+with mock.patch.object(materializer,'ReadOnlyClient') as client, \
+     mock.patch.object(materializer,'verify_inputs') as inputs, \
+     mock.patch.object(materializer,'verify_provider') as provider:
+    try:
+        materializer.materialize(authenticated_local=True)
+    except materializer.MaterializationError as error:
+        assert str(error)=='local-authentication'
+    else:
+        raise AssertionError('Inherited Actions marker admitted local credentials')
+    assert not client.called and not inputs.called and not provider.called
+print(json.dumps({'marker':os.environ['GITHUB_ACTIONS'],'tests':result.testsRun,
+                  'environment_restored':True,'production_refused_before_activity':True}))
+"""
+        before = dict(os.environ)
+        for marker in ("true", "false", "", "malformed"):
+            env = {key: value for key, value in before.items() if key.upper() not in {
+                "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+                "GH_CONFIG_DIR", "GH_DEBUG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+                "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+            }}
+            env.update(GITHUB_ACTIONS=marker, GH_TOKEN="synthetic-process-local-token")
+            with self.subTest(marker=marker):
+                result = subprocess.run(
+                    [sys.executable, "-I", "-S", "-B", "-c", script, str(HERE / "tests")],
+                    cwd=HERE.parent, env=env, capture_output=True, check=False, timeout=60,
+                )
+                self.assertNotIn(b"synthetic-process-local-token", result.stdout + result.stderr)
+                self.assertNotIn(b"Authorization", result.stdout + result.stderr)
+                self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", errors="replace"))
+                self.assertEqual({
+                    "marker": marker, "tests": 24, "environment_restored": True,
+                    "production_refused_before_activity": True,
+                }, json.loads(result.stdout))
+                self.assertEqual(before, dict(os.environ))
+
+
 class SourceHistoryTests(unittest.TestCase):
     def test_registry_source_commit_replays_the_current_materializer_not_only_command_text(self):
         registry = json.loads((HERE / "conformance/check-names.json").read_bytes())

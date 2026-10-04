@@ -342,8 +342,9 @@ class MaterializationTests(unittest.TestCase):
 
     def test_local_authentication_is_explicit_personal_and_forbidden_on_actions(self):
         env = {"GH_TOKEN": "synthetic-process-local-token"}
-        client = self.transport.client(authenticated_local=True, environ=env)
-        self.assertEqual(32, materializer.materialize(self.root, client)["requests"])
+        with mock.patch.dict(os.environ, env, clear=True):
+            client = self.transport.client(authenticated_local=True, environ=env)
+            self.assertEqual(32, materializer.materialize(self.root, client)["requests"])
         self.assertTrue(all(request.headers["Authorization"] == "Bearer synthetic-process-local-token"
                             for request, _ in self.transport.calls))
         for denied in ({}, {"GITHUB_TOKEN": env["GH_TOKEN"]}, {**env, "GITHUB_ACTIONS": "true"}):
@@ -354,9 +355,11 @@ class MaterializationTests(unittest.TestCase):
 
     def test_wrong_local_identity_refuses_before_any_repository_read(self):
         self.transport.data["/user"] = {"login": "corporate-fixture", "id": 7}
-        client = self.transport.client(authenticated_local=True, environ={"GH_TOKEN": "synthetic-process-local-token"})
-        with self.assertRaisesRegex(materializer.MaterializationError, "local-personal-identity"):
-            materializer.materialize(self.root, client)
+        env = {"GH_TOKEN": "synthetic-process-local-token"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            client = self.transport.client(authenticated_local=True, environ=env)
+            with self.assertRaisesRegex(materializer.MaterializationError, "local-personal-identity"):
+                materializer.materialize(self.root, client)
         self.assertEqual(1, len(self.transport.calls))
         self.assertFalse((self.root / materializer.INPUTS).exists())
 
