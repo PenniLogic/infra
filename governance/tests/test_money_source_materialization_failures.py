@@ -550,7 +550,7 @@ print(json.dumps({'marker':os.environ['GITHUB_ACTIONS'],'tests':result.testsRun,
                 self.assertNotIn(b"Authorization", result.stdout + result.stderr)
                 self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", errors="replace"))
                 self.assertEqual({
-                    "marker": marker, "tests": 24, "environment_restored": True,
+                    "marker": marker, "tests": 25, "environment_restored": True,
                     "production_refused_before_activity": True,
                 }, json.loads(result.stdout))
                 self.assertEqual(before, dict(os.environ))

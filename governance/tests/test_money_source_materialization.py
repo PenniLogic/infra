@@ -124,9 +124,33 @@ class Transport:
 
 
 class CatalogAndRendererTests(unittest.TestCase):
+    def test_accepted_aa8_money_golden_and_native_provenance_are_exact(self):
+        source = CATALOG["sources"][0]
+        self.assertEqual("aa8d90cb98cec9b6dd08c91b3a4d869e47362662", source["commit"])
+        self.assertEqual("contracts-" + source["commit"], source["snapshot"])
+        files = {entry["path"]: entry for entry in source["files"]}
+        money = files["runtime/kotlin/src/main/kotlin/com/pennilogic/contracts/money/Money.kt"]
+        self.assertEqual((8489, "eddf78d0c9f694d660a7b13fd8e9e1154bc9b6c801ba0782b72973055d86c79d",
+                          "0eb20eee5c75c5f68af56c58c64565f065fd5fa5"),
+                         (money["bytes"], money["sha256"], money["git_blob"]))
+        golden = files["generator/golden.json"]
+        self.assertEqual((7609, "62ea59630dfb1e1d028b82c411f7efce575c2403ba277ff807333cdc0423a328",
+                          "0455f5548c0d102653ddbed1923a77fc80892aba"),
+                         (golden["bytes"], golden["sha256"], golden["git_blob"]))
+        outputs = {entry["path"]: entry for entry in CATALOG["provider_outputs"]}
+        self.assertEqual((money["bytes"], money["sha256"]), (
+            outputs["kotlin/src/main/kotlin/com/pennilogic/contracts/money/Money.kt"]["bytes"],
+            outputs["kotlin/src/main/kotlin/com/pennilogic/contracts/money/Money.kt"]["sha256"],
+        ))
+        self.assertEqual((2404, "e982e5b7fcd26314cdf7a3fd79e3de5fd782ceac0bc35b6ea5c8e779c55b86a0"), (
+            outputs["provider.json"]["bytes"], outputs["provider.json"]["sha256"],
+        ))
+        self.assertEqual("10d491ae90bc8f077afe5d45be671af52a5b7891c88eacfccd437a10f4956b21",
+                         outputs["kotlin/src/main/kotlin/com/pennilogic/contracts/money/CurrencyRegistry.kt"]["sha256"])
+
     def test_real_catalog_has_all_exact_source_bindings(self):
         self.assertEqual(CATALOG, materializer.validate_catalog(CATALOG))
-        self.assertEqual(["ea56c63d5c9b679537bd9205b04626049c20c572",
+        self.assertEqual(["aa8d90cb98cec9b6dd08c91b3a4d869e47362662",
                           "a700e639585c61a4610e7b99dbd02b2dab28bdcc"],
                          [source["commit"] for source in CATALOG["sources"]])
         self.assertEqual([10, 1], [len(source["files"]) for source in CATALOG["sources"]])
@@ -164,7 +188,7 @@ class CatalogAndRendererTests(unittest.TestCase):
         self.assertEqual([
             "python scripts/materialize_money_sources.py",
             "python scripts/money_provider.py --source-root "
-            '"build/source-materialization/contracts-ea56c63d5c9b679537bd9205b04626049c20c572" --strategy-file '
+            '"build/source-materialization/contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662" --strategy-file '
             '"build/source-materialization/docs-a700e639585c61a4610e7b99dbd02b2dab28bdcc/governance/test-strategy.json"',
             "python scripts/money_provider.py --verify", "python scripts/materialize_money_sources.py --verify",
         ], commands[1:5])

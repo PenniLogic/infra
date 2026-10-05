@@ -28,6 +28,10 @@ CHANGED_ARTIFACTS = {
     ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml",
     "scripts/check_privacy_components.py",
 }
+API_PIN_ARTIFACTS = {
+    "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json",
+    ".github/workflows/ci.yml", "scripts/materialize_money_sources.py",
+}
 
 
 def load(name, path):
@@ -38,7 +42,7 @@ def load(name, path):
 
 
 class CanonicalPrivacyTests(unittest.TestCase):
-    def test_only_the_seven_android_artifacts_change_from_the_accepted_source(self):
+    def test_only_android_artifacts_and_the_explicit_api_pin_transition_change_the_accepted_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for path in (
@@ -65,13 +69,25 @@ class CanonicalPrivacyTests(unittest.TestCase):
                         path for path in previous.keys() | candidate.keys()
                         if previous.get(path) != candidate.get(path)
                     }
-                    self.assertEqual(CHANGED_ARTIFACTS if repo == "android" else set(), changed)
-                    if repo != "android":
+                    self.assertEqual(CHANGED_ARTIFACTS if repo == "android" else
+                                     API_PIN_ARTIFACTS if repo == "api" else set(), changed)
+                    if repo == "api":
+                        expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
+                        expected["commands"][2] = expected["commands"][2].replace(
+                            "contracts-ea56c63d5c9b679537bd9205b04626049c20c572",
+                            "contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662",
+                        )
+                        self.assertEqual(expected, current.PROFILES["repositories"][repo])
+                    elif repo != "android":
                         self.assertEqual(accepted.PROFILES["repositories"][repo],
                                          current.PROFILES["repositories"][repo])
             original = copy.deepcopy(accepted.PROFILES)
             original["repositories"]["android"]["install"] = [RESTORE]
             original["repositories"]["android"]["commands"] = current.profile_for("android")["commands"]
+            original["repositories"]["api"]["commands"][2] = original["repositories"]["api"]["commands"][2].replace(
+                "contracts-ea56c63d5c9b679537bd9205b04626049c20c572",
+                "contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662",
+            )
             self.assertEqual(original, current.PROFILES)
 
     def test_accepted_money_inputs_flags_and_registry_survive_android_composition(self):
@@ -83,7 +99,24 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     capture_output=True, check=True, timeout=30,
                 ).stdout
                 current = (support.GOVERNANCE.parent / path).read_text(encoding="utf-8").encode("utf-8")
-                self.assertEqual(accepted, current)
+                if path.endswith("api-money-sources.json"):
+                    old, updated = json.loads(accepted), json.loads(current)
+                    updated["sources"][0]["commit"] = old["sources"][0]["commit"]
+                    updated["sources"][0]["snapshot"] = old["sources"][0]["snapshot"]
+                    changed_inputs = {
+                        "runtime/kotlin/src/main/kotlin/com/pennilogic/contracts/money/Money.kt",
+                        "generator/golden.json",
+                    }
+                    originals = {entry["path"]: entry for entry in old["sources"][0]["files"]}
+                    updated["sources"][0]["files"] = [
+                        originals[entry["path"]] if entry["path"] in changed_inputs else entry
+                        for entry in updated["sources"][0]["files"]
+                    ]
+                    updated["provider_outputs"][0] = old["provider_outputs"][0]
+                    updated["provider_outputs"][2] = old["provider_outputs"][2]
+                    self.assertEqual(old, updated)
+                else:
+                    self.assertEqual(accepted, current)
         accepted = json.loads(subprocess.run(
             ["git", "show", f"{ACCEPTED_BASE}:governance/conformance/check-names.json"],
             cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
@@ -93,6 +126,9 @@ class CanonicalPrivacyTests(unittest.TestCase):
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
         android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
+        api = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/api")
+        api["workflow_ref"] = next(entry["workflow_ref"] for entry in current["entries"]
+                                   if entry["repo"] == "PenniLogic/api")
         self.assertEqual(expected, current)
 
     def test_commands_restore_declared_requirements_and_preserve_every_old_gate(self):
