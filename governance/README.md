@@ -33,18 +33,27 @@ The API's five existing command-derived files change and the one script is added
 the setup workflow and the other eight profiles remain byte-identical.
 
 The catalog binds ten Contracts files at
-`ea56c63d5c9b679537bd9205b04626049c20c572` and exactly one Docs file,
+`aa8d90cb98cec9b6dd08c91b3a4d869e47362662` and exactly one Docs file,
 `governance/test-strategy.json`, at `a700e639585c61a4610e7b99dbd02b2dab28bdcc`.
 Every input has its numeric owning repository identity, full commit, Git blob,
 regular-file Git mode, raw size and SHA-256. The registry, accepted renderer,
 fixtures and goldens are inputs, not a second codec or currency registry.
+
+The accepted AA8 provider fixes cross-currency equality in unordered collections.
+Only its Money source and golden input changed; the other eight Contracts inputs,
+registry output and Docs strategy remain exact. The catalogue binds the new Money
+output and the freshly reproduced native `provider.json` provenance (2,404 bytes,
+SHA-256 `e982e5b7fcd26314cdf7a3fd79e3de5fd782ceac0bc35b6ea5c8e779c55b86a0`).
+That receipt was reproduced by the unchanged producer at frozen API source
+`35267fcf20a0de02760187e8ff72421a78f722ff`; running only that producer does not
+execute, adopt or approve its separately reviewed mutation proposal.
 
 The generated API command sequence is:
 
 ```text
 python scripts\check_repository.py
 python scripts\materialize_money_sources.py
-python scripts\money_provider.py --source-root "build\source-materialization\contracts-ea56c63d5c9b679537bd9205b04626049c20c572" --strategy-file "build\source-materialization\docs-a700e639585c61a4610e7b99dbd02b2dab28bdcc\governance\test-strategy.json"
+python scripts\money_provider.py --source-root "build\source-materialization\contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662" --strategy-file "build\source-materialization\docs-a700e639585c61a4610e7b99dbd02b2dab28bdcc\governance\test-strategy.json"
 python scripts\money_provider.py --verify
 python scripts\materialize_money_sources.py --verify
 python scripts\quality.py build
@@ -55,6 +64,13 @@ The existing explicit-base coverage command still follows this sequence in nativ
 The provider and unchanged normal build belong to the owning API candidate; that
 candidate must be adopted separately. Rendering these commands does not admit or
 release the currently unaccepted API Money source.
+
+The AA8 transition changes only the provider command's source-root pin literal,
+preserving all seven command identities and their shape/order. Its protected-profile
+projection changes from `46f6029b32f77a628a70ae632976a67b0a4e66ba77ba0cbdb0ed113be895423a`
+to `2d76a54b2358c2059e8ceddf18cdc51558ad897105c339183e67fb30a95df1a1`.
+This explicit source preparation is not an equality waiver or maintenance/native
+admission; the accepted validator, permissions, budgets and required checks are unchanged.
 
 Only named snapshots and their deterministic `materialization.json` receipt under
 `build/source-materialization` are written by the materializer. The API provider
@@ -96,8 +112,9 @@ and offline transport fixtures are not hosted executions or trusted-CI producer
 qualification. [Infra #22](https://github.com/PenniLogic/infra/issues/22), functional
 [PenniLogic/api#1](https://github.com/PenniLogic/api/issues/1) /
 [PenniLogic/contracts#1](https://github.com/PenniLogic/contracts/issues/1) adoption,
-independent review and release acceptance remain held. The mandatory 90% mutation
-floor is neither measured nor waived; its absent executable remains owned by
+independent review and release acceptance remain held. This catalogue unit neither
+measures nor waives the mandatory 90% mutation floor; methodology and executable
+qualification remain owned by
 [PenniLogic/api#22](https://github.com/PenniLogic/api/issues/22), dependent on
 [PenniLogic/api#3](https://github.com/PenniLogic/api/issues/3).
 
