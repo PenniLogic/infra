@@ -67,7 +67,7 @@ class GeneratedConformanceTests(unittest.TestCase):
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 output = generator.artifacts(repo)
-                self.assertEqual(23 if repo == "infra" else 20, len(output))
+                self.assertEqual(23 if repo == "infra" else 21 if repo == "api" else 20, len(output))
                 self.assertEqual({CI, SETUP, CONFORMANCE, PR_GATE} if repo == "infra" else {CI, SETUP},
                                  {name for name in output if name.startswith(".github/workflows/")})
 
