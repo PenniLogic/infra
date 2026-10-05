@@ -17,7 +17,7 @@ import conformance_support as support
 from conformance import steps
 
 
-ACCEPTED_BASE = "4db70d19b1d01b753bbd0e450835cb8414da2aa7"
+ACCEPTED_BASE = "1360c30a5caaff8039d76d57bfb9b060cf81a351"
 RESTORE = "python -m pip install -r scripts/privacy_traffic/requirements.txt"
 SELF_TEST = "python scripts/privacy_traffic_harness.py self-test"
 INVENTORY = "python scripts/check_privacy_components.py"
@@ -44,7 +44,8 @@ class CanonicalPrivacyTests(unittest.TestCase):
             for path in (
                 "generate.py", "repository-profiles.json", "templates/check_repository.py",
                 "templates/setup.py", "templates/pr_workflow_integrity.py",
-                "templates/pr_workflow_integrity_checker.py",
+                "templates/pr_workflow_integrity_checker.py", "api-money-sources.json",
+                "templates/materialize_money_sources.py",
             ):
                 content = subprocess.run(
                     ["git", "show", f"{ACCEPTED_BASE}:governance/{path}"],
@@ -72,6 +73,27 @@ class CanonicalPrivacyTests(unittest.TestCase):
             original["repositories"]["android"]["install"] = [RESTORE]
             original["repositories"]["android"]["commands"] = current.profile_for("android")["commands"]
             self.assertEqual(original, current.PROFILES)
+
+    def test_accepted_money_inputs_flags_and_registry_survive_android_composition(self):
+        for path in ("governance/api-money-sources.json", "governance/templates/materialize_money_sources.py"):
+            with self.subTest(path=path):
+                accepted = subprocess.run(
+                    ["git", "show", f"{ACCEPTED_BASE}:{path}"],
+                    cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+                    capture_output=True, check=True, timeout=30,
+                ).stdout
+                current = (support.GOVERNANCE.parent / path).read_text(encoding="utf-8").encode("utf-8")
+                self.assertEqual(accepted, current)
+        accepted = json.loads(subprocess.run(
+            ["git", "show", f"{ACCEPTED_BASE}:governance/conformance/check-names.json"],
+            cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+            capture_output=True, check=True, timeout=30,
+        ).stdout)
+        current = json.loads((support.GOVERNANCE / "conformance/check-names.json").read_bytes())
+        expected = copy.deepcopy(accepted)
+        android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
+        android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
+        self.assertEqual(expected, current)
 
     def test_commands_restore_declared_requirements_and_preserve_every_old_gate(self):
         commands = support.generator.profile_for("android")["commands"]

@@ -178,7 +178,7 @@ class RuntimeRenderingTests(unittest.TestCase):
         for name in support.generator.PROFILES["repositories"]:
             with self.subTest(profile=name):
                 self.assertEqual(name == "infra", ".nvmrc" in support.generator.artifacts(name))
-                self.assertEqual(23 if name == "infra" else 21 if name == "android" else 20,
+                self.assertEqual(23 if name == "infra" else 21 if name in ("api", "android") else 20,
                                  len(support.generator.artifacts(name)))
 
     def test_node_and_verified_uv_install_precede_the_authenticated_three_toolchain_run(self):
@@ -207,7 +207,7 @@ class RuntimeRenderingTests(unittest.TestCase):
             with self.subTest(node=node), self.assertRaises(ValueError):
                 support.generator.validate_profile("infra", profile)
 
-    def test_consumer_baselines_are_unchanged_except_explicit_android_adoptions(self):
+    def test_consumer_workflows_and_profiles_only_have_the_scoped_android_and_api_deltas(self):
         historical = registry.render_workflow_at(support.GOVERNANCE.parent, BASE, "infra")
         if historical is None:
             self.skipTest("accepted base not in shallow history; native workflow source binding not exercised")
@@ -243,6 +243,13 @@ class RuntimeRenderingTests(unittest.TestCase):
                             previous_commands[-2], "python scripts/privacy_traffic_harness.py self-test",
                             "python scripts/check_privacy_components.py", previous_commands[-1],
                         ]
+                    if name == "api":
+                        self.assertEqual([
+                            "python scripts/check_repository.py", "python scripts/quality.py build",
+                            "python -m unittest discover -s scripts/tests",
+                        ], previous_profile["commands"])
+                        previous_profile["commands"] = support.generator.profile_for("api")["commands"]
+                        previous_profile["money_source_materialization"] = True
                     for setup in (False, True):
                         expected = old.workflow(name, setup=setup)
                         if name == "android" and not setup:
@@ -265,6 +272,12 @@ class RuntimeRenderingTests(unittest.TestCase):
                                 ], run_checks["run"].split("\n"))
                                 run_checks["run"] = "\n".join(previous_profile["commands"])
                             expected = old.encoded(document)
+                        if name == "api" and not setup:
+                            value = json.loads(expected)
+                            run_checks = next(step for step in value["jobs"]["ci"]["steps"]
+                                              if step["name"] == "Run checks")
+                            run_checks["run"] = "\n".join(previous_profile["commands"])
+                            expected = json.dumps(value, indent=2) + "\n"
                         self.assertEqual(expected.encode("utf-8"),
                                          support.generator.workflow(name, setup=setup).encode("utf-8"))
                     self.assertEqual(previous_profile, support.generator.PROFILES["repositories"][name])

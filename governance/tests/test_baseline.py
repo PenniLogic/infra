@@ -92,7 +92,15 @@ class BaselineTests(unittest.TestCase):
             "docs": ["python scripts/check_docs.py", "python scripts/check_test_strategy.py",
                      "python -m unittest discover -s scripts/tests"],
             "contracts": CONTRACTS_COMMANDS[1:],
-            "api": ["python scripts/quality.py build", "python -m unittest discover -s scripts/tests"],
+            "api": [
+                "python scripts/materialize_money_sources.py",
+                'python scripts/money_provider.py --source-root '
+                '"build/source-materialization/contracts-ea56c63d5c9b679537bd9205b04626049c20c572" --strategy-file '
+                '"build/source-materialization/docs-a700e639585c61a4610e7b99dbd02b2dab28bdcc/governance/test-strategy.json"',
+                "python scripts/money_provider.py --verify",
+                "python scripts/materialize_money_sources.py --verify",
+                "python scripts/quality.py build", "python -m unittest discover -s scripts/tests",
+            ],
             "web": ["npm ci", "npm run lint", "npm run format:check", "npm run typecheck", "npm test",
                     "npm run build", "npm run check:bundle", "npm run report:build",
                     "npm run check:bundle:planted"],
@@ -209,7 +217,7 @@ class BaselineTests(unittest.TestCase):
                 self.assertEqual(1, output["README.md"].count(generator.TEST_STRATEGY + ".md)"))
                 for name in output:
                     if name != "README.md":
-                        self.assertNotIn("test-strategy", output[name], name)
+                        self.assertNotIn(generator.TEST_STRATEGY, output[name], name)
 
     def test_jdk_resolves_from_the_runner_tool_cache(self):
         for repo, profile in generator.PROFILES["repositories"].items():
