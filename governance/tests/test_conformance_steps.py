@@ -65,7 +65,10 @@ class ClassificationTests(unittest.TestCase):
                     changed.insert(1, replacement)
                 detected = steps.detect_steps(changed)
                 self.assertEqual(["build", "lint"], steps.missing_categories(detected, ("build", "test", "lint")))
-                self.assertEqual(["python scripts/quality_gates.py self-test"], detected["consumer_self_tests"])
+                self.assertEqual([
+                    "python scripts/quality_gates.py self-test",
+                    "python scripts/privacy_traffic_harness.py self-test",
+                ], detected["consumer_self_tests"])
 
     def test_known_profiles_classify_as_reviewed(self):
         web = steps.detect_steps(support.generator.PROFILES["repositories"]["web"]["commands"])
@@ -76,12 +79,19 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(["uv run --locked pytest"], ai["test"])
         self.assertEqual(["uv run --locked ruff check .", "uv run --locked ruff format --check .", "uv run --locked mypy"], ai["lint"])
         android = steps.detect_steps(support.generator.PROFILES["repositories"]["android"]["commands"])
-        self.assertEqual(["python scripts/quality_gates.py self-test"], android["consumer_self_tests"])
+        self.assertEqual([
+            "python scripts/quality_gates.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test",
+        ], android["consumer_self_tests"])
         ci = "python scripts/quality_gates.py ci"
         self.assertEqual([ci], android["build"])
         self.assertEqual([ci], android["lint"])
+        self.assertEqual(["python scripts/check_repository.py", "python scripts/check_privacy_components.py"],
+                         android["checker"])
         self.assertEqual([ci, "python scripts/quality_gates.py self-test",
+                          "python scripts/privacy_traffic_harness.py self-test",
                           'python -m unittest discover -s scripts/tests -p "test_*.py"'], android["test"])
+        self.assertEqual(["python -m pip install -r scripts/privacy_traffic/requirements.txt"], android["install"])
         self.assertEqual([], android["other"])
 
 

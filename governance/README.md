@@ -12,6 +12,8 @@ regenerates from the merged `main` in its own PR. Additionally, api alone has 21
 infra alone has 23 files: its report
 workflow is `.github/workflows/conformance.yml`, its additive gate is
 `.github/workflows/pr-workflow-integrity.yml`, and `.nvmrc` pins its real governance-fixture Node runtime.
+Android alone adds `scripts/check_privacy_components.py` (21 files), a narrow native-inventory
+extractor that invokes the Android-owned assertion.
 `governance/tests/test_rule_table.py` keeps this per-profile list equal to what `artifacts()` renders.
 
 ```text

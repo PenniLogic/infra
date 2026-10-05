@@ -145,8 +145,11 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(support.generator.workflow("android").encode("utf-8"), rendered)
         self.assertEqual([
             "python scripts/check_repository.py",
+            "python -m pip install -r scripts/privacy_traffic/requirements.txt",
             "python scripts/quality_gates.py ci",
             "python scripts/quality_gates.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test",
+            "python scripts/check_privacy_components.py",
             'python -m unittest discover -s scripts/tests -p "test_*.py"',
         ], steps.workflow_run_commands(rendered))
 
@@ -164,6 +167,24 @@ class RegistryTests(unittest.TestCase):
             "python scripts/quality_gates.py self-test",
             'python -m unittest discover -s scripts/tests -p "test_*.py"',
         ], commands[-2:])
+
+    def test_android_ref_commits_the_current_inventory_extractor_not_only_its_command(self):
+        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")
+        committed = subprocess.run(
+            ["git", "show", entry["workflow_ref"] + ":governance/templates/check_privacy_components.py"],
+            cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+            capture_output=True, check=False, timeout=30,
+        )
+        self.assertEqual(0, committed.returncode, "the Android binding must name a real extractor source commit")
+        self.assertEqual(
+            support.generator.artifacts("android")["scripts/check_privacy_components.py"].encode("utf-8"),
+            committed.stdout,
+        )
+        previous = registry.render_workflow_at(
+            support.GOVERNANCE.parent, "2832988d641137b65d32e4f51491157e9e09be4f", "android",
+        )
+        self.assertIsNotNone(previous)
+        self.assertNotEqual(support.generator.workflow("android").encode("utf-8"), previous)
 
     def test_render_workflow_at_returns_none_for_an_unknown_commit(self):
         def run(command, **kwargs):
