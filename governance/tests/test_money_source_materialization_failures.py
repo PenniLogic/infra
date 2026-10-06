@@ -122,7 +122,7 @@ class RealHTTPFramingTests(unittest.TestCase):
                 with mock.patch.object(materializer, "CATALOG", fixture.catalog):
                     root = Path(directory)
                     result = materializer.materialize(root, fixture.client())
-                    self.assertEqual(("materialized", 11, 31),
+                    self.assertEqual(("materialized", 11, 17),
                                      (result["status"], result["inputs"], result["requests"]))
                     materializer.verify_inputs(root)
 
@@ -345,8 +345,8 @@ class GeneratedCLIModeTests(unittest.TestCase):
                 result, observed, fixture = self.execute(root, None)
                 self.assertEqual(0, result.returncode, result.stderr.decode())
                 self.assertEqual("verified_existing" if cached else "materialized", json.loads(result.stdout)["status"])
-                self.assertEqual(0 if cached else 32, observed["requests"])
-                self.assertEqual(0 if cached else 32, observed["authorization_requests"])
+                self.assertEqual(0 if cached else 18, observed["requests"])
+                self.assertEqual(0 if cached else 18, observed["authorization_requests"])
                 materializer.verify_inputs(root, fixture.catalog)
                 if cached:
                     materializer.verify_provider(root, fixture.catalog)
@@ -378,7 +378,7 @@ class GeneratedCLIModeTests(unittest.TestCase):
                         fixture.write_provider(root)
                     result, observed, fixture = self.execute(root, marker, authenticated_local=False)
                     self.assertEqual(0, result.returncode, result.stderr.decode())
-                    self.assertEqual(0 if cached else 31, observed["requests"])
+                    self.assertEqual(0 if cached else 17, observed["requests"])
                     self.assertEqual(0, observed["authorization_requests"])
                     materializer.verify_inputs(root, fixture.catalog)
 

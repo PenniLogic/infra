@@ -91,10 +91,14 @@ class CanonicalPrivacyTests(unittest.TestCase):
             self.assertEqual(original, current.PROFILES)
 
     def test_accepted_money_inputs_flags_and_registry_survive_android_composition(self):
+        current_registry = json.loads((support.GOVERNANCE / "conformance/check-names.json").read_bytes())
+        api_source = next(entry["workflow_ref"] for entry in current_registry["entries"]
+                          if entry["repo"] == "PenniLogic/api")
         for path in ("governance/api-money-sources.json", "governance/templates/materialize_money_sources.py"):
             with self.subTest(path=path):
+                source = api_source if path.endswith("materialize_money_sources.py") else ACCEPTED_BASE
                 accepted = subprocess.run(
-                    ["git", "show", f"{ACCEPTED_BASE}:{path}"],
+                    ["git", "show", f"{source}:{path}"],
                     cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
                     capture_output=True, check=True, timeout=30,
                 ).stdout
@@ -122,7 +126,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
             cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
             capture_output=True, check=True, timeout=30,
         ).stdout)
-        current = json.loads((support.GOVERNANCE / "conformance/check-names.json").read_bytes())
+        current = current_registry
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
         android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
