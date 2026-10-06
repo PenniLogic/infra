@@ -243,6 +243,27 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual(1, process.returncode)
             self.assertEqual("DATABASE_EXTENSION_DENIED", self.case.response(process)["reason"])
 
+    def test_quoted_keyword_composite_type_is_denied_through_both_managed_boundaries(self):
+        self.case.data["nodes"].append({
+            "id": "ordinary", "kind": "SOURCE", "source_kind": "NON_USER_REFERENCE", "evidence": list(self.case.evidence),
+        })
+        self.case.define('CREATE TABLE pennilogic."bigint" (v TEXT); CREATE TABLE pennilogic.sample (amount "bigint");', [
+            {"name": "pennilogic.bigint.v", "sql_type": "text", "provenance": "ordinary"},
+            {"name": "pennilogic.sample.amount", "sql_type": "bigint", "provenance": "money"},
+        ], reverse='DROP TABLE pennilogic.sample RESTRICT; DROP TABLE pennilogic."bigint" RESTRICT;')
+        self.install()
+        for selection in ([], self.case.request["selection"]):
+            for command in ("plan", "admit-apply"):
+                with self.subTest(selection=selection, command=command):
+                    request = {**self.case.request, "selection": selection,
+                               **({"plan_sha256": "0" * 64} if command == "admit-apply" else {})}
+                    process = self.invoke("run", command, request=request)
+                    self.assertEqual(1, process.returncode, process.stdout + process.stderr)
+                    response = self.case.response(process)
+                    self.assertEqual("SQL_UNSUPPORTED_TYPE", response["reason"])
+                    self.assertEqual([], response["scripts"])
+                    self.assertIsNone(response["plan_sha256"])
+
     def test_encrypted_embedding_alias_is_not_exempt_in_managed_bundle(self):
         self.case.data["nodes"].extend([
             {"id": "embedding", "kind": "EMBED", "inputs": ["money"]},

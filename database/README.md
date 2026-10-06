@@ -118,7 +118,17 @@ UUID, date/time, boolean, JSON, bytea and arrays. A type/name is never evidence
 of non-embedding semantics. It supports simple primary/unique/foreign-key,
 literal-default and scalar CHECK constraints, including exact integer arithmetic,
 comparisons, IN/BETWEEN/IS NULL, `isfinite` and `char_length`.
-Identifiers are ASCII lowercase (including equivalent quoted identifiers).
+Schema/table/column identifiers are ASCII lowercase after normal unquoted
+case-folding; equivalent lowercase quoted identifiers are supported.
+
+Unqualified type names must be **unquoted** SQL words. `"bigint"` and `"integer"`
+are type-identifier lookups, not builtin keyword aliases: a table created in the
+same plan can supply a composite row type with that name. `"char"` also denotes
+a different PostgreSQL catalog type from ordinary `CHAR`. Unqualified quoted
+types, including their array/modifier forms, are conservatively refused rather
+than resolved. Explicit `pg_catalog` qualification accepts only the existing
+closed catalog-name list; `pg_catalog."int8"` and `"pg_catalog"."int8"` preserve
+the builtin integer identity. Quoted case is never folded into another type.
 
 Unrecognized statement/constraint/type syntax is explicitly refused. In
 particular, generic DML, CTAS/SELECT INTO, COPY, aliases/domains, views,

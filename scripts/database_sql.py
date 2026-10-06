@@ -154,12 +154,16 @@ class Parser:
         return item.value
 
     def column_type(self) -> str:
+        type_token = self.current
         name = self.identifier()
         if name == "pg_catalog":
             self.require(".")
             name = self.identifier()
             if name not in CATALOG_TYPES:
                 raise SqlRefused("SQL_UNSUPPORTED_TYPE")
+        elif type_token.kind == "identifier":
+            # Quoted keyword aliases can resolve to same-plan composite row types.
+            raise SqlRefused("SQL_UNSUPPORTED_TYPE")
         name = TYPE_ALIASES.get(name, name)
         if name not in TYPES and name != "double precision":
             raise SqlRefused("SQL_UNSUPPORTED_TYPE")

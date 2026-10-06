@@ -646,10 +646,72 @@ class SqlBoundaryTests(BoundaryCase):
         self.admit()
 
     def test_schema_qualified_add_column_has_the_same_semantic_gate(self):
-        self.define('ALTER TABLE "pennilogic"."sample" ADD COLUMN "amount_minor" pg_catalog.int8;', [
-            {"name": "pennilogic.sample.amount_minor", "sql_type": "bigint", "provenance": "money"},
-        ])
-        self.admit()
+        for spelling in ("pg_catalog.int8", "BIGINT", "iNt8", "PG_CATALOG.INT8",
+                         'pg_catalog."int8"', '"pg_catalog".int8', '"pg_catalog"."int8"'):
+            with self.subTest(spelling=spelling):
+                self.define(f'ALTER TABLE "pennilogic"."sample" ADD COLUMN "amount_minor" {spelling};', [
+                    {"name": "pennilogic.sample.amount_minor", "sql_type": "bigint", "provenance": "money"},
+                ])
+                self.admit()
+
+    def test_same_plan_quoted_keyword_row_types_are_refused_in_every_direction_and_noop_selection(self):
+        self.data["nodes"].append({
+            "id": "ordinary", "kind": "SOURCE", "source_kind": "NON_USER_REFERENCE", "evidence": list(self.evidence),
+        })
+        for name in ("bigint", "integer"):
+            sql = f'CREATE TABLE pennilogic."{name}" (v TEXT); CREATE TABLE pennilogic.sample (amount "{name}");'
+            columns = [
+                {"name": f"pennilogic.{name}.v", "sql_type": "text", "provenance": "ordinary"},
+                {"name": "pennilogic.sample.amount", "sql_type": name, "provenance": "money"},
+            ]
+            for direction in ("up", "down", "compensating"):
+                if direction == "up":
+                    self.define(sql, columns, reverse=f'DROP TABLE pennilogic.sample RESTRICT; DROP TABLE pennilogic."{name}" RESTRICT;')
+                else:
+                    self.define("CREATE SCHEMA pennilogic;", [], reverse=sql,
+                                direction=direction, reverse_columns=columns)
+                selections = ([], [{"id": "V001__sample", "direction": "up"}])
+                if direction != "up":
+                    selections += ([{"id": "V001__sample", "direction": direction}],)
+                for selection in selections:
+                    self.request["selection"] = selection
+                    for command in ("plan", "admit-apply"):
+                        with self.subTest(name=name, direction=direction, selection=selection, command=command):
+                            self.deny("SQL_UNSUPPORTED_TYPE", command=command)
+
+    def test_unqualified_quoted_catalog_names_modifiers_and_arrays_are_outside_supported_subset(self):
+        self.data["nodes"] = [
+            {"id": "ordinary", "kind": "SOURCE", "source_kind": "NON_USER_REFERENCE", "evidence": list(self.evidence)},
+        ]
+        for spelling, normal in (('"char"', "char"), ('"int8"', "bigint"), ('"text"', "text"),
+                                 ('"numeric"(8,2)', "numeric(8,2)"), ('"timestamp"(3)', "timestamp(3)"),
+                                 ('"bigint"[]', "bigint[]"), ('"integer"[][]', "integer[][]")):
+            self.define(f"CREATE TABLE pennilogic.sample (value {spelling});", [
+                {"name": "pennilogic.sample.value", "sql_type": normal, "provenance": "ordinary"},
+            ])
+            for command in ("plan", "admit-apply"):
+                with self.subTest(spelling=spelling, command=command):
+                    self.deny("SQL_UNSUPPORTED_TYPE", command=command)
+
+    def test_quoted_type_case_and_unknown_qualified_identity_are_not_folded_into_builtins(self):
+        for spelling, reason in (
+            ('"BIGINT"', "SQL_UNSUPPORTED_IDENTIFIER"),
+            ('"Bigint"', "SQL_UNSUPPORTED_IDENTIFIER"),
+            ('pg_catalog."INT8"', "SQL_UNSUPPORTED_IDENTIFIER"),
+            ('"PG_CATALOG".int8', "SQL_UNSUPPORTED_IDENTIFIER"),
+            ('pennilogic."bigint"', "SQL_UNSUPPORTED_TYPE"),
+            ('"pennilogic"."bigint"', "SQL_UNSUPPORTED_TYPE"),
+            ('pg_catalog."bigint"', "SQL_UNSUPPORTED_TYPE"),
+            ('"pg_catalog"."integer"', "SQL_UNSUPPORTED_TYPE"),
+            ('pg_catalog."char"', "SQL_UNSUPPORTED_TYPE"),
+            ("pg_catalog.real", "SQL_UNSUPPORTED_TYPE"),
+        ):
+            self.define(f"CREATE TABLE pennilogic.sample (amount_minor {spelling});", [
+                {"name": "pennilogic.sample.amount_minor", "sql_type": "bigint", "provenance": "money"},
+            ])
+            for command in ("plan", "admit-apply"):
+                with self.subTest(spelling=spelling, command=command):
+                    self.deny(reason, command=command)
 
     def test_supported_catalog_type_aliases_normalize_without_exempting_embedding_lineage(self):
         self.data["nodes"] = [
@@ -657,7 +719,10 @@ class SqlBoundaryTests(BoundaryCase):
             {"id": "vector", "kind": "EMBED", "inputs": ["source"]},
         ]
         for spelling, normal in (("int8[]", "bigint[]"), ("pg_catalog.float4[]", "real[]"),
-                                 ("pg_catalog.float8[]", "double precision[]"), ("DECIMAL(8,2)", "numeric(8,2)")):
+                                 ("pg_catalog.float8[]", "double precision[]"), ("DECIMAL(8,2)", "numeric(8,2)"),
+                                 ('pg_catalog."int8"[]', "bigint[]"), ('"pg_catalog"."float4"[]', "real[]"),
+                                 ('pg_catalog."float8"[]', "double precision[]"),
+                                 ('pg_catalog."numeric"(8,2)', "numeric(8,2)"), ('pg_catalog."bpchar"(3)', "char(3)")):
             self.define(f"CREATE TABLE pennilogic.sample (value {spelling});", [
                 {"name": "pennilogic.sample.value", "sql_type": normal, "provenance": "source"},
             ])
@@ -665,6 +730,7 @@ class SqlBoundaryTests(BoundaryCase):
             self.data["scripts"][0]["columns"][0]["provenance"] = "vector"
             self.seal_inventory()
             self.deny("EMBEDDING_COLUMN_DENIED")
+            self.deny("EMBEDDING_COLUMN_DENIED", command="admit-apply")
 
     def test_unknown_grammar_is_refused_even_if_its_inventory_checksum_was_registered(self):
         statements = [
