@@ -38,6 +38,16 @@ def binding(content):
             "git_blob": hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()}
 
 
+def tree_identity(entries):
+    ordered = sorted(entries, key=lambda entry: (
+        entry["path"] + ("/" if entry["type"] == "tree" else "")
+    ).encode("utf-8"))
+    content = b"".join(entry["mode"].lstrip("0").encode("ascii") + b" "
+                       + entry["path"].encode("utf-8") + b"\0" + bytes.fromhex(entry["sha"])
+                       for entry in ordered)
+    return hashlib.sha1(b"tree " + str(len(content)).encode("ascii") + b"\0" + content).hexdigest()
+
+
 class Response(io.BytesIO):
     status = 200
 
@@ -73,22 +83,30 @@ class Transport:
                 }
                 parts = entry["path"].split("/")
                 directories.update("/".join(parts[:index]) for index in range(1, len(parts)))
-            identities = {path: hashlib.sha1((repository + ":" + path).encode()).hexdigest() for path in directories}
-            self.data[prefix + "/git/commits/" + source["commit"]] = {
-                "sha": source["commit"], "tree": {"sha": identities[""]},
-            }
             trees = {path: [] for path in directories}
-            for path in directories - {""}:
-                parent, _, name = path.rpartition("/")
-                trees[parent].append({"path": name, "type": "tree", "mode": "040000", "sha": identities[path]})
             for entry in source["files"]:
                 parent, _, name = entry["path"].rpartition("/")
                 trees[parent].append({"path": name, "type": "blob", "mode": entry["mode"],
                                       "sha": entry["git_blob"], "size": entry["bytes"]})
+            identities = {}
+            for path in sorted(directories, key=lambda name: (name.count("/"), len(name)), reverse=True):
+                identities[path] = tree_identity(trees[path])
+                if path:
+                    parent, _, name = path.rpartition("/")
+                    trees[parent].append({"path": name, "type": "tree", "mode": "040000", "sha": identities[path]})
+            self.data[prefix + "/git/commits/" + source["commit"]] = {
+                "sha": source["commit"], "tree": {"sha": identities[""]},
+            }
+            recursive = []
             for path, entries in trees.items():
                 self.data[prefix + "/git/trees/" + identities[path]] = {
                     "sha": identities[path], "truncated": False, "tree": entries,
                 }
+                recursive.extend({**entry, "path": path + "/" + entry["path"] if path else entry["path"]}
+                                 for entry in entries)
+            self.data[prefix + "/git/trees/" + identities[""] + "?recursive=1"] = {
+                "sha": identities[""], "truncated": False, "tree": recursive,
+            }
         self.provider = {}
         for source in self.catalog["sources"]:
             prefix = "source/" if source["repository"] == "PenniLogic/contracts" else "strategy/"
@@ -256,7 +274,7 @@ class MaterializationTests(unittest.TestCase):
     def test_real_client_fetches_exact_git_objects_and_creates_only_owned_inputs(self):
         result = self.prepare()
         self.assertEqual("materialized", result["status"])
-        self.assertEqual((11, 31), (result["inputs"], result["requests"]))
+        self.assertEqual((11, 17), (result["inputs"], result["requests"]))
         self.assertFalse((self.root / materializer.PROVIDER).exists())
         for name, expected in self.transport.contents.items():
             self.assertEqual(expected, (self.root / materializer.INPUTS / name).read_bytes())
@@ -293,7 +311,7 @@ class MaterializationTests(unittest.TestCase):
             with self.subTest(missing=name), self.assertRaises(materializer.MaterializationError):
                 materializer.verify_provider(self.root)
             path.write_bytes(original)
-        self.assertEqual(31, len(self.transport.calls))
+        self.assertEqual(17, len(self.transport.calls))
 
     def test_missing_tampered_extra_and_partial_snapshots_refuse_without_repair(self):
         self.prepare()
@@ -329,7 +347,7 @@ class MaterializationTests(unittest.TestCase):
         prefix = "/repos/" + source["repository"]
         commit_path = prefix + "/git/commits/" + source["commit"]
         root = self.transport.data[commit_path]["tree"]["sha"]
-        root_path = prefix + "/git/trees/" + root
+        root_path = prefix + "/git/trees/" + root + "?recursive=1"
         entry = source["files"][0]
         blob_path = prefix + "/git/blobs/" + entry["git_blob"]
         changes = [
@@ -368,7 +386,7 @@ class MaterializationTests(unittest.TestCase):
         env = {"GH_TOKEN": "synthetic-process-local-token"}
         with mock.patch.dict(os.environ, env, clear=True):
             client = self.transport.client(authenticated_local=True, environ=env)
-            self.assertEqual(32, materializer.materialize(self.root, client)["requests"])
+            self.assertEqual(18, materializer.materialize(self.root, client)["requests"])
         self.assertTrue(all(request.headers["Authorization"] == "Bearer synthetic-process-local-token"
                             for request, _ in self.transport.calls))
         for denied in ({}, {"GITHUB_TOKEN": env["GH_TOKEN"]}, {**env, "GITHUB_ACTIONS": "true"}):
@@ -499,7 +517,7 @@ class TransportBoundsTests(unittest.TestCase):
             (TimeoutError("untrusted exception content"), "source-unavailable"),
             (urllib.error.URLError("untrusted exception content"), "source-unavailable"),
             (urllib.error.HTTPError(self.path, 403, "untrusted exception content", {}, io.BytesIO(b"body")),
-             "source-denied"),
+             "source-forbidden"),
             (b'{"id":1,"id":2}', "duplicate-json-key"),
             (b"\xef\xbb\xbf{}", "json-bom"), (b"\xff", "metadata-json"), (b'{"id":NaN}', "json-number"),
         ]:

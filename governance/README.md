@@ -90,6 +90,12 @@ a partial snapshot; that retry refuses rather than repairing unknown inputs.
 
 Fetch mechanics reuse the accepted validator's fixed GitHub HTTPS GET, numeric
 identity, commit/tree/blob and bounded-read patterns, without changing that validator.
+Each fixed source uses one complete, nontruncated recursive Git-tree response.
+All paths, explicit ancestors, type/mode pairs and blob sizes are validated; each
+subtree and the commit-bound root are recomputed using Git's tree-object encoding.
+This replaces sixteen directory-tree reads with two, reducing a fresh fixed-catalogue
+fetch from 31 to 17 anonymous GETs (18 with the explicit local user-identity read).
+It reduces request pressure, not the possibility of rate limiting or a service denial.
 Redirects and proxy selection are disabled. Declared Content-Length must be complete;
 chunked reads use the stdlib HTTP parser, and close-delimited responses remain bounded.
 Ambiguous/invalid length or transfer framing refuses with a static protocol code.
@@ -105,6 +111,14 @@ client/provider/cache handling whenever `GITHUB_ACTIONS` is present, regardless 
 its value (including empty, false-like, case-variant or malformed markers),
 never consults stored auth or falls back, and never records credentials.
 HTTP/rate-limit/timeout/decoding failures report static refusal codes.
+HTTP 401, 403 and 404 report `source-unauthorized`, `source-forbidden` and
+`source-not-found`. A 403 with one exact exhausted-rate header reports
+`source-rate-exhausted`; 429 reports `source-rate-limited`, and 5xx reports
+`source-http-unavailable`. Transport failures retain `source-unavailable`.
+Error bodies and header values are never read into diagnostics, and no HTTP failure
+triggers retries, credentials or a fallback. The historical accepted API push failure
+reported only `source-denied`, so its exact HTTP cause cannot be recovered or asserted
+as quota exhaustion; current local access is not hosted recovery evidence.
 
 The check-name registry binds the API workflow to an actual source commit in a
 subsequent registry-only commit, not a guessed/self-referential SHA. Local source

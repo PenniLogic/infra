@@ -219,6 +219,27 @@ class ChunkedCompletion:
         return getattr(self.stream, name)
 
 
+def http_refusal(error):
+    if error.code == 401:
+        return "source-unauthorized"
+    if error.code == 403:
+        headers = error.headers
+        if headers is None:
+            remaining = []
+        elif hasattr(headers, "get_all"):
+            remaining = headers.get_all("X-RateLimit-Remaining", [])
+        else:
+            remaining = [headers.get("X-RateLimit-Remaining")]
+        return "source-rate-exhausted" if remaining == ["0"] else "source-forbidden"
+    if error.code == 404:
+        return "source-not-found"
+    if error.code == 429:
+        return "source-rate-limited"
+    if 500 <= error.code <= 599:
+        return "source-http-unavailable"
+    return "source-http"
+
+
 class ReadOnlyClient:
     """Use the accepted PR-validator's bounded Git-object GET pattern, without its gate policy."""
 
@@ -242,7 +263,7 @@ class ReadOnlyClient:
             prefix = re.escape("/repos/" + source["repository"])
             blobs = "|".join(entry["git_blob"] for entry in source["files"])
             allowed.append(prefix + r"(?:|/git/commits/" + source["commit"]
-                           + r"|/git/trees/[0-9a-f]{40}|/git/blobs/(?:" + blobs + r"))")
+                           + r"|/git/trees/[0-9a-f]{40}\?recursive=1|/git/blobs/(?:" + blobs + r"))")
         if authenticated_local:
             allowed.append("/user")
         self.paths = re.compile("|".join(allowed))
@@ -280,12 +301,24 @@ class ReadOnlyClient:
             self.budget.remaining(deadline)
             return value
         except urllib.error.HTTPError as error:
+            code = http_refusal(error)
             error.close()
-            raise MaterializationError("source-denied" if error.code in (401, 403, 404) else "source-http") from None
+            raise MaterializationError(code) from None
         except http.client.HTTPException:
             raise MaterializationError("source-protocol") from None
         except (urllib.error.URLError, OSError, TimeoutError):
             raise MaterializationError("source-unavailable") from None
+
+
+def git_tree_digest(entries):
+    # Git sorts a directory name as though it ends in "/", and stores mode 040000 as 40000.
+    ordered = sorted(entries, key=lambda entry: (
+        entry["path"].rsplit("/", 1)[-1] + ("/" if entry["type"] == "tree" else "")
+    ).encode("utf-8"))
+    content = b"".join(entry["mode"].lstrip("0").encode("ascii") + b" "
+                       + entry["path"].rsplit("/", 1)[-1].encode("utf-8") + b"\0"
+                       + bytes.fromhex(entry["sha"]) for entry in ordered)
+    return hashlib.sha1(b"tree " + str(len(content)).encode("ascii") + b"\0" + content).hexdigest()
 
 
 class GitSnapshot:
@@ -302,37 +335,53 @@ class GitSnapshot:
         commit = mapping(client.get(self.prefix + "commits/" + source["commit"]))
         require(commit.get("sha") == source["commit"], "source-commit")
         self.root = sha(mapping(commit.get("tree")).get("sha"))
-        self.trees = {}
+        self.entries = self.tree()
 
-    def tree(self, identity):
-        if identity not in self.trees:
-            data = mapping(self.client.get(self.prefix + "trees/" + sha(identity)))
-            entries = data.get("tree")
-            require(data.get("sha") == identity and data.get("truncated") is False
-                    and isinstance(entries, list) and len(entries) <= 4096, "source-tree")
-            indexed = {}
-            for raw in entries:
-                entry = mapping(raw)
-                path = entry.get("path")
-                require(isinstance(path, str) and 1 <= len(path) <= 1024 and path not in (".", "..")
-                        and "/" not in path and "\\" not in path and path not in indexed
-                        and all(ord(char) >= 32 and char != "\x7f" for char in path), "source-tree-path")
-                sha(entry.get("sha"))
-                require(entry.get("type") in ("tree", "blob", "commit")
-                        and entry.get("mode") in ("040000", "100644", "100755", "120000", "160000"), "source-tree")
-                indexed[path] = entry
-            self.trees[identity] = indexed
-        return self.trees[identity]
+    def tree(self):
+        data = mapping(self.client.get(self.prefix + "trees/" + self.root + "?recursive=1"))
+        entries = data.get("tree")
+        require(data.get("sha") == self.root and data.get("truncated") is False
+                and isinstance(entries, list) and len(entries) <= 4096, "source-tree")
+        indexed = {}
+        modes = {"tree": ("040000",), "blob": ("100644", "100755", "120000"), "commit": ("160000",)}
+        for raw in entries:
+            self.client.budget.remaining()
+            entry = mapping(raw)
+            path = entry.get("path")
+            require(isinstance(path, str) and 1 <= len(path) <= 1024 and path not in indexed
+                    and "\\" not in path and all(part not in ("", ".", "..") for part in path.split("/"))
+                    and all(ord(char) >= 32 and char != "\x7f" for char in path), "source-tree-path")
+            try:
+                path.encode("utf-8")
+            except UnicodeError:
+                raise MaterializationError("source-tree-path") from None
+            sha(entry.get("sha"))
+            kind = entry.get("type")
+            require(isinstance(kind, str) and kind in modes and entry.get("mode") in modes[kind], "source-tree")
+            if kind == "blob":
+                require(type(entry.get("size")) is int and entry["size"] >= 0, "source-tree")
+            indexed[path] = entry
+        children = {"": []}
+        children.update({path: [] for path, entry in indexed.items() if entry["type"] == "tree"})
+        for path, entry in indexed.items():
+            parent = path.rpartition("/")[0]
+            require(parent in children, "source-tree-parent")
+            children[parent].append(entry)
+        for path, items in children.items():
+            self.client.budget.remaining()
+            expected = indexed[path]["sha"] if path else self.root
+            require(git_tree_digest(items) == expected, "source-tree-integrity")
+        return indexed
 
     def blob(self, binding):
-        parts, identity = binding["path"].split("/"), self.root
-        for index, part in enumerate(parts):
-            entry = self.tree(identity).get(part)
+        parts = binding["path"].split("/")
+        for index in range(len(parts)):
+            entry = self.entries.get("/".join(parts[:index + 1]))
             require(entry is not None, "source-input-missing")
             final = index == len(parts) - 1
             require(entry["type"] == ("blob" if final else "tree")
                     and entry["mode"] == (binding["mode"] if final else "040000"), "source-entry-mode")
-            identity = entry["sha"]
+        identity = entry["sha"]
         require(identity == binding["git_blob"] and type(entry.get("size")) is int
                 and entry["size"] == binding["bytes"], "source-blob-binding")
         data = mapping(self.client.get(self.prefix + "blobs/" + identity))
