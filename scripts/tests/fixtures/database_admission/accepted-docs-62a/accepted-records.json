@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "number": "ADR-015",
+      "date": "2026-09-30",
+      "sha256": "9328236928182e11d1312dbe77a49e61fe5bcb79c6cd2fd62d4045f0d47461ef",
+      "bytes": 53821
+    },
+    {
+      "number": "ADR-016",
+      "date": "2026-09-30",
+      "sha256": "3de637cf26eeebcd58748bbc39565f303a02756de0d3b15370d02bf4e7b1b03d",
+      "bytes": 161913
+    },
+    {
+      "number": "ADR-017",
+      "date": "2026-09-30",
+      "sha256": "5cea7cd87eb53c99b6dadc9bdb725ba19647c9c7f08f4af683186e2638f2f3d5",
+      "bytes": 113876
+    },
+    {
+      "number": "ADR-018",
+      "date": "2026-09-30",
+      "sha256": "6781fd6f9897508683397e6d659f212041b21fbc36579bb0eb91705410ec2aae",
+      "bytes": 145760
+    },
+    {
+      "number": "ADR-019",
+      "date": "2026-09-30",
+      "sha256": "9afd42cf69fafde144a0dacce45b07d3a1914c4de3b1ff3548804b1fc2278bcd",
+      "bytes": 114156
+    },
+    {
+      "number": "ADR-020",
+      "date": "2026-09-30",
+      "sha256": "1beee6eb764fc61b9f8eca71e7eee8ddb5d0012908edaf8c1b3d13329d26a6c8",
+      "bytes": 131373
+    },
+    {
+      "number": "ADR-021",
+      "date": "2026-09-30",
+      "sha256": "8013b8ceff8010f0d2e16edb8fa9c456d4135053a2ad62e8cd4ed99168d30011",
+      "bytes": 194790
+    },
+    {
+      "number": "ADR-022",
+      "date": "2026-10-05",
+      "sha256": "923069193103d6c65f31a1bb0662cb073b0c3ebd7d1557ddb0d07fceb7762047",
+      "bytes": 72851
+    },
+    {
+      "number": "ADR-023",
+      "date": "2026-09-30",
+      "sha256": "100a5d7637fa38be19a9c8ad9eba68016034d5fb86b50deec9ff69bfb4bb5596",
+      "bytes": 118444
+    },
+    {
+      "number": "ADR-024",
+      "date": "2026-10-04",
+      "sha256": "02c5bdd1e44d69ca4e9488ab2c8d27a3e5f35a3fa9fc8d4c9cfbc9c383216389",
+      "bytes": 19735
+    },
+    {
+      "number": "ADR-025",
+      "date": "2026-10-04",
+      "sha256": "148fe74a232a7bdc1b149f7807adbad24b1679aed0024c8ffe98b94d1cb6fd38",
+      "bytes": 33609
+    }
+  ]
+}

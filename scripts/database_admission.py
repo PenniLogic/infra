@@ -26,7 +26,7 @@ COLUMN = re.compile(r"[a-z_][a-z_0-9]{0,62}(?:\.[a-z_][a-z_0-9]{0,62}){2}\Z")
 SOURCE_PATH = re.compile(r"[A-Za-z_0-9.-]+(?:/[A-Za-z_0-9.-]+)*\Z")
 POLICY_FILES = {
     "adr/ADR-025.md": (
-        "9a7b97abeb9e8bc5a8e722561230b625f793966d34651d7f7ba68d17c7bca048", 32503,
+        "148fe74a232a7bdc1b149f7807adbad24b1679aed0024c8ffe98b94d1cb6fd38", 33609,
     ),
     "adr/embedding-policy.json": (
         "ca9ed351085b5bf34a4b07f68607fb624022245700a4a230b8cd0ead5b8f8af9", 9884,

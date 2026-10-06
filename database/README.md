@@ -8,10 +8,12 @@ The development Compose bootstrap is deliberately not used as a substitute.
 
 This source does **not** complete Infra25 or Docs56. The shipped installation
 has no accepted embedding-policy binding and no accepted semantic inventory:
-`admission-trust.json` denies admission. Docs PR171's exact proposal is supported
-as an input version, **not registered as accepted**. No CLI argument, environment
+`admission-trust.json` denies admission. The exact policy source accepted through
+Docs PR171 at `62a627f67ced1494679be6321ae9deb7f6af7692` is supported as an input
+version, **not registered in this installation**. The obsolete draft ADR bytes
+are not an alternate supported provider. No CLI argument, environment
 flag, local `ACCEPTED` header, issue state, caller checksum or returned plan
-digest can change that. Even eventual acceptance of the prohibited choice
+digest can change that. Protected acceptance of the prohibited choice
 authorizes no embedding persistence.
 
 ## Invocation and additive API contract
@@ -238,8 +240,11 @@ unbound source-only installation is never operational admission proof.
 Root must separately register the genuine protected-accepted Docs commit,
 exact policy/schema/ADR bytes and the source's `adr/accepted-records.json`.
 The registry's ADR-025 date/SHA/length must match; stale/missing/tampered or
-unsupported sources fail closed. The supported proposal files remain the Docs
+unsupported sources fail closed. The supported accepted files remain the Docs
 source of truth; immutable test snapshots are only reproducible test inputs.
+The original unaccepted proposal snapshots are retained for refusal regressions,
+not relabeled as accepted source. Policy/schema bytes, version, decision date
+and prohibition semantics are unchanged by the accepted ADR reconciliation.
 The installed trust file is part of the reviewed, immutable consumer
 installation, **not** a writable migration input or proof of review identity.
 

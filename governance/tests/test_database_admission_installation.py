@@ -279,6 +279,46 @@ class InstallationTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.refused("run", "plan", request={**self.case.request, key: {}}, code="installation-envelope")
 
+    def test_old_or_tampered_policy_inputs_cannot_override_installed_accepted_bytes(self):
+        self.install()
+        _pin, obsolete = gate_tests.source_pair(
+            1394134442, gate_tests.POLICY_COMMIT, gate_tests.policy_contents(accepted=False),
+        )
+        tampered = copy.deepcopy(self.case.request["policy"])
+        for record in tampered["files"]:
+            if record["path"] == "adr/ADR-025.md":
+                record["content_base64"] = gate_tests.encode(self.case.policy_files[record["path"]] + b"\n")
+        for name, policy in (("obsolete", obsolete), ("tampered", tampered)):
+            for command in ("plan", "admit-apply"):
+                request = {**self.case.request, "policy": policy,
+                           **({"plan_sha256": "0" * 64} if command == "admit-apply" else {})}
+                with self.subTest(source=name, command=command):
+                    self.refused("run", command, request=request, code="installation-envelope")
+
+    def test_prepared_obsolete_proposal_is_denied_at_both_managed_boundaries(self):
+        self.case.policy_files = gate_tests.policy_contents(accepted=False)
+        self.case.trust["accepted_policy"], self.case.request["policy"] = gate_tests.source_pair(
+            1394134442, gate_tests.POLICY_COMMIT, self.case.policy_files,
+        )
+        self.install()
+        for command in ("plan", "admit-apply"):
+            request = {**self.case.request, **({"plan_sha256": "0" * 64} if command == "admit-apply" else {})}
+            process = self.invoke("run", command, request=request)
+            self.assertEqual(1, process.returncode)
+            self.assertEqual("POLICY_UNSUPPORTED_VERSION", self.case.response(process)["reason"])
+
+    def test_prepared_obsolete_registry_cannot_bind_the_accepted_adr(self):
+        self.case.policy_files["adr/accepted-records.json"] = gate_tests.policy_contents(accepted=False)["adr/accepted-records.json"]
+        self.case.trust["accepted_policy"], self.case.request["policy"] = gate_tests.source_pair(
+            1394134442, gate_tests.POLICY_COMMIT, self.case.policy_files,
+        )
+        self.install()
+        for command in ("plan", "admit-apply"):
+            request = {**self.case.request, **({"plan_sha256": "0" * 64} if command == "admit-apply" else {})}
+            process = self.invoke("run", command, request=request)
+            self.assertEqual(1, process.returncode)
+            self.assertEqual("POLICY_REGISTRY", self.case.response(process)["reason"])
+
     def test_input_cannot_replace_the_internal_module_snapshot(self):
         self.install()
         request = {**self.case.request, "modules": {"database_admission": "raise RuntimeError('UNTRUSTED')"}}

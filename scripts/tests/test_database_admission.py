@@ -24,7 +24,10 @@ from database_sql import SqlRefused, inspect_sql
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "database_admission"
-POLICY_COMMIT = "f" * 40  # Synthetic installed trust, not the unmerged Docs commit.
+ACCEPTED_FIXTURES = FIXTURES / "accepted-docs-62a"
+ACCEPTED_POLICY_COMMIT = "62a627f67ced1494679be6321ae9deb7f6af7692"
+PROPOSAL_POLICY_COMMIT = "69919765f4ce4798bc85f8dcb685890d18bb5b38"
+POLICY_COMMIT = "f" * 40  # Synthetic installation identity, not provider acceptance.
 API_COMMIT = "a" * 40
 RESULT_KEYS = {
     "schema", "gate", "command", "decision", "reason", "scope", "plan_sha256",
@@ -42,6 +45,14 @@ def fingerprint(content):
 
 def sql_hash(sql):
     return fingerprint(sql.replace("\r\n", "\n").encode("utf-8"))
+
+
+def policy_contents(*, accepted=True):
+    result = {}
+    for name in ("ADR-025.md", "embedding-policy.json", "embedding-policy.schema.json", "accepted-records.json"):
+        folder = ACCEPTED_FIXTURES if accepted and name in {"ADR-025.md", "accepted-records.json"} else FIXTURES / "adr"
+        result["adr/" + name] = (folder / name).read_bytes()
+    return result
 
 
 def source_pair(repository_id, commit, contents):
@@ -65,10 +76,7 @@ class BoundaryCase(unittest.TestCase):
         for name in ("database_admission.py", "database_sql.py", "database_baseline.py"):
             shutil.copyfile(support.SCRIPTS / name, self.installation / "scripts" / name)
         self.trust = json.loads(gate.TRUST_FILE.read_bytes())
-        self.policy_files = {
-            "adr/" + name: (FIXTURES / "adr" / name).read_bytes()
-            for name in ("ADR-025.md", "embedding-policy.json", "embedding-policy.schema.json", "accepted-records.json")
-        }
+        self.policy_files = policy_contents()
         self.trust["accepted_policy"], policy = source_pair(1394134442, POLICY_COMMIT, self.policy_files)
         self.evidence = {"src/record-contract.json": b'{"fixture":"synthetic reviewed integer-minor-unit source"}\n'}
         self.source_pin, source = source_pair(1394134582, API_COMMIT, self.evidence)
@@ -179,7 +187,7 @@ class BoundaryCase(unittest.TestCase):
 
 
 class AdmissionBoundaryTests(BoundaryCase):
-    def test_installed_production_path_denies_proposal_even_from_fake_accepted_cwd(self):
+    def test_installed_production_path_denies_accepted_source_even_from_fake_accepted_cwd(self):
         for command in ("plan", "admit-apply"):
             with self.subTest(command=command):
                 self.deny("POLICY_UNACCEPTED", command=command, production=True)
@@ -486,17 +494,66 @@ class SemanticProvenanceTests(BoundaryCase):
 
 
 class ProviderBindingTests(BoundaryCase):
-    def test_every_exact_proposal_snapshot_is_bound_without_registering_it_as_accepted(self):
+    def test_every_exact_accepted_snapshot_is_supported_without_registering_it(self):
         for name, (checksum, size) in gate.POLICY_FILES.items():
-            content = (FIXTURES / Path(name)).read_bytes()
+            content = self.policy_files[name]
             self.assertEqual((checksum, size), (fingerprint(content), len(content)))
+        self.assertEqual(
+            ("148fe74a232a7bdc1b149f7807adbad24b1679aed0024c8ffe98b94d1cb6fd38", 33609),
+            gate.POLICY_FILES["adr/ADR-025.md"],
+        )
+        registry = self.policy_files["adr/accepted-records.json"]
+        self.assertEqual(
+            ("ea8c941812c52710ffca99a9f7ea0128ce8b63d4d25d32400a51086d28efca71", 1953),
+            (fingerprint(registry), len(registry)),
+        )
+        original = policy_contents(accepted=False)
+        for name in ("adr/embedding-policy.json", "adr/embedding-policy.schema.json"):
+            self.assertEqual(original[name], self.policy_files[name])
+        self.assertEqual("9a7b97abeb9e8bc5a8e722561230b625f793966d34651d7f7ba68d17c7bca048",
+                         fingerprint(original["adr/ADR-025.md"]))
+        self.assertEqual("83b16677412db095c9242a03bf4fb1c4ef461e8eda4617c09652fee4a69bfee1",
+                         fingerprint(original["adr/accepted-records.json"]))
         self.assertIsNone(json.loads(gate.TRUST_FILE.read_bytes())["accepted_policy"])
         self.assertEqual([], json.loads(gate.TRUST_FILE.read_bytes())["accepted_inventories"])
 
+    def test_exact_accepted_source_survives_both_synthetic_boundaries_but_does_not_activate_production(self):
+        self.trust["accepted_policy"], self.request["policy"] = source_pair(
+            1394134442, ACCEPTED_POLICY_COMMIT, self.policy_files,
+        )
+        self.assertEqual(ACCEPTED_POLICY_COMMIT, self.admit()["policy_commit"])
+        for command in ("plan", "admit-apply"):
+            self.deny("POLICY_UNACCEPTED", command=command, production=True)
+
     def test_unaccepted_valid_proposal_and_local_registry_headers_never_enable_the_installed_gate(self):
-        self.request["policy"]["commit"] = "69919765f4ce4798bc85f8dcb685890d18bb5b38"
+        _pin, self.request["policy"] = source_pair(
+            1394134442, PROPOSAL_POLICY_COMMIT, policy_contents(accepted=False),
+        )
         self.deny("POLICY_UNACCEPTED", production=True)
         self.deny("POLICY_UNACCEPTED", command="admit-apply", production=True)
+
+    def test_obsolete_proposal_bytes_are_not_an_alternate_supported_version(self):
+        for commit in (PROPOSAL_POLICY_COMMIT, ACCEPTED_POLICY_COMMIT):
+            self.trust["accepted_policy"], self.request["policy"] = source_pair(
+                1394134442, commit, policy_contents(accepted=False),
+            )
+            for command in ("plan", "admit-apply"):
+                with self.subTest(commit=commit, command=command):
+                    self.deny("POLICY_UNSUPPORTED_VERSION", command=command)
+
+    def test_obsolete_proposal_bytes_cannot_replace_current_pinned_source(self):
+        _pin, self.request["policy"] = source_pair(
+            1394134442, POLICY_COMMIT, policy_contents(accepted=False),
+        )
+        for command in ("plan", "admit-apply"):
+            self.deny("SOURCE_BYTES", command=command)
+
+    def test_obsolete_registry_cannot_bind_the_current_accepted_adr(self):
+        self.replace_policy_file(
+            "adr/accepted-records.json", policy_contents(accepted=False)["adr/accepted-records.json"], repin=True,
+        )
+        for command in ("plan", "admit-apply"):
+            self.deny("POLICY_REGISTRY", command=command)
 
     def test_stale_wrong_repository_missing_duplicate_and_extra_provider_files_are_denied(self):
         original = copy.deepcopy(self.request["policy"])
@@ -518,8 +575,21 @@ class ProviderBindingTests(BoundaryCase):
         for name, content in self.policy_files.items():
             original = copy.deepcopy(self.request["policy"])
             self.replace_policy_file(name, content + b"\n")
-            self.deny("SOURCE_BYTES")
+            for command in ("plan", "admit-apply"):
+                with self.subTest(path=name, command=command):
+                    self.deny("SOURCE_BYTES", command=command)
             self.request["policy"] = original
+
+    def test_repinning_modified_supported_documents_is_not_an_escape(self):
+        original_request = copy.deepcopy(self.request)
+        original_trust = copy.deepcopy(self.trust)
+        for name in gate.POLICY_FILES:
+            self.request = copy.deepcopy(original_request)
+            self.trust = copy.deepcopy(original_trust)
+            self.replace_policy_file(name, self.policy_files[name] + b"\n", repin=True)
+            for command in ("plan", "admit-apply"):
+                with self.subTest(path=name, command=command):
+                    self.deny("POLICY_UNSUPPORTED_VERSION", command=command)
 
     def test_local_trust_cannot_turn_this_supported_prohibited_version_into_allowed_or_unknown_version(self):
         name = "adr/embedding-policy.json"
@@ -527,7 +597,8 @@ class ProviderBindingTests(BoundaryCase):
         for key, value in (("policy_version", "2.0.0"), ("decision", "ALLOWED")):
             altered = {**content, key: value}
             self.replace_policy_file(name, gate.canonical(altered), repin=True)
-            self.deny("POLICY_UNSUPPORTED_VERSION")
+            for command in ("plan", "admit-apply"):
+                self.deny("POLICY_UNSUPPORTED_VERSION", command=command)
 
     def test_registered_but_stale_missing_duplicate_contradictory_adr_registry_is_rejected(self):
         name = "adr/accepted-records.json"
@@ -545,7 +616,8 @@ class ProviderBindingTests(BoundaryCase):
             else:
                 registry["items"].append(copy.deepcopy(item))
             self.replace_policy_file(name, gate.canonical(registry), repin=True)
-            self.deny("POLICY_REGISTRY")
+            for command in ("plan", "admit-apply"):
+                self.deny("POLICY_REGISTRY", command=command)
 
     def test_accepting_the_prohibited_choice_in_a_synthetic_installation_never_permits_vector_extension(self):
         self.define("CREATE EXTENSION vector;", [])
