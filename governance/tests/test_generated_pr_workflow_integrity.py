@@ -12,6 +12,7 @@ from unittest import mock
 
 import conformance_support as support
 from conformance import steps
+from test_baseline import CONTRACTS_STATE
 
 
 GATE = ".github/workflows/pr-workflow-integrity.yml"
@@ -156,6 +157,14 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                         "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
                     }, {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
                     unchanged += sum(old[path] == new.get(path) for path in old)
+                elif name == "contracts":
+                    previous_state = accepted.PROFILES["repositories"][name]["state"]
+                    expected = dict(old)
+                    for relative in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
+                        self.assertEqual(1, old[relative].count(previous_state))
+                        expected[relative] = old[relative].replace(previous_state, CONTRACTS_STATE, 1)
+                    self.assertEqual(expected, new, name)
+                    unchanged += sum(old[path] == new.get(path) for path in old)
                 elif name != "infra":
                     self.assertEqual(old, new, name)
                     unchanged += len(new)
@@ -165,7 +174,7 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                                      {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
                     self.assertEqual(old[".github/workflows/conformance.yml"],
                                      new[".github/workflows/conformance.yml"])
-            self.assertEqual(149, unchanged)
+            self.assertEqual(146, unchanged)
 
     def test_exact_opt_in_checker_extension_never_widens_the_common_template(self):
         original = (support.GOVERNANCE / "templates" / "check_repository.py").read_bytes()
