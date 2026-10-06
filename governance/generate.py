@@ -418,6 +418,33 @@ def money_materializer():
     return template.replace(marker, f"CATALOG = json.loads({encoded(catalog)!r})\n")
 
 
+def database_admission_artifacts():
+    modules = []
+    for name in ("materialize_money_sources", "prepare_database_admission"):
+        path = HERE / "templates" / (name + ".py")
+        spec = importlib.util.spec_from_file_location("database_generation_" + name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        modules.append(module)
+    helper, preparation = modules
+    data = helper.json_document((HERE / "api-database-admission-installation.json").read_bytes())
+    preparation.validate_authority(data, helper)
+    template = (HERE / "templates/prepare_database_admission.py").read_text(encoding="utf-8")
+    for name, content in (("MONEY_HELPER_SHA256", money_materializer().encode("utf-8")),
+                          ("AUTHORITY_SHA256", preparation.document_bytes(data))):
+        marker = name + " = None\n"
+        if template.count(marker) != 1:
+            raise ValueError("Database preparation must have one " + name + " insertion point")
+        template = template.replace(marker, name + " = " + repr(hashlib.sha256(content).hexdigest()) + "\n")
+    launcher = template.encode("utf-8")
+    data = {**data, "launcher": {"path": preparation.LAUNCHER.as_posix(), "mode": "100644",
+                                "bytes": len(launcher), "sha256": hashlib.sha256(launcher).hexdigest()}}
+    preparation.validate_installation(data, helper)
+    resource = preparation.document_bytes(data)
+    return {"scripts/prepare_database_admission.py": template,
+            "src/main/resources/database-admission-installation.json": resource.decode("ascii")}
+
+
 def artifacts(repo):
     profile = profile_for(repo)
     commands = "\n".join(profile["commands"])
@@ -672,6 +699,8 @@ alone is not a license grant. Existing source notices are preserved.
         output[".github/workflows/conformance.yml"] = conformance_workflow()
     if profile.get("money_source_materialization", False):
         output["scripts/materialize_money_sources.py"] = money_materializer()
+    if repo == "api":
+        output.update(database_admission_artifacts())
     if repo == "android":
         output["scripts/check_privacy_components.py"] = (
             HERE / "templates/check_privacy_components.py"

@@ -153,6 +153,7 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     self.assertEqual({
                         "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json",
                         ".github/workflows/ci.yml", "scripts/materialize_money_sources.py",
+                        "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
                     }, {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
                     unchanged += sum(old[path] == new.get(path) for path in old)
                 elif name != "infra":

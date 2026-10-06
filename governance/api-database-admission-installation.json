@@ -1,0 +1,11 @@
+{
+  "schema": "pennilogic.database-admission.installation/1",
+  "gate": "T-PLT-01-DATABASE-EXTENSION-GATE",
+  "runtime": "R4_LINUX_DOCKER_NFTABLES",
+  "consumer": {
+    "repository": "PenniLogic/api",
+    "repository_id": 1394134582,
+    "organization_id": 335295566
+  },
+  "binding": null
+}

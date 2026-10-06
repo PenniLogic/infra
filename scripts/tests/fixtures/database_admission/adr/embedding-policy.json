@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "policy_version": "1.0.0",
+  "artifact_id": "adr-025-embedding-policy",
+  "record": "ADR-025",
+  "ticket": "T-ADR-EMBED-12",
+  "source_issue": "https://github.com/PenniLogic/docs/issues/56",
+  "schema": "adr/embedding-policy.schema.json",
+  "decision_date": "2026-10-04",
+  "effective_on": "PROTECTED_MERGE",
+  "release_scope": "CURRENT_RELEASE",
+  "decision": "PROHIBITED_DURABLE_USER_DERIVED_EMBEDDINGS",
+  "authority": {
+    "selection": "COORDINATOR_SELECTED_DEFAULT",
+    "basis": "DELEGATED_AUTONOMOUS_DELIVERY",
+    "specific_owner_embedding_attestation": false
+  },
+  "classes": {
+    "STATIC_CATEGORY_PROTOTYPE": {
+      "user_data_derived": false,
+      "source_provenance": "REVIEWED_NON_USER_REFERENCE_ONLY",
+      "allowed_purposes": ["CATEGORY_MATCHING"],
+      "permitted_stores": ["VERSIONED_READ_ONLY_PRODUCT_ASSET"],
+      "permitted_model_versions": [],
+      "model_admission": "SEPARATE_REVIEWED_PIN_REQUIRED_NO_MODEL_APPROVED_HERE",
+      "retention": "VERSIONED_NON_USER_ASSET_LIFECYCLE",
+      "erasure": "NOT_APPLICABLE_NO_USER_DATA",
+      "user_correction_adaptation": "PROHIBITED"
+    },
+    "EPHEMERAL_USER_INFERENCE": {
+      "user_data_derived": true,
+      "source_kinds": ["TRANSACTION", "MERCHANT", "MEMO", "ASSISTANT_CONVERSATION"],
+      "allowed_purposes": ["CATEGORY_MATCHING", "PURPOSE_SCOPED_ASSISTANT_INFERENCE"],
+      "permitted_stores": ["SERVER_REQUEST_MEMORY", "DEVICE_OPERATION_MEMORY"],
+      "permitted_model_versions": [],
+      "model_admission": "SEPARATE_REVIEWED_PIN_REQUIRED_NO_MODEL_APPROVED_HERE",
+      "lifetime": "CURRENT_OPERATION_ONLY",
+      "end_conditions": ["SUCCESS", "CANCELLATION", "TIMEOUT", "ERROR"],
+      "durable_spill": "PROHIBITED",
+      "cross_request_reuse": "PROHIBITED",
+      "training_or_reindex": "PROHIBITED",
+      "export": "PROHIBITED",
+      "if_nondurable_execution_unproven": "DENY_OPTIONAL_INFERENCE_KEEP_DETERMINISTIC_BASELINE"
+    },
+    "DURABLE_USER_DERIVED": {
+      "user_data_derived": true,
+      "source_kinds": ["TRANSACTION", "MERCHANT", "MEMO", "ASSISTANT_CONVERSATION"],
+      "permitted_stores": [],
+      "permitted_model_versions": [],
+      "retention": "PROHIBITED_NOT_ZERO_DAY_RETENTION",
+      "retention_period_days": null,
+      "erasure": "PREVENT_CREATION_INCIDENT_CLEANUP_NOT_AUTHORIZATION",
+      "training_or_reindex": "PROHIBITED",
+      "export": "PROHIBITED"
+    }
+  },
+  "forbidden_user_derived_destinations": [
+    "SERVER_DATABASE",
+    "DEVICE_DATABASE",
+    "SERVER_OR_DEVICE_FILE",
+    "DURABLE_OR_CROSS_REQUEST_CACHE",
+    "EXPORT",
+    "BACKUP_OR_REPLICA",
+    "LOG_TRACE_OR_ANALYTICS",
+    "QUEUE_OR_JOB_PAYLOAD",
+    "VECTOR_OR_SEARCH_INDEX",
+    "SWAP_HIBERNATION_OR_CRASH_DUMP",
+    "TRAINING_OR_FINE_TUNING_DATA",
+    "REINDEX_INPUT_OR_CHECKPOINT",
+    "PROVIDER_RETENTION"
+  ],
+  "prohibited_transform_bypasses": [
+    "EMBEDDING_WRAPPED_AS_CIPHERTEXT",
+    "EMBEDDING_QUANTIZED_OR_REDUCED",
+    "EMBEDDING_HASHED_OR_ENCODED",
+    "USER_EMBEDDING_RELABELLED_STATIC_OR_ANONYMOUS"
+  ],
+  "database": {
+    "denied_extension_identifiers": ["pgvector", "vector"],
+    "other_vector_extensions": "PROHIBITED",
+    "permitted_user_derived_embedding_columns": [],
+    "permitted_user_derived_vector_stores": [],
+    "non_vector_extension_allowlist": "EXISTING_PLATFORM_POLICY_UNCHANGED",
+    "before_source_acceptance": "REJECT_VECTOR_EXTENSIONS_AND_USER_DERIVED_EMBEDDING_COLUMNS",
+    "after_prohibited_source_acceptance": "REJECT_VECTOR_EXTENSIONS_AND_USER_DERIVED_EMBEDDING_COLUMNS",
+    "semantic_column_classification_required": true,
+    "array_json_binary_or_renamed_columns_exempt": false,
+    "static_prototype_label_overrides_denial": false,
+    "on_missing_unaccepted_stale_or_unknown_policy": "REJECT_VECTOR_EXTENSIONS_AND_USER_DERIVED_EMBEDDING_COLUMNS"
+  },
+  "consumer_gate": {
+    "id": "T-PLT-01-DATABASE-EXTENSION-GATE",
+    "owner_ticket": "T-PLT-01",
+    "owner_issue": "https://github.com/PenniLogic/infra/issues/25",
+    "coupled_api_migration_ticket": "T-MIG-01",
+    "coupled_api_migration_issue": "https://github.com/PenniLogic/api/issues/55",
+    "implementation_source": null,
+    "evidence_status": "UNMET_IN_THIS_SOURCE_UNIT",
+    "provider_acceptance_required": "PROTECTED_MERGE_AND_ACCEPTED_RECORD_BYTE_BINDINGS",
+    "required_bindings": [
+      "ACCEPTED_DOCS_COMMIT",
+      "ADR_SOURCE_DATE_SHA256_BYTES",
+      "POLICY_ID_AND_SUPPORTED_VERSION",
+      "POLICY_RAW_SHA256",
+      "SCHEMA_RAW_SHA256"
+    ],
+    "required_consumer_test_ids": [
+      "DBEXT-UNACCEPTED-PGVECTOR",
+      "DBCOLUMN-USER-DERIVED",
+      "DBPOLICY-ACCEPTED-BYTE-BINDINGS",
+      "DBPOLICY-PROHIBITED-AFTER-ACCEPTANCE",
+      "DBPOLICY-ACTUAL-OWNING-PATH"
+    ],
+    "runtime_enforcement_claimed": false
+  },
+  "cross_purpose": {
+    "conversation_enrichment_shared_embedding_store": "PROHIBITED",
+    "cross_purpose_payload_or_vector_reuse": "PROHIBITED",
+    "ordinary_record_database_colocation": "EXISTING_PURPOSE_SCOPED_CONTRACTS_NOT_REDEFINED",
+    "history_opt_in_permits_embedding_retention": false,
+    "sharing_grant_permits_embedding_retention": false,
+    "conversation_or_enrichment_training": "PROHIBITED",
+    "existing_structured_merchant_rules": "UNCHANGED_NOT_VECTOR_TRAINING"
+  },
+  "boundaries": {
+    "deterministic_first_categorisation": "UNCHANGED",
+    "retrieval_augmented_authoritative_arithmetic": "PROHIBITED",
+    "money": "DETERMINISTIC_SERVER_AUTHORITATIVE_INTEGER_MINOR_UNITS_WITH_CURRENCY",
+    "crypto_erasure_egress_and_sharing_decisions": "UNCHANGED",
+    "new_datastore_provider_or_spend_authorized": false
+  },
+  "persistence_only": {
+    "model": null,
+    "dimension": null,
+    "store_tenancy_and_network": "NOT_APPLICABLE_PERSISTENCE_PROHIBITED",
+    "model_version_and_complete_reindex": "NOT_APPLICABLE_PERSISTENCE_PROHIBITED",
+    "hard_delete_similarity_residue_test": "NOT_APPLICABLE_PERSISTENCE_PROHIBITED",
+    "vector_counts_stale_generations_and_cross_tenant_metrics": "NOT_APPLICABLE_PERSISTENCE_PROHIBITED",
+    "live_serving_acceptance": "NOT_PERFORMED_PERSISTENCE_PROHIBITED",
+    "crypto_shredding_sufficient": false,
+    "searchable_vector_encryption_solves_inversion": false
+  },
+  "reopening": {
+    "gate_set_version": "embedding-reopening-v1",
+    "automatic": false,
+    "all_evidence_required": true,
+    "new_explicit_superseding_decision_required": true,
+    "policy_version_bump_required": true,
+    "evidence_status": "NOT_PERFORMED_PERSISTENCE_PROHIBITED",
+    "required_evidence": [
+      {
+        "id": "REOPEN-NEED-MINIMISATION",
+        "acceptance": "A reproducible value comparison against deterministic-first categorisation and request-local inference meets numeric go/no-go thresholds set before measurement, with a minimal purpose and data/copy inventory."
+      },
+      {
+        "id": "REOPEN-INVERSION-MEMBERSHIP",
+        "acceptance": "Security and Privacy review approve a model-specific inversion and membership-inference protocol, adversary capabilities and predeclared disclosure thresholds; measured results meet them without claiming vector encryption or anonymisation eliminates disclosure."
+      },
+      {
+        "id": "REOPEN-TENANCY-PROTECTION",
+        "acceptance": "A named store, tenant and network boundary, low-privilege roles, forced row-level security where applicable, grant and cross-purpose denial tests and searchable-field protection are reviewed against ADR-018 without weakening it."
+      },
+      {
+        "id": "REOPEN-MODEL-REINDEX",
+        "acceptance": "Exact licensed model, revision, vector dimension and representation are pinned; version changes require a complete verified re-index and atomic serving-generation change, never mixed generations or unreviewed user-data training."
+      },
+      {
+        "id": "REOPEN-RETENTION-ERASURE",
+        "acceptance": "Sourced purpose-bound retention and export rules plus verified hard deletion cover vectors, indexes, caches, jobs, replicas, backups and provider copies; post-erasure similarity-query residue and restore tests pass. Crypto-shredding alone is explicitly insufficient."
+      },
+      {
+        "id": "REOPEN-PROVIDER-ECONOMICS",
+        "acceptance": "Current model/license and provider retention, training and transfer terms are approved; reproducible dated economics use actual quotes, integer minor units and currency, numeric margin and usage limits and explicit spend approval, not historical research prices."
+      },
+      {
+        "id": "REOPEN-PURPOSE-REVIEW",
+        "acceptance": "A new dated protected-merged decision records its real authority and versioned consequences after independent Core, Security, Privacy and affected QA review, preserving conversation/enrichment purpose separation, default-deny sharing and deterministic authoritative arithmetic."
+      }
+    ]
+  },
+  "future_implementation": {
+    "created_only_after_new_merged_decision": true,
+    "default": "OFF",
+    "activation_gate_id": "EMBEDDING-DEFAULT-OFF-ACCEPTANCE",
+    "reopening_alone_enables_nothing": true,
+    "acceptance_status": "NOT_PERFORMED_PERSISTENCE_PROHIBITED",
+    "required_activation_checks": [
+      "ACTUAL_ACCEPTED_POLICY_GATE_CONSUMPTION",
+      "TENANT_AND_CROSS_PURPOSE_DENIAL",
+      "COMPLETE_MODEL_GENERATION_REINDEX",
+      "HARD_DELETE_SIMILARITY_RESIDUE_ZERO",
+      "RETENTION_EXPORT_BACKUP_RESTORE_AND_PROVIDER_COPY_ERASURE",
+      "REVIEWED_INVERSION_AND_MEMBERSHIP_THRESHOLDS",
+      "INDEPENDENT_CORE_QA_SECURITY_PRIVACY_REVIEW",
+      "EXPLICIT_SPEND_APPROVAL_AND_USAGE_LIMITS"
+    ],
+    "rollback": "DISABLE_SERVING_THEN_VERIFIED_HARD_DELETE_BEFORE_REMOVAL"
+  },
+  "delivery": {
+    "source_only": true,
+    "original_issue_complete": false,
+    "assigned_sprint": "Future",
+    "sprint_assignment_changed": false,
+    "runtime_enforcement_claimed": false,
+    "independent_review_claimed": false
+  }
+}

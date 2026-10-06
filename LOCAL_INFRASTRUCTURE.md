@@ -4,6 +4,11 @@ Development-only. Nothing here deploys, configures or protects a production syst
 Schema migrations and seed data are **not** part of this stack; see
 [Out of scope](#out-of-scope-and-owners).
 
+The separate [database admission boundary](database/README.md) owns T-PLT-01's
+extension/semantic-column plan and pre-apply checks. It does not turn this
+Compose bootstrap into a deployment or migration executor; the API runner
+remains the only SQL apply path, and provider/consumer activation is pending.
+
 Owner-only credential procedures: [Account security baseline](ACCOUNT_SECURITY.md).
 
 ## Prerequisites
