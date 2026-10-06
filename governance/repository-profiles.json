@@ -29,7 +29,7 @@
     "contracts": {
       "id": 1394134505,
       "purpose": "Versioned API contracts and shared schemas",
-      "state": "Repository foundation plus the OpenAPI lint, deterministic client-generation, breaking-change and tag-publication scaffold from PenniLogic/contracts#2; no product endpoints, registry publication credentials or published version tags are implemented.",
+      "state": "Versioned API schemas and client-generation tooling from the PenniLogic/contracts#2 scaffold; see [OpenAPI](spec/openapi.yaml) and [CHANGELOG.md](CHANGELOG.md) for coverage. Definitions and local client smokes do not establish deployed server behavior or an immutable published version; no server runtime is implemented here.",
       "node": "24.14.0",
       "java": "21",
       "timeout_minutes": 30,
