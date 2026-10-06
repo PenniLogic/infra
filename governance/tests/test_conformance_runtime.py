@@ -19,6 +19,7 @@ from unittest import mock
 
 import conformance_support as support
 from conformance import defects, github_api, registry, report, run
+from test_baseline import CONTRACTS_STATE
 
 
 BASE = "e96eb757beeb02b0a802e7545ca781669e85deb8"
@@ -250,6 +251,8 @@ class RuntimeRenderingTests(unittest.TestCase):
                         ], previous_profile["commands"])
                         previous_profile["commands"] = support.generator.profile_for("api")["commands"]
                         previous_profile["money_source_materialization"] = True
+                    if name == "contracts":
+                        previous_profile["state"] = CONTRACTS_STATE
                     for setup in (False, True):
                         expected = old.workflow(name, setup=setup)
                         if name == "android" and not setup:

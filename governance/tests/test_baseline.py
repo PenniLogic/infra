@@ -34,9 +34,10 @@ CONTRACTS_COMMANDS = [
     "python scripts/smoke.py typescript", "python scripts/smoke.py kotlin",
     'python -m unittest discover -s scripts/tests -p "test_*.py"',
 ]
-CONTRACTS_STATE = ("Repository foundation plus the OpenAPI lint, deterministic client-generation, breaking-change "
-                   "and tag-publication scaffold from PenniLogic/contracts#2; no product endpoints, registry "
-                   "publication credentials or published version tags are implemented.")
+CONTRACTS_STATE = ("Versioned API schemas and client-generation tooling from the PenniLogic/contracts#2 scaffold; "
+                   "see [OpenAPI](spec/openapi.yaml) and [CHANGELOG.md](CHANGELOG.md) for coverage. Definitions and "
+                   "local client smokes do not establish deployed server behavior or an immutable published version; "
+                   "no server runtime is implemented here.")
 ANDROID_GROUPED_COMMANDS = [
     "python scripts/check_repository.py",
     "python scripts/quality_gates.py ci",
@@ -709,7 +710,7 @@ class BaselineTests(unittest.TestCase):
         self.assertTrue((HERE.parent / "scripts/tests").is_dir())
 
     def test_contracts_profile_matches_its_generated_setup_request(self):
-        # Every value is copied from PenniLogic/contracts#2 comment 5905425858; nothing is added.
+        # Tooling remains from PenniLogic/contracts#2 comment 5905425858; scope follows the current source.
         profile = generator.PROFILES["repositories"]["contracts"]
         self.assertEqual({
             "id": 1394134505, "purpose": "Versioned API contracts and shared schemas", "state": CONTRACTS_STATE,
