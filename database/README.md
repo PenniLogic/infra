@@ -6,12 +6,13 @@ admission boundary**, not a Docs checker or SQL runner. It is additive to
 owners of SQL execution, migration locking, registry writes and compensation.
 The development Compose bootstrap is deliberately not used as a substitute.
 
-This source does **not** complete Infra25 or Docs56. The shipped installation
-has no accepted embedding-policy binding and no accepted semantic inventory:
-`admission-trust.json` denies admission. The exact policy source accepted through
-Docs PR171 at `62a627f67ced1494679be6321ae9deb7f6af7692` is supported as an input
-version, **not registered in this installation**. The obsolete draft ADR bytes
-are not an alternate supported provider. No CLI argument, environment
+This source does **not** complete Infra25 or Docs56. The standalone
+`database/admission-trust.json` remains unbound and denies admission. The separate
+canonical API installation below binds protected-accepted Infra, Docs and API
+source revisions and deterministically derives its own trust payload; it does
+not activate the API consumer or a deployed runtime. The exact prohibited policy
+accepted through Docs PR171 at `62a627f67ced1494679be6321ae9deb7f6af7692` is used;
+obsolete draft ADR bytes are not an alternate supported provider. No CLI argument, environment
 flag, local `ACCEPTED` header, issue state, caller checksum or returned plan
 digest can change that. Protected acceptance of the prohibited choice
 authorizes no embedding persistence.
@@ -161,10 +162,21 @@ assets, benign aliases and caller intent cannot extend either list.
 `governance/api-database-admission-installation.json` is the canonical input for
 two generated API files: `scripts/prepare_database_admission.py` and the committed
 resource `src/main/resources/database-admission-installation.json`. Only API gets
-these additive artifacts; existing Money preparation, pins, budgets and CI
-commands are unchanged. The canonical resource currently has **`binding: null`**:
-no real accepted provider or inventory is registered, and every preparation,
-verification and managed admission command refuses without creating an output.
+these additive artifacts. Existing Money preparation, pins, budgets and command
+ordering are unchanged. The canonical resource binds these accepted sources:
+
+| Role | Repository | Commit | Git tree | Files |
+| --- | --- | --- | --- | ---: |
+| `infra` | `PenniLogic/infra` | `8939daae876c6a2cd2aa1a8d57c03c22164af856` | `300a86ef80d73a36af4fdc620d2cdb9ab60691c1` | 3 |
+| `policy` | `PenniLogic/docs` | `62a627f67ced1494679be6321ae9deb7f6af7692` | `b3240b191bf89e540ae03d951ccf46c640459e4d` | 4 |
+| `inventory` | `PenniLogic/api` | `b938b31e8dbdc1fc28188cadeca7a03483450724` | `4cfe31807e62bb4becda7e34735a7ac1ca89c737` | 2 |
+| `evidence` | `PenniLogic/api` | `d39f4692c13413040439c5e87fed81728e0577f1` | `8da895cc998e5ec43105cfb6fa41a82ea2194f8c` | 7 |
+
+These are actual source revisions, not this binding change's own or a future
+commit. A cold preparation performs 28 public requests within the unchanged
+32-request/180-second total budget. An explicitly unbound `binding: null`
+installation still refuses every preparation, verification and managed admission
+command without creating an output; it remains covered as a negative fixture.
 
 The exact generated installation/1 fields are `schema`, `gate`, `runtime`,
 `consumer`, `binding` and `launcher`. The canonical input omits the derived
@@ -221,6 +233,14 @@ client, immutable Git tree/blob verification and owned-path primitives. It has
 no authentication fallback, extra provider enrollment, or increased budgets.
 Downloaded gate code is never executed by preparation.
 
+The canonical API native command list runs explicit `prepare --fetch` and then
+offline `verify` after the unchanged Money checks and before
+`python scripts/quality.py build`. API owns the corresponding Gradle build/check
+preparation and offline migration-task verification. Direct migration/runner
+entrypoints must never introduce an implicit fetch. The existing generated
+`* text=auto eol=lf` attribute preserves the bound ASCII launcher/resource bytes
+on Windows as well as Linux; no consumer-specific hand edits are needed.
+
 Managed `run` verifies the pinned disk resource, helper and complete payload
 inventory. Supplied policy/inventory must equal installed `inputs.json`;
 caller executable, source-path and authority overrides do not exist. A
@@ -241,13 +261,13 @@ the compiled-resource consumer check must happen before execution.
 Missing, malformed, timed-out or nonzero responses continue to refuse.
 
 This does not attest a hostile host/interpreter or activate the API adapter.
-Root must obtain actual accepted source bindings, regenerate/review the
-consumer artifacts and coordinate mandatory consumer/CI activation. An
-unbound source-only installation is never operational admission proof.
+Root must arrange review/publication of this binding, regenerate/review the
+consumer artifacts and coordinate mandatory consumer/CI activation. Source
+acceptance or a locally prepared bundle is never operational admission proof.
 
 ## Source acceptance, runtime and evidence limits
 
-Root must separately register the genuine protected-accepted Docs commit,
+The canonical binding registers the genuine protected-accepted Docs commit,
 exact policy/schema/ADR bytes and the source's `adr/accepted-records.json`.
 The registry's ADR-025 date/SHA/length must match; stale/missing/tampered or
 unsupported sources fail closed. The supported accepted files remain the Docs

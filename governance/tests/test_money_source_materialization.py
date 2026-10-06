@@ -184,7 +184,10 @@ class CatalogAndRendererTests(unittest.TestCase):
         old = copy.deepcopy(generator.PROFILES)
         del old["repositories"]["api"]["money_source_materialization"]
         old["repositories"]["api"]["commands"] = [
-            "python scripts/check_repository.py", "python scripts/quality.py build",
+            "python scripts/check_repository.py",
+            "python -I -S -B scripts/prepare_database_admission.py prepare --fetch",
+            "python -I -S -B scripts/prepare_database_admission.py verify",
+            "python scripts/quality.py build",
             "python -m unittest discover -s scripts/tests",
         ]
         with mock.patch.object(generator, "PROFILES", old):
@@ -210,7 +213,11 @@ class CatalogAndRendererTests(unittest.TestCase):
             '"build/source-materialization/docs-a700e639585c61a4610e7b99dbd02b2dab28bdcc/governance/test-strategy.json"',
             "python scripts/money_provider.py --verify", "python scripts/materialize_money_sources.py --verify",
         ], commands[1:5])
-        self.assertEqual(["python scripts/quality.py build", "python -m unittest discover -s scripts/tests"], commands[5:])
+        self.assertEqual([
+            "python -I -S -B scripts/prepare_database_admission.py prepare --fetch",
+            "python -I -S -B scripts/prepare_database_admission.py verify",
+        ], commands[5:7])
+        self.assertEqual(["python scripts/quality.py build", "python -m unittest discover -s scripts/tests"], commands[7:])
         workflow = json.loads(generator.workflow("api"))
         self.assertEqual({"contents": "read"}, workflow["permissions"])
         self.assertEqual(30, workflow["jobs"]["ci"]["timeout-minutes"])

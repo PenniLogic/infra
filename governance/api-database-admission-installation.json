@@ -1,11 +1,190 @@
 {
-  "schema": "pennilogic.database-admission.installation/1",
+  "binding": {
+    "payloads": [
+      {
+        "bytes": 2813,
+        "mode": "100644",
+        "path": "database/admission-trust.json",
+        "sha256": "794e9e0bf8c2fffd7140db43a83db6e339ee8c071e75b40eb905f060222cdd49"
+      },
+      {
+        "bytes": 228020,
+        "mode": "100644",
+        "path": "inputs.json",
+        "sha256": "fa6bd465541af13b249ba28e0aef60e6d8fe2c135ce3a29b265eebf5396cf00a"
+      },
+      {
+        "bytes": 19396,
+        "mode": "100644",
+        "path": "scripts/database_admission.py",
+        "sha256": "41818ec2bd1d2ce2d01b5681b2f157894e88410c1f06f0ff9d38119e69dd9f5c"
+      },
+      {
+        "bytes": 3389,
+        "mode": "100644",
+        "path": "scripts/database_baseline.py",
+        "sha256": "af542fbf936766477d7ea61daef55fe54f628d633dd69e94b803d2d54f86060f"
+      },
+      {
+        "bytes": 15229,
+        "mode": "100644",
+        "path": "scripts/database_sql.py",
+        "sha256": "2a9308d561f39b7fc68f6c6c298f96a964369a9377b915c133acd4ee75d26776"
+      }
+    ],
+    "sources": {
+      "evidence": {
+        "commit": "d39f4692c13413040439c5e87fed81728e0577f1",
+        "files": [
+          {
+            "bytes": 19185,
+            "git_blob": "6b5e55a2f3c0453bd092d66001629b39eb61cf08",
+            "mode": "100644",
+            "path": "docs/ledger-schema.md",
+            "sha256": "a21c42629332add92c2062cdfa2eb087d84c6ff2cfce1b8da70acb704bf88a2f"
+          },
+          {
+            "bytes": 210,
+            "git_blob": "7cee97b77fb396a5d39ffc22e8c2eac2c4fa9476",
+            "mode": "100644",
+            "path": "src/main/resources/db/migrations/V001__create_pennilogic_schema.down.sql",
+            "sha256": "3b02e971aad8478c132e21a03009c7ffd5ea8a68c827f361c4e4fb1d2bad9556"
+          },
+          {
+            "bytes": 413,
+            "git_blob": "87e0a3e37c95b1ec2c567f40a2b6bccce74f5e72",
+            "mode": "100644",
+            "path": "src/main/resources/db/migrations/V001__create_pennilogic_schema.up.sql",
+            "sha256": "2655508299a325f56469fd8236014e0765321933ae76c0eed616c46331705cee"
+          },
+          {
+            "bytes": 1776,
+            "git_blob": "9016fffd81e7a9544bf4bcc0b73feaa043633df4",
+            "mode": "100644",
+            "path": "src/main/resources/db/migrations/V002__create_ledger.down.sql",
+            "sha256": "a7c101892b51c67f85ae5d2d5a7abfd9a8c63ae7d595755aff338011f98a2f18"
+          },
+          {
+            "bytes": 30275,
+            "git_blob": "6cdf06d546121630fc11c36892e04fa58c3eb73c",
+            "mode": "100644",
+            "path": "src/main/resources/db/migrations/V002__create_ledger.up.sql",
+            "sha256": "4c5fc158d50fe7676a0518fbb0463955b1460a57f5f83c5e906a6b88b14844b5"
+          },
+          {
+            "bytes": 21221,
+            "git_blob": "ce128c7ebad197fd16a0310ba4d1a06b714059a4",
+            "mode": "100644",
+            "path": "src/test/resources/ledger/adr-017-parameters.json",
+            "sha256": "f82aa3d76108825f6b7015af496447d9b069bebba1db9a0c4bf351f135a1cef6"
+          },
+          {
+            "bytes": 20606,
+            "git_blob": "46a55b7ce7cec24046ca6b326184635c678dc6f2",
+            "mode": "100644",
+            "path": "src/test/resources/ledger/adr-018-inventory.json",
+            "sha256": "86056ca2e2c5c5eeb5faad10a65ef99111ed92de5e60b66f7f3ebbcccea3d7d6"
+          }
+        ],
+        "repository": "PenniLogic/api",
+        "repository_id": 1394134582,
+        "tree": "8da895cc998e5ec43105cfb6fa41a82ea2194f8c"
+      },
+      "infra": {
+        "commit": "8939daae876c6a2cd2aa1a8d57c03c22164af856",
+        "files": [
+          {
+            "bytes": 19396,
+            "git_blob": "36df24b980283c7783411a4dc184c54851a13ab5",
+            "mode": "100644",
+            "path": "scripts/database_admission.py",
+            "sha256": "41818ec2bd1d2ce2d01b5681b2f157894e88410c1f06f0ff9d38119e69dd9f5c"
+          },
+          {
+            "bytes": 3389,
+            "git_blob": "a5119a440636578481c261f815d659f736846373",
+            "mode": "100644",
+            "path": "scripts/database_baseline.py",
+            "sha256": "af542fbf936766477d7ea61daef55fe54f628d633dd69e94b803d2d54f86060f"
+          },
+          {
+            "bytes": 15229,
+            "git_blob": "9f22c2212eaad1fe052bf54f887880c053c01833",
+            "mode": "100644",
+            "path": "scripts/database_sql.py",
+            "sha256": "2a9308d561f39b7fc68f6c6c298f96a964369a9377b915c133acd4ee75d26776"
+          }
+        ],
+        "repository": "PenniLogic/infra",
+        "repository_id": 1394135059,
+        "tree": "300a86ef80d73a36af4fdc620d2cdb9ab60691c1"
+      },
+      "inventory": {
+        "commit": "b938b31e8dbdc1fc28188cadeca7a03483450724",
+        "files": [
+          {
+            "bytes": 2032,
+            "git_blob": "9dd227f3e2253e2bdd9051eb717953599dfc45a8",
+            "mode": "100644",
+            "path": "database/admission-inventory-source.json",
+            "sha256": "5d83cf2560bd03d5c08314b72127fde66c1ed4716b1a30d8a9a39406bd2d4f89"
+          },
+          {
+            "bytes": 11819,
+            "git_blob": "df81620f4e68bf5ae638b488ef41c2edd26aef91",
+            "mode": "100644",
+            "path": "database/admission-inventory.json",
+            "sha256": "2c26301ee12ae9f04760f836f574136a0da52030abee6124dfedd5c38bbfc758"
+          }
+        ],
+        "repository": "PenniLogic/api",
+        "repository_id": 1394134582,
+        "tree": "4cfe31807e62bb4becda7e34735a7ac1ca89c737"
+      },
+      "policy": {
+        "commit": "62a627f67ced1494679be6321ae9deb7f6af7692",
+        "files": [
+          {
+            "bytes": 33609,
+            "git_blob": "355d460763ddac188b1f477d863fa2f441645abe",
+            "mode": "100644",
+            "path": "adr/ADR-025.md",
+            "sha256": "148fe74a232a7bdc1b149f7807adbad24b1679aed0024c8ffe98b94d1cb6fd38"
+          },
+          {
+            "bytes": 1953,
+            "git_blob": "eaed390d8f74429c2e05747ef74c519e42d3d6c5",
+            "mode": "100644",
+            "path": "adr/accepted-records.json",
+            "sha256": "ea8c941812c52710ffca99a9f7ea0128ce8b63d4d25d32400a51086d28efca71"
+          },
+          {
+            "bytes": 9884,
+            "git_blob": "0d475cc1e04f785b83fbd36c7f8ff532fdd5fd96",
+            "mode": "100644",
+            "path": "adr/embedding-policy.json",
+            "sha256": "ca9ed351085b5bf34a4b07f68607fb624022245700a4a230b8cd0ead5b8f8af9"
+          },
+          {
+            "bytes": 18873,
+            "git_blob": "1cc2224ce2cb41dece1d2206902d6d4719493fc2",
+            "mode": "100644",
+            "path": "adr/embedding-policy.schema.json",
+            "sha256": "5251d6f67d50fe5a551efc3cb620d528314f38870b4e304afd74f964326e5514"
+          }
+        ],
+        "repository": "PenniLogic/docs",
+        "repository_id": 1394134442,
+        "tree": "b3240b191bf89e540ae03d951ccf46c640459e4d"
+      }
+    }
+  },
+  "consumer": {
+    "organization_id": 335295566,
+    "repository": "PenniLogic/api",
+    "repository_id": 1394134582
+  },
   "gate": "T-PLT-01-DATABASE-EXTENSION-GATE",
   "runtime": "R4_LINUX_DOCKER_NFTABLES",
-  "consumer": {
-    "repository": "PenniLogic/api",
-    "repository_id": 1394134582,
-    "organization_id": 335295566
-  },
-  "binding": null
+  "schema": "pennilogic.database-admission.installation/1"
 }
