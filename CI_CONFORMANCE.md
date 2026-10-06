@@ -245,6 +245,12 @@ commits that render their respective `ci.yml`). When source changes that workflo
 an ordinary source commit is followed by a registry-only binding commit pointing to the source commit;
 never try to embed a commit's own unknown SHA in its contents.
 
+API's reference is `952ebd1700c54df6127c4c0778390aa0815d4f42`, the existing source
+commit that renders its explicit database preparation/verification commands and
+the unchanged Money materializer. The earlier `4bd789b9` source lacks those
+workflow commands. This workflow-history binding does not replace any accepted
+database source role or establish consumer/runtime acceptance.
+
 ### Android grouped caller: source preparation, not adoption
 
 This bounded continuation of [#22](https://github.com/PenniLogic/infra/issues/22) and
