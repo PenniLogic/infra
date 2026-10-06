@@ -78,6 +78,10 @@ class CanonicalPrivacyTests(unittest.TestCase):
                             "contracts-ea56c63d5c9b679537bd9205b04626049c20c572",
                             "contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662",
                         )
+                        expected["commands"][5:5] = [
+                            "python -I -S -B scripts/prepare_database_admission.py prepare --fetch",
+                            "python -I -S -B scripts/prepare_database_admission.py verify",
+                        ]
                         self.assertEqual(expected, current.PROFILES["repositories"][repo])
                     elif repo != "android":
                         self.assertEqual(accepted.PROFILES["repositories"][repo],
@@ -89,6 +93,10 @@ class CanonicalPrivacyTests(unittest.TestCase):
                 "contracts-ea56c63d5c9b679537bd9205b04626049c20c572",
                 "contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662",
             )
+            original["repositories"]["api"]["commands"][5:5] = [
+                "python -I -S -B scripts/prepare_database_admission.py prepare --fetch",
+                "python -I -S -B scripts/prepare_database_admission.py verify",
+            ]
             self.assertEqual(original, current.PROFILES)
 
     def test_accepted_money_inputs_flags_and_registry_survive_android_composition(self):

@@ -22,7 +22,8 @@ generator = money_tests.generator
 helper = money_tests.materializer
 preparation = money_tests.load("database_preparation_template", HERE / "templates/prepare_database_admission.py")
 CATALOG_PATH = HERE / "api-database-admission-installation.json"
-PENDING = json.loads(CATALOG_PATH.read_bytes())
+CANONICAL = json.loads(CATALOG_PATH.read_bytes())
+PENDING = {**copy.deepcopy(CANONICAL), "binding": None}
 
 
 class Transport:
@@ -177,6 +178,55 @@ class InstallationTests(unittest.TestCase):
             with self.subTest(command=args):
                 self.refused(*args, code="accepted-sources-unbound")
         self.assertFalse((self.root / preparation.OUTPUT).exists())
+
+    def test_canonical_accepted_sources_still_require_explicit_preparation(self):
+        self.assertEqual(CANONICAL, preparation.validate_authority(CANONICAL, helper))
+        sources = CANONICAL["binding"]["sources"]
+        expected = {
+            "infra": ("8939daae876c6a2cd2aa1a8d57c03c22164af856", "300a86ef80d73a36af4fdc620d2cdb9ab60691c1", 3),
+            "policy": ("62a627f67ced1494679be6321ae9deb7f6af7692", "b3240b191bf89e540ae03d951ccf46c640459e4d", 4),
+            "inventory": ("b938b31e8dbdc1fc28188cadeca7a03483450724", "4cfe31807e62bb4becda7e34735a7ac1ca89c737", 2),
+            "evidence": ("d39f4692c13413040439c5e87fed81728e0577f1", "8da895cc998e5ec43105cfb6fa41a82ea2194f8c", 7),
+        }
+        self.assertEqual(expected, {
+            role: (source["commit"], source["tree"], len(source["files"])) for role, source in sources.items()
+        })
+        self.assertEqual(28, sum(len(source["files"]) + 3 for source in sources.values()))
+        self.assertEqual(5, len(CANONICAL["binding"]["payloads"]))
+        self.render(CANONICAL)
+        self.refused("prepare", code="explicit-fetch-required")
+        for command in (("verify",), ("run", "plan"), ("run", "admit-apply")):
+            self.refused(*command, code="snapshot-missing")
+        self.assertFalse((self.root / preparation.OUTPUT).exists())
+        standalone = json.loads((SCRIPTS.parent / "database/admission-trust.json").read_bytes())
+        self.assertIsNone(standalone["accepted_policy"])
+        self.assertEqual([], standalone["accepted_inventories"])
+
+    def test_existing_generated_attributes_preserve_bound_bytes_in_autocrlf_checkout(self):
+        self.render(CANONICAL)
+        attributes = generator.artifacts("api")[".gitattributes"].encode("utf-8")
+        (self.root / ".gitattributes").write_bytes(attributes)
+        files = (preparation.LAUNCHER, preparation.RESOURCE)
+        expected = {path: (self.root / path).read_bytes() for path in files}
+        environment = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
+                       if key in os.environ}
+        checkout = self.root / "clean-checkout"
+        checkout.mkdir()
+        for args in (
+            ("init", "--quiet"),
+            ("add", "--", ".gitattributes", *(str(path) for path in files)),
+            ("checkout-index", "--all", "--prefix=" + str(checkout) + os.sep),
+        ):
+            result = subprocess.run(
+                ["git", "-c", "core.autocrlf=true", *args], cwd=self.root, env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        for path, content in expected.items():
+            with self.subTest(path=path):
+                self.assertNotIn(b"\r", content)
+                self.assertEqual(content, (checkout / path).read_bytes())
+        self.assertEqual(attributes, (checkout / ".gitattributes").read_bytes())
 
     def test_generated_resource_binds_launcher_bytes_without_a_self_hash_cycle(self):
         self.render(PENDING)

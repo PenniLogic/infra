@@ -99,6 +99,8 @@ class BaselineTests(unittest.TestCase):
                 '"build/source-materialization/docs-a700e639585c61a4610e7b99dbd02b2dab28bdcc/governance/test-strategy.json"',
                 "python scripts/money_provider.py --verify",
                 "python scripts/materialize_money_sources.py --verify",
+                "python -I -S -B scripts/prepare_database_admission.py prepare --fetch",
+                "python -I -S -B scripts/prepare_database_admission.py verify",
                 "python scripts/quality.py build", "python -m unittest discover -s scripts/tests",
             ],
             "web": ["npm ci", "npm run lint", "npm run format:check", "npm run typecheck", "npm test",

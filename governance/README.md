@@ -24,16 +24,26 @@ python governance/generate.py --root <scratch>                                # 
 python -m unittest discover -s governance/tests
 ```
 
-## API database admission installation (source only, authority unbound)
+## API database admission installation (accepted source binding)
 
 `api-database-admission-installation.json` generates the API's fixed launcher and
 committed installation resource. The resource binds the launcher plus five exact
 build payloads; it is not an output receipt or a caller-controlled acceptance
-flag. Its authority remains `binding: null` until Root registers genuine
-protected-accepted Infra, Docs and API inventory/evidence source bindings.
-Preparation/admission refuses while unbound. The launcher reuses byte-verified,
-unchanged Money primitives without altering Money's catalog, budgets or command
-sequence. Full interface and limits are in [database/README.md](../database/README.md).
+flag. Its four source roles pin protected-accepted Infra `8939daae`,
+Docs `62a627f6`, API inventory publication `b938b31e` and original API evidence
+`d39f4692`, each with complete immutable commit/tree/file bindings. Trust and
+input envelopes are deterministic projections of those sources, not
+caller-provided acceptance flags. Standalone Infra trust remains null/empty;
+explicitly unbound installation fixtures still refuse without writes.
+
+Cold preparation requires explicit `prepare --fetch`: 28 public requests,
+within the unchanged 32-request/180-second budget. The generated API native
+command list adds preparation and offline verification immediately before its
+existing build. API owns Gradle preparation/offline consumer wiring; a generated
+or locally prepared bundle is not consumer activation or deployment acceptance.
+The launcher reuses byte-verified, unchanged Money primitives without altering
+Money's catalog, budgets or commands. Full interface and limits are in
+[database/README.md](../database/README.md).
 
 ## API Money source preparation (local source, acceptance held)
 
@@ -68,6 +78,8 @@ python scripts\materialize_money_sources.py
 python scripts\money_provider.py --source-root "build\source-materialization\contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662" --strategy-file "build\source-materialization\docs-a700e639585c61a4610e7b99dbd02b2dab28bdcc\governance\test-strategy.json"
 python scripts\money_provider.py --verify
 python scripts\materialize_money_sources.py --verify
+python -I -S -B scripts\prepare_database_admission.py prepare --fetch
+python -I -S -B scripts\prepare_database_admission.py verify
 python scripts\quality.py build
 python -m unittest discover -s scripts\tests
 ```
@@ -77,8 +89,10 @@ The provider and unchanged normal build belong to the owning API candidate; that
 candidate must be adopted separately. Rendering these commands does not admit or
 release the currently unaccepted API Money source.
 
-The AA8 transition changes only the provider command's source-root pin literal,
-preserving all seven command identities and their shape/order. Its protected-profile
+The AA8 transition changed only the provider command's source-root pin literal,
+preserving its seven command identities and their shape/order. The later database
+binding adds the two explicit preparation/verification commands shown above,
+without changing or removing those Money/build/test commands. The AA8 protected-profile
 projection changes from `46f6029b32f77a628a70ae632976a67b0a4e66ba77ba0cbdb0ed113be895423a`
 to `2d76a54b2358c2059e8ceddf18cdc51558ad897105c339183e67fb30a95df1a1`.
 This explicit source preparation is not an equality waiver or maintenance/native
