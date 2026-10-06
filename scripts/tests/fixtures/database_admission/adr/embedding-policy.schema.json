@@ -1,0 +1,357 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/PenniLogic/docs/blob/main/adr/embedding-policy.schema.json",
+  "title": "ADR-025 current-release prohibited durable user-derived embedding policy",
+  "description": "Closed decision metadata, not a database extension gate or runtime admission implementation. Uses the existing stdlib draft-07 subset. Source tests separately check calendar dates, exact evidence identifiers and dated raw-byte bindings; none proves consumer enforcement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "policy_version", "artifact_id", "record", "ticket", "source_issue",
+    "schema", "decision_date", "effective_on", "release_scope", "decision", "authority",
+    "classes", "forbidden_user_derived_destinations", "prohibited_transform_bypasses",
+    "database", "consumer_gate", "cross_purpose", "boundaries", "persistence_only",
+    "reopening", "future_implementation", "delivery"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "policy_version": { "type": "string", "const": "1.0.0" },
+    "artifact_id": { "type": "string", "const": "adr-025-embedding-policy" },
+    "record": { "type": "string", "const": "ADR-025" },
+    "ticket": { "type": "string", "const": "T-ADR-EMBED-12" },
+    "source_issue": { "type": "string", "const": "https://github.com/PenniLogic/docs/issues/56" },
+    "schema": { "type": "string", "const": "adr/embedding-policy.schema.json" },
+    "decision_date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "effective_on": { "type": "string", "const": "PROTECTED_MERGE" },
+    "release_scope": { "type": "string", "const": "CURRENT_RELEASE" },
+    "decision": { "type": "string", "const": "PROHIBITED_DURABLE_USER_DERIVED_EMBEDDINGS" },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selection", "basis", "specific_owner_embedding_attestation"],
+      "properties": {
+        "selection": { "type": "string", "const": "COORDINATOR_SELECTED_DEFAULT" },
+        "basis": { "type": "string", "const": "DELEGATED_AUTONOMOUS_DELIVERY" },
+        "specific_owner_embedding_attestation": { "$ref": "#/definitions/false" }
+      }
+    },
+    "classes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["STATIC_CATEGORY_PROTOTYPE", "EPHEMERAL_USER_INFERENCE", "DURABLE_USER_DERIVED"],
+      "properties": {
+        "STATIC_CATEGORY_PROTOTYPE": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "user_data_derived", "source_provenance", "allowed_purposes", "permitted_stores",
+            "permitted_model_versions", "model_admission", "retention", "erasure",
+            "user_correction_adaptation"
+          ],
+          "properties": {
+            "user_data_derived": { "$ref": "#/definitions/false" },
+            "source_provenance": { "type": "string", "const": "REVIEWED_NON_USER_REFERENCE_ONLY" },
+            "allowed_purposes": {
+              "type": "array", "items": { "type": "string" }, "const": ["CATEGORY_MATCHING"]
+            },
+            "permitted_stores": {
+              "type": "array", "items": { "type": "string" },
+              "const": ["VERSIONED_READ_ONLY_PRODUCT_ASSET"]
+            },
+            "permitted_model_versions": { "$ref": "#/definitions/empty_allowlist" },
+            "model_admission": { "$ref": "#/definitions/model_admission" },
+            "retention": { "type": "string", "const": "VERSIONED_NON_USER_ASSET_LIFECYCLE" },
+            "erasure": { "type": "string", "const": "NOT_APPLICABLE_NO_USER_DATA" },
+            "user_correction_adaptation": { "$ref": "#/definitions/prohibited" }
+          }
+        },
+        "EPHEMERAL_USER_INFERENCE": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "user_data_derived", "source_kinds", "allowed_purposes", "permitted_stores",
+            "permitted_model_versions", "model_admission", "lifetime", "end_conditions",
+            "durable_spill", "cross_request_reuse", "training_or_reindex", "export",
+            "if_nondurable_execution_unproven"
+          ],
+          "properties": {
+            "user_data_derived": { "$ref": "#/definitions/true" },
+            "source_kinds": { "$ref": "#/definitions/source_kinds" },
+            "allowed_purposes": {
+              "type": "array", "items": { "type": "string" },
+              "const": ["CATEGORY_MATCHING", "PURPOSE_SCOPED_ASSISTANT_INFERENCE"]
+            },
+            "permitted_stores": {
+              "type": "array", "items": { "type": "string" },
+              "const": ["SERVER_REQUEST_MEMORY", "DEVICE_OPERATION_MEMORY"]
+            },
+            "permitted_model_versions": { "$ref": "#/definitions/empty_allowlist" },
+            "model_admission": { "$ref": "#/definitions/model_admission" },
+            "lifetime": { "type": "string", "const": "CURRENT_OPERATION_ONLY" },
+            "end_conditions": {
+              "type": "array", "items": { "type": "string" },
+              "const": ["SUCCESS", "CANCELLATION", "TIMEOUT", "ERROR"]
+            },
+            "durable_spill": { "$ref": "#/definitions/prohibited" },
+            "cross_request_reuse": { "$ref": "#/definitions/prohibited" },
+            "training_or_reindex": { "$ref": "#/definitions/prohibited" },
+            "export": { "$ref": "#/definitions/prohibited" },
+            "if_nondurable_execution_unproven": {
+              "type": "string", "const": "DENY_OPTIONAL_INFERENCE_KEEP_DETERMINISTIC_BASELINE"
+            }
+          }
+        },
+        "DURABLE_USER_DERIVED": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "user_data_derived", "source_kinds", "permitted_stores", "permitted_model_versions",
+            "retention", "retention_period_days", "erasure", "training_or_reindex", "export"
+          ],
+          "properties": {
+            "user_data_derived": { "$ref": "#/definitions/true" },
+            "source_kinds": { "$ref": "#/definitions/source_kinds" },
+            "permitted_stores": { "$ref": "#/definitions/empty_allowlist" },
+            "permitted_model_versions": { "$ref": "#/definitions/empty_allowlist" },
+            "retention": { "type": "string", "const": "PROHIBITED_NOT_ZERO_DAY_RETENTION" },
+            "retention_period_days": { "type": "null" },
+            "erasure": { "type": "string", "const": "PREVENT_CREATION_INCIDENT_CLEANUP_NOT_AUTHORIZATION" },
+            "training_or_reindex": { "$ref": "#/definitions/prohibited" },
+            "export": { "$ref": "#/definitions/prohibited" }
+          }
+        }
+      }
+    },
+    "forbidden_user_derived_destinations": {
+      "type": "array", "items": { "type": "string" },
+      "const": [
+        "SERVER_DATABASE", "DEVICE_DATABASE", "SERVER_OR_DEVICE_FILE",
+        "DURABLE_OR_CROSS_REQUEST_CACHE", "EXPORT", "BACKUP_OR_REPLICA",
+        "LOG_TRACE_OR_ANALYTICS", "QUEUE_OR_JOB_PAYLOAD", "VECTOR_OR_SEARCH_INDEX",
+        "SWAP_HIBERNATION_OR_CRASH_DUMP", "TRAINING_OR_FINE_TUNING_DATA",
+        "REINDEX_INPUT_OR_CHECKPOINT", "PROVIDER_RETENTION"
+      ]
+    },
+    "prohibited_transform_bypasses": {
+      "type": "array", "items": { "type": "string" },
+      "const": [
+        "EMBEDDING_WRAPPED_AS_CIPHERTEXT", "EMBEDDING_QUANTIZED_OR_REDUCED",
+        "EMBEDDING_HASHED_OR_ENCODED", "USER_EMBEDDING_RELABELLED_STATIC_OR_ANONYMOUS"
+      ]
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "denied_extension_identifiers", "other_vector_extensions",
+        "permitted_user_derived_embedding_columns", "permitted_user_derived_vector_stores",
+        "non_vector_extension_allowlist", "before_source_acceptance",
+        "after_prohibited_source_acceptance", "semantic_column_classification_required",
+        "array_json_binary_or_renamed_columns_exempt", "static_prototype_label_overrides_denial",
+        "on_missing_unaccepted_stale_or_unknown_policy"
+      ],
+      "properties": {
+        "denied_extension_identifiers": {
+          "type": "array", "items": { "type": "string" }, "const": ["pgvector", "vector"]
+        },
+        "other_vector_extensions": { "$ref": "#/definitions/prohibited" },
+        "permitted_user_derived_embedding_columns": { "$ref": "#/definitions/empty_allowlist" },
+        "permitted_user_derived_vector_stores": { "$ref": "#/definitions/empty_allowlist" },
+        "non_vector_extension_allowlist": { "type": "string", "const": "EXISTING_PLATFORM_POLICY_UNCHANGED" },
+        "before_source_acceptance": { "$ref": "#/definitions/database_denial" },
+        "after_prohibited_source_acceptance": { "$ref": "#/definitions/database_denial" },
+        "semantic_column_classification_required": { "$ref": "#/definitions/true" },
+        "array_json_binary_or_renamed_columns_exempt": { "$ref": "#/definitions/false" },
+        "static_prototype_label_overrides_denial": { "$ref": "#/definitions/false" },
+        "on_missing_unaccepted_stale_or_unknown_policy": { "$ref": "#/definitions/database_denial" }
+      }
+    },
+    "consumer_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "owner_ticket", "owner_issue", "coupled_api_migration_ticket",
+        "coupled_api_migration_issue", "implementation_source", "evidence_status",
+        "provider_acceptance_required", "required_bindings", "required_consumer_test_ids",
+        "runtime_enforcement_claimed"
+      ],
+      "properties": {
+        "id": { "type": "string", "const": "T-PLT-01-DATABASE-EXTENSION-GATE" },
+        "owner_ticket": { "type": "string", "const": "T-PLT-01" },
+        "owner_issue": { "type": "string", "const": "https://github.com/PenniLogic/infra/issues/25" },
+        "coupled_api_migration_ticket": { "type": "string", "const": "T-MIG-01" },
+        "coupled_api_migration_issue": { "type": "string", "const": "https://github.com/PenniLogic/api/issues/55" },
+        "implementation_source": { "type": "null" },
+        "evidence_status": { "type": "string", "const": "UNMET_IN_THIS_SOURCE_UNIT" },
+        "provider_acceptance_required": { "type": "string", "const": "PROTECTED_MERGE_AND_ACCEPTED_RECORD_BYTE_BINDINGS" },
+        "required_bindings": {
+          "type": "array", "items": { "type": "string" },
+          "const": [
+            "ACCEPTED_DOCS_COMMIT", "ADR_SOURCE_DATE_SHA256_BYTES",
+            "POLICY_ID_AND_SUPPORTED_VERSION", "POLICY_RAW_SHA256", "SCHEMA_RAW_SHA256"
+          ]
+        },
+        "required_consumer_test_ids": {
+          "type": "array", "items": { "type": "string" },
+          "const": [
+            "DBEXT-UNACCEPTED-PGVECTOR", "DBCOLUMN-USER-DERIVED",
+            "DBPOLICY-ACCEPTED-BYTE-BINDINGS", "DBPOLICY-PROHIBITED-AFTER-ACCEPTANCE",
+            "DBPOLICY-ACTUAL-OWNING-PATH"
+          ]
+        },
+        "runtime_enforcement_claimed": { "$ref": "#/definitions/false" }
+      }
+    },
+    "cross_purpose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conversation_enrichment_shared_embedding_store", "cross_purpose_payload_or_vector_reuse",
+        "ordinary_record_database_colocation", "history_opt_in_permits_embedding_retention",
+        "sharing_grant_permits_embedding_retention", "conversation_or_enrichment_training",
+        "existing_structured_merchant_rules"
+      ],
+      "properties": {
+        "conversation_enrichment_shared_embedding_store": { "$ref": "#/definitions/prohibited" },
+        "cross_purpose_payload_or_vector_reuse": { "$ref": "#/definitions/prohibited" },
+        "ordinary_record_database_colocation": {
+          "type": "string", "const": "EXISTING_PURPOSE_SCOPED_CONTRACTS_NOT_REDEFINED"
+        },
+        "history_opt_in_permits_embedding_retention": { "$ref": "#/definitions/false" },
+        "sharing_grant_permits_embedding_retention": { "$ref": "#/definitions/false" },
+        "conversation_or_enrichment_training": { "$ref": "#/definitions/prohibited" },
+        "existing_structured_merchant_rules": { "type": "string", "const": "UNCHANGED_NOT_VECTOR_TRAINING" }
+      }
+    },
+    "boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deterministic_first_categorisation", "retrieval_augmented_authoritative_arithmetic",
+        "money", "crypto_erasure_egress_and_sharing_decisions", "new_datastore_provider_or_spend_authorized"
+      ],
+      "properties": {
+        "deterministic_first_categorisation": { "type": "string", "const": "UNCHANGED" },
+        "retrieval_augmented_authoritative_arithmetic": { "$ref": "#/definitions/prohibited" },
+        "money": { "type": "string", "const": "DETERMINISTIC_SERVER_AUTHORITATIVE_INTEGER_MINOR_UNITS_WITH_CURRENCY" },
+        "crypto_erasure_egress_and_sharing_decisions": { "type": "string", "const": "UNCHANGED" },
+        "new_datastore_provider_or_spend_authorized": { "$ref": "#/definitions/false" }
+      }
+    },
+    "persistence_only": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model", "dimension", "store_tenancy_and_network", "model_version_and_complete_reindex",
+        "hard_delete_similarity_residue_test", "vector_counts_stale_generations_and_cross_tenant_metrics",
+        "live_serving_acceptance", "crypto_shredding_sufficient", "searchable_vector_encryption_solves_inversion"
+      ],
+      "properties": {
+        "model": { "type": "null" },
+        "dimension": { "type": "null" },
+        "store_tenancy_and_network": { "$ref": "#/definitions/persistence_not_applicable" },
+        "model_version_and_complete_reindex": { "$ref": "#/definitions/persistence_not_applicable" },
+        "hard_delete_similarity_residue_test": { "$ref": "#/definitions/persistence_not_applicable" },
+        "vector_counts_stale_generations_and_cross_tenant_metrics": { "$ref": "#/definitions/persistence_not_applicable" },
+        "live_serving_acceptance": { "$ref": "#/definitions/persistence_not_performed" },
+        "crypto_shredding_sufficient": { "$ref": "#/definitions/false" },
+        "searchable_vector_encryption_solves_inversion": { "$ref": "#/definitions/false" }
+      }
+    },
+    "reopening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_set_version", "automatic", "all_evidence_required",
+        "new_explicit_superseding_decision_required", "policy_version_bump_required",
+        "evidence_status", "required_evidence"
+      ],
+      "properties": {
+        "gate_set_version": { "type": "string", "const": "embedding-reopening-v1" },
+        "automatic": { "$ref": "#/definitions/false" },
+        "all_evidence_required": { "$ref": "#/definitions/true" },
+        "new_explicit_superseding_decision_required": { "$ref": "#/definitions/true" },
+        "policy_version_bump_required": { "$ref": "#/definitions/true" },
+        "evidence_status": { "$ref": "#/definitions/persistence_not_performed" },
+        "required_evidence": {
+          "type": "array", "minItems": 7, "maxItems": 7, "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "acceptance"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "enum": [
+                  "REOPEN-NEED-MINIMISATION", "REOPEN-INVERSION-MEMBERSHIP",
+                  "REOPEN-TENANCY-PROTECTION", "REOPEN-MODEL-REINDEX",
+                  "REOPEN-RETENTION-ERASURE", "REOPEN-PROVIDER-ECONOMICS", "REOPEN-PURPOSE-REVIEW"
+                ]
+              },
+              "acceptance": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "future_implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "created_only_after_new_merged_decision", "default", "activation_gate_id",
+        "reopening_alone_enables_nothing", "acceptance_status", "required_activation_checks", "rollback"
+      ],
+      "properties": {
+        "created_only_after_new_merged_decision": { "$ref": "#/definitions/true" },
+        "default": { "type": "string", "const": "OFF" },
+        "activation_gate_id": { "type": "string", "const": "EMBEDDING-DEFAULT-OFF-ACCEPTANCE" },
+        "reopening_alone_enables_nothing": { "$ref": "#/definitions/true" },
+        "acceptance_status": { "$ref": "#/definitions/persistence_not_performed" },
+        "required_activation_checks": {
+          "type": "array", "items": { "type": "string" },
+          "const": [
+            "ACTUAL_ACCEPTED_POLICY_GATE_CONSUMPTION", "TENANT_AND_CROSS_PURPOSE_DENIAL",
+            "COMPLETE_MODEL_GENERATION_REINDEX", "HARD_DELETE_SIMILARITY_RESIDUE_ZERO",
+            "RETENTION_EXPORT_BACKUP_RESTORE_AND_PROVIDER_COPY_ERASURE",
+            "REVIEWED_INVERSION_AND_MEMBERSHIP_THRESHOLDS",
+            "INDEPENDENT_CORE_QA_SECURITY_PRIVACY_REVIEW", "EXPLICIT_SPEND_APPROVAL_AND_USAGE_LIMITS"
+          ]
+        },
+        "rollback": { "type": "string", "const": "DISABLE_SERVING_THEN_VERIFIED_HARD_DELETE_BEFORE_REMOVAL" }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_only", "original_issue_complete", "assigned_sprint",
+        "sprint_assignment_changed", "runtime_enforcement_claimed", "independent_review_claimed"
+      ],
+      "properties": {
+        "source_only": { "$ref": "#/definitions/true" },
+        "original_issue_complete": { "$ref": "#/definitions/false" },
+        "assigned_sprint": { "type": "string", "const": "Future" },
+        "sprint_assignment_changed": { "$ref": "#/definitions/false" },
+        "runtime_enforcement_claimed": { "$ref": "#/definitions/false" },
+        "independent_review_claimed": { "$ref": "#/definitions/false" }
+      }
+    }
+  },
+  "definitions": {
+    "false": { "type": "boolean", "const": false },
+    "true": { "type": "boolean", "const": true },
+    "empty_allowlist": { "type": "array", "maxItems": 0 },
+    "prohibited": { "type": "string", "const": "PROHIBITED" },
+    "model_admission": {
+      "type": "string", "const": "SEPARATE_REVIEWED_PIN_REQUIRED_NO_MODEL_APPROVED_HERE"
+    },
+    "source_kinds": {
+      "type": "array", "items": { "type": "string" },
+      "const": ["TRANSACTION", "MERCHANT", "MEMO", "ASSISTANT_CONVERSATION"]
+    },
+    "database_denial": {
+      "type": "string", "const": "REJECT_VECTOR_EXTENSIONS_AND_USER_DERIVED_EMBEDDING_COLUMNS"
+    },
+    "persistence_not_applicable": { "type": "string", "const": "NOT_APPLICABLE_PERSISTENCE_PROHIBITED" },
+    "persistence_not_performed": { "type": "string", "const": "NOT_PERFORMED_PERSISTENCE_PROHIBITED" }
+  }
+}

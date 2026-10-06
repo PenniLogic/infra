@@ -1,0 +1,8 @@
+{
+  "schema": "pennilogic.database-admission.trust/1",
+  "runtime": "R4_LINUX_DOCKER_NFTABLES",
+  "accepted_policy": null,
+  "accepted_inventories": [],
+  "non_vector_extensions": [],
+  "database_packages": []
+}

@@ -8,7 +8,8 @@
 `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/*` (two files), `.gitattributes`,
 `.gitignore`, `scripts/setup.py` and `scripts/check_repository.py`). Consumers never hand-edit those
 files: a profile or template change lands here through a reviewed generator PR, then each consumer
-regenerates from the merged `main` in its own PR. Additionally, api alone has 21 files, including `scripts/materialize_money_sources.py`;
+regenerates from the merged `main` in its own PR. Additionally, api alone has 23 files, including `scripts/materialize_money_sources.py`,
+`scripts/prepare_database_admission.py` and `src/main/resources/database-admission-installation.json`;
 infra alone has 23 files: its report
 workflow is `.github/workflows/conformance.yml`, its additive gate is
 `.github/workflows/pr-workflow-integrity.yml`, and `.nvmrc` pins its real governance-fixture Node runtime.
@@ -22,6 +23,17 @@ python governance/generate.py --repository infra --check                      # 
 python governance/generate.py --root <scratch>                                # render every profile
 python -m unittest discover -s governance/tests
 ```
+
+## API database admission installation (source only, authority unbound)
+
+`api-database-admission-installation.json` generates the API's fixed launcher and
+committed installation resource. The resource binds the launcher plus five exact
+build payloads; it is not an output receipt or a caller-controlled acceptance
+flag. Its authority remains `binding: null` until Root registers genuine
+protected-accepted Infra, Docs and API inventory/evidence source bindings.
+Preparation/admission refuses while unbound. The launcher reuses byte-verified,
+unchanged Money primitives without altering Money's catalog, budgets or command
+sequence. Full interface and limits are in [database/README.md](../database/README.md).
 
 ## API Money source preparation (local source, acceptance held)
 

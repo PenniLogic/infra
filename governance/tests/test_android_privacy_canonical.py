@@ -28,9 +28,10 @@ CHANGED_ARTIFACTS = {
     ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml",
     "scripts/check_privacy_components.py",
 }
-API_PIN_ARTIFACTS = {
+API_PIN_AND_ADMISSION_ARTIFACTS = {
     "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json",
     ".github/workflows/ci.yml", "scripts/materialize_money_sources.py",
+    "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
 }
 
 
@@ -42,7 +43,7 @@ def load(name, path):
 
 
 class CanonicalPrivacyTests(unittest.TestCase):
-    def test_only_android_artifacts_and_the_explicit_api_pin_transition_change_the_accepted_source(self):
+    def test_only_android_artifacts_and_explicit_api_pin_and_admission_deltas_change_the_accepted_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for path in (
@@ -70,7 +71,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
                         if previous.get(path) != candidate.get(path)
                     }
                     self.assertEqual(CHANGED_ARTIFACTS if repo == "android" else
-                                     API_PIN_ARTIFACTS if repo == "api" else set(), changed)
+                                     API_PIN_AND_ADMISSION_ARTIFACTS if repo == "api" else set(), changed)
                     if repo == "api":
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
                         expected["commands"][2] = expected["commands"][2].replace(
