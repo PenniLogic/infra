@@ -136,6 +136,13 @@ terminated at once. Either way the run fails with `io_error` naming the refused 
 Windows error; in practice that means the bootstrap itself is running inside a job object that
 forbids nested jobs, so re-run it from a plain terminal.
 
+An unconfirmed Windows teardown also reports numeric `OpenProcess` errors and the existing batch
+and individual wait returns/errors, retained before the original process handles close. Each
+section shows at most eight entries with an explicit omitted count; batch offsets refer to the
+original pinned-handle order, and unconfirmed/error observations are shown before confirmed ones.
+These observations add no queries or waits and do not change exit
+confirmation: zero active job accounting alone is not proof that a process object has exited.
+
 Plain Compose also works once `.env` exists: `docker compose up -d --wait`.
 
 ## Health and status

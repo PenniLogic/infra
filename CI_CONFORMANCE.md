@@ -68,8 +68,12 @@ If tree exit, job membership or pipe release cannot be confirmed, the probe fail
 claiming a bounded successful teardown. Repository inspection stops; a planted fixture records
 `restoration_deferred` and retains its backups rather than restoring files a consumer might still hold.
 The JSON includes the redacted failure/recovery details. Confirm process exit before recovering or
-discarding that scratch checkout. POSIX keeps the existing `subprocess.run` behavior and makes no
-Windows process-tree ownership claim.
+discarding that scratch checkout. Unconfirmed Windows teardown diagnostics retain bounded numeric
+pin/wait observations from the original calls, not additional process queries or exit evidence.
+The finite-worker fixture's receipt-count failure also retains receipt names, elapsed time and the
+runner's already bounded/redacted `Result`, distinguishing a timeout from an early worker failure.
+Neither diagnostic changes the assertions, deadlines or fail-closed decisions. POSIX keeps the
+existing `subprocess.run` behavior and makes no Windows process-tree ownership claim.
 
 Every probe, and every git command on a scratch checkout, runs with `probe_environment()`
 (`governance/conformance/defects.py`): an explicit deny-list of variable names and prefixes is removed

@@ -73,9 +73,13 @@ class WindowsProcessTests(unittest.TestCase):
                 started = time.monotonic()
                 result = defects.subprocess_runner(subprocess.list2cmdline(argv) if shell else argv, root, timeout=0.8)
                 elapsed = time.monotonic() - started
-                pids = [int(path.read_text(encoding="ascii")) for path in root.glob("*.pid")]
+                receipts = list(root.glob("*.pid"))
+                pids = [int(path.read_text(encoding="ascii")) for path in receipts]
                 try:
-                    self.assertEqual(2, len(pids), "both finite workers must have started within the deadline")
+                    self.assertEqual(
+                        2, len(pids), "both finite workers must have started within the deadline; "
+                        f"receipts={sorted(path.name for path in receipts)!r}; elapsed={elapsed:.3f}s; result={result!r}",
+                    )
                     self.assertTrue(result.timed_out)
                     self.assertIsNone(result.exit_code)
                     self.assertLess(elapsed, 2.5, "the four-second sleeper must not drain the captured pipes naturally")
@@ -230,6 +234,74 @@ class RunnerContractTests(unittest.TestCase):
         self.assertEqual(subprocess.STDOUT, options["stderr"])
         self.assertNotIn("GIT_CONFIG_PARAMETERS", options["env"])
         self.assertEqual("1", options["env"]["GIT_CONFIG_NOSYSTEM"])
+
+    def test_teardown_diagnostics_do_not_make_an_unconfirmed_result_safe(self):
+        detail = "processes exited: 1 of 2; processes still active: 0; OpenProcess errors=[(2, 5)]"
+        result = defects.Result(None, "WORKER_STARTED=101\n", timed_out=True, error=detail, restoration_safe=False)
+        with mock.patch.object(defects.os, "name", "nt"), \
+                mock.patch.object(defects, "_windows_runner", return_value=result) as runner:
+            with self.assertRaises(defects.UnsafeProcessTreeError) as caught:
+                defects.subprocess_runner(["synthetic-command"], ".", timeout=0.8, replacements=(), credentials=())
+        self.assertEqual(detail, str(caught.exception))
+        self.assertEqual(0.8, runner.call_args.args[3])
+        self.assertFalse(result.restoration_safe)
+
+
+class ReceiptDiagnosticTests(unittest.TestCase):
+    def receipt_failure(self, result, shell):
+        method = "test_finite_shell_and_argv_descendants_are_terminated_before_the_runner_returns"
+        fixture = WindowsProcessTests(method)
+
+        def finished(command, root, timeout):
+            self.assertEqual(0.8, timeout)
+            (root / "parent.pid").write_text("101", encoding="ascii")
+            if isinstance(command, str) == shell:
+                return result
+            (root / "child.pid").write_text("202", encoding="ascii")
+            (root / "held.txt").touch()
+            return defects.Result(None, "WORKER_STARTED=101\nWORKER_STARTED=202\n", timed_out=True)
+
+        with mock.patch.object(defects, "subprocess_runner", side_effect=finished) as runner, \
+                mock.patch(f"{__name__}.exited", return_value=True) as confirm_exit, \
+                mock.patch.object(time, "monotonic", side_effect=[10.0, 10.8] * (1 + shell)):
+            with self.assertRaisesRegex(AssertionError, "both finite workers must have started") as caught:
+                getattr(fixture, method)()
+        self.assertEqual(1 + shell, runner.call_count)
+        self.assertEqual(mock.call(101, 6), confirm_exit.call_args)
+        return str(caught.exception)
+
+    def test_missing_receipt_retains_timeout_result_and_redacted_bounded_output(self):
+        marker = "synthetic-receipt-secret"
+        output = defects._captured_tail(
+            ("x" * (defects.OUTPUT_TAIL + 1) + "\n" + marker).encode(),
+            defects._capture_redactor(".", replacements=(), credentials=(marker,)),
+        )
+        result = defects.Result(None, output, timed_out=True)
+        for shell in (False, True):
+            with self.subTest(shell=shell):
+                message = self.receipt_failure(result, shell)
+                self.assertIn("receipts=['parent.pid']", message)
+                self.assertIn("elapsed=0.800s", message)
+                self.assertIn("timed_out=True", message)
+                self.assertIn("exit_code=None", message)
+                self.assertIn("error=None", message)
+                self.assertIn("restoration_safe=True", message)
+                self.assertIn(repr(output), message)
+                self.assertIn("[redacted]", message)
+                self.assertNotIn(marker, message)
+                self.assertLess(len(message), defects.OUTPUT_TAIL + 400)
+
+    def test_missing_receipt_retains_early_failure_instead_of_implying_timeout(self):
+        result = defects.Result(7, "finite synthetic worker failed\n", error="synthetic start failure")
+        for shell in (False, True):
+            with self.subTest(shell=shell):
+                message = self.receipt_failure(result, shell)
+                self.assertIn("receipts=['parent.pid']", message)
+                self.assertIn("elapsed=0.800s", message)
+                self.assertIn("timed_out=False", message)
+                self.assertIn("exit_code=7", message)
+                self.assertIn("error='synthetic start failure'", message)
+                self.assertIn(repr(result.output), message)
 
 
 if __name__ == "__main__":
