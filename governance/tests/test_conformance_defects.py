@@ -45,12 +45,38 @@ class FixtureCatalogueTests(unittest.TestCase):
             with self.subTest(profile=name):
                 self.assertTrue({"workflow-test-step-removed", "workflow-unpinned-action"} <= applicable)
                 self.assertEqual("check_docs.py" in " ".join(profile["commands"]), "documentation-index-link-broken" in applicable)
-                self.assertEqual(any("unittest" in c for c in profile["commands"]), "python-test-failing" in applicable)
+                python_tests = any("unittest" in c or c == "python scripts/run_source_tests.py"
+                                   for c in profile["commands"])
+                self.assertEqual(python_tests, "python-test-failing" in applicable)
+                self.assertEqual(python_tests, "python-tests-removed" in applicable)
                 self.assertEqual(any(c.startswith("npm test") for c in profile["commands"]), "typescript-test-failing" in applicable)
                 self.assertEqual(any("pytest" in c for c in profile["commands"]), "python-pytest-failing" in applicable)
                 self.assertEqual("quality.py build" in " ".join(profile["commands"]), "kotlin-test-failing" in applicable)
                 self.assertEqual("self-test" in " ".join(profile["commands"]), "kotlin-android-self-test" in applicable)
         self.assertEqual("kotlin-android-self-test", [item.id for item in defects.FIXTURES if item.toolchain == "android"][0])
+
+    def test_source_test_entrypoint_keeps_fixed_discovery_and_existing_required_probes(self):
+        command = "python scripts/run_source_tests.py"
+        profile = {"commands": [command]}
+        context = defects.Context("contracts", profile, None, None)
+        self.assertEqual(["scripts/tests"], defects.unittest_directories(profile))
+        self.assertEqual([command], defects.unittest_commands(profile))
+        applicable = {item.id for item in defects.applicable_fixtures(context)}
+        for name, text in (
+            ("python-tests-removed", "NO TESTS RAN"),
+            ("python-test-failing", "test_planted_defect_must_fail"),
+        ):
+            with self.subTest(fixture=name):
+                self.assertIn(name, applicable)
+                probes = fixture(name).probes(context)
+                self.assertEqual([(command, "fail", text)],
+                                 [(probe.command, probe.expect, probe.expect_text) for probe in probes])
+        for unknown in (f"echo {command}", f"{command} --module test_fast", f"{command} && true",
+                        f"{command} ", f"{command}\n", "python3 scripts/run_source_tests.py"):
+            with self.subTest(command=unknown):
+                profile = {"commands": [unknown]}
+                self.assertEqual([], defects.unittest_directories(profile))
+                self.assertEqual([], defects.unittest_commands(profile))
 
 
 class PlanterTests(support.ConsumerCase):

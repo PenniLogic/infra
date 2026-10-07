@@ -26,13 +26,18 @@ checker = load("repository_checker", HERE / "templates/check_repository.py")
 
 UV_INSTALL = ("printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n'"
               " | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin")
-# Generated-setup request for the contracts scaffold: PenniLogic/contracts#2 comment 5905425858.
+# Contracts scaffold commands; the source-test entry point follows the infra#22 timing remediation.
+CONTRACTS_SOURCE_TEST_COMMAND = "python scripts/run_source_tests.py"
+CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND = 'python -m unittest discover -s scripts/tests -p "test_*.py"'
+CONTRACTS_COMMAND_ARTIFACTS = {
+    "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json", ".github/workflows/ci.yml",
+}
 CONTRACTS_COMMANDS = [
     "python scripts/check_repository.py", "npm ci --no-audit --no-fund", "python scripts/toolchain.py install",
     "python scripts/lint_spec.py", "python scripts/check_breaking_changes.py",
     "python scripts/generate_clients.py --verify", "python scripts/smoke.py python",
     "python scripts/smoke.py typescript", "python scripts/smoke.py kotlin",
-    'python -m unittest discover -s scripts/tests -p "test_*.py"',
+    CONTRACTS_SOURCE_TEST_COMMAND,
 ]
 CONTRACTS_STATE = ("Versioned API schemas and client-generation tooling from the PenniLogic/contracts#2 scaffold; "
                    "see [OpenAPI](spec/openapi.yaml) and [CHANGELOG.md](CHANGELOG.md) for coverage. Definitions and "
@@ -52,6 +57,17 @@ ANDROID_COMMANDS = [
     "python scripts/check_privacy_components.py",
     ANDROID_GROUPED_COMMANDS[3],
 ]
+
+
+def contracts_command_delta(case, output):
+    expected = dict(output)
+    for name in CONTRACTS_COMMAND_ARTIFACTS:
+        old, new = CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND
+        if name.endswith((".json", ".yml")):
+            old, new = (json.dumps(command)[1:-1] for command in (old, new))
+        case.assertEqual(1, expected[name].count(old), name)
+        expected[name] = expected[name].replace(old, new, 1)
+    return expected
 
 
 class BaselineTests(unittest.TestCase):
@@ -140,6 +156,57 @@ class BaselineTests(unittest.TestCase):
         for flag in ("uv==0.11.33", "--hash=sha256:", "--only-binary :all:", "--require-hashes", "--no-deps"):
             self.assertIn(flag, UV_INSTALL)
         self.assertNotIn('"uv>=', json.dumps(generator.PROFILES["repositories"]["ai-service"]))
+
+    def test_contracts_source_test_entrypoint_changes_only_five_command_derived_artifacts(self):
+        self.assertEqual(CONTRACTS_SOURCE_TEST_COMMAND, generator.profile_for("contracts")["commands"][-1])
+        current = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
+        previous_profiles = copy.deepcopy(generator.PROFILES)
+        previous_profiles["repositories"]["contracts"]["commands"][-1] = CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND
+        with mock.patch.object(generator, "PROFILES", previous_profiles):
+            previous = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
+        unchanged = 0
+        for repo in current:
+            with self.subTest(repo=repo):
+                self.assertEqual(previous[repo].keys(), current[repo].keys())
+                changed = {name for name in current[repo]
+                           if current[repo][name].encode("utf-8") != previous[repo][name].encode("utf-8")}
+                self.assertEqual(CONTRACTS_COMMAND_ARTIFACTS if repo == "contracts" else set(), changed)
+                unchanged += len(current[repo]) - len(changed)
+        self.assertEqual(182, unchanged)
+        self.assertEqual(contracts_command_delta(self, previous["contracts"]), current["contracts"])
+        self.assertNotIn("scripts/run_source_tests.py", current["contracts"])
+
+    def test_contracts_source_test_entrypoint_cli_refuses_removed_stubbed_or_previous_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generator.generate("contracts", root)
+            command = [sys.executable, str(HERE / "generate.py"), "--repository", "contracts",
+                       "--root", str(root), "--check"]
+
+            def invoke():
+                return subprocess.run(command, capture_output=True, text=True,
+                                      encoding="utf-8", timeout=60, check=False)
+
+            self.assertEqual(0, invoke().returncode)
+            path = root / ".github" / "workflows" / "ci.yml"
+            original = path.read_bytes()
+            document = json.loads(original)
+            run_checks = next(step for step in document["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+            self.assertEqual(CONTRACTS_COMMANDS, run_checks["run"].split("\n"))
+            for replacement in (None, "echo tests skipped", CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND):
+                with self.subTest(replacement=replacement):
+                    changed = copy.deepcopy(document)
+                    run_checks = next(step for step in changed["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+                    commands = CONTRACTS_COMMANDS[:-1]
+                    if replacement is not None:
+                        commands.append(replacement)
+                    run_checks["run"] = "\n".join(commands)
+                    path.write_bytes(generator.encoded(changed).encode("utf-8"))
+                    refused = invoke()
+                    self.assertEqual(1, refused.returncode, refused.stdout)
+                    self.assertEqual("Generated setup differs: .github/workflows/ci.yml\n", refused.stderr)
+                    path.write_bytes(original)
+                    self.assertEqual(0, invoke().returncode)
 
     def test_android_grouped_ci_changes_only_five_command_derived_artifacts(self):
         grouped_profiles = copy.deepcopy(generator.PROFILES)

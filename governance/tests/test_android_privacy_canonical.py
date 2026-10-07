@@ -15,7 +15,10 @@ from unittest import mock
 
 import conformance_support as support
 from conformance import steps
-from test_baseline import CONTRACTS_STATE
+from test_baseline import (
+    CONTRACTS_COMMAND_ARTIFACTS, CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND,
+    CONTRACTS_STATE, contracts_command_delta,
+)
 
 
 ACCEPTED_BASE = "1360c30a5caaff8039d76d57bfb9b060cf81a351"
@@ -74,7 +77,8 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     }
                     self.assertEqual(CHANGED_ARTIFACTS if repo == "android" else
                                      API_PIN_AND_ADMISSION_ARTIFACTS if repo == "api" else
-                                     CONTRACTS_SCOPE_ARTIFACTS if repo == "contracts" else set(), changed)
+                                     CONTRACTS_SCOPE_ARTIFACTS | CONTRACTS_COMMAND_ARTIFACTS
+                                     if repo == "contracts" else set(), changed)
                     if repo == "api":
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
                         expected["commands"][2] = expected["commands"][2].replace(
@@ -90,17 +94,20 @@ class CanonicalPrivacyTests(unittest.TestCase):
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
                         previous_state = expected["state"]
                         expected["state"] = CONTRACTS_STATE
+                        self.assertEqual(CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, expected["commands"][-1])
+                        expected["commands"][-1] = CONTRACTS_SOURCE_TEST_COMMAND
                         self.assertEqual(expected, current.PROFILES["repositories"][repo])
-                        expected_artifacts = dict(previous)
+                        expected_artifacts = contracts_command_delta(self, previous)
                         for path in CONTRACTS_SCOPE_ARTIFACTS:
                             self.assertEqual(1, previous[path].count(previous_state))
-                            expected_artifacts[path] = previous[path].replace(previous_state, CONTRACTS_STATE, 1)
+                            expected_artifacts[path] = expected_artifacts[path].replace(previous_state, CONTRACTS_STATE, 1)
                         self.assertEqual(expected_artifacts, candidate)
                     elif repo != "android":
                         self.assertEqual(accepted.PROFILES["repositories"][repo],
                                          current.PROFILES["repositories"][repo])
             original = copy.deepcopy(accepted.PROFILES)
             original["repositories"]["contracts"]["state"] = CONTRACTS_STATE
+            original["repositories"]["contracts"]["commands"][-1] = CONTRACTS_SOURCE_TEST_COMMAND
             original["repositories"]["android"]["install"] = [RESTORE]
             original["repositories"]["android"]["commands"] = current.profile_for("android")["commands"]
             original["repositories"]["api"]["commands"][2] = original["repositories"]["api"]["commands"][2].replace(

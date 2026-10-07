@@ -451,13 +451,19 @@ class Planter:
             raise first
 
 
+def _unittest_directory(command):
+    if command == "python scripts/run_source_tests.py":
+        return "scripts/tests"
+    match = UNITTEST_COMMAND.search(command)
+    return match.group(1) if match else None
+
+
 def unittest_directories(profile):
-    return [match.group(1) for command in profile["commands"]
-            for match in [UNITTEST_COMMAND.search(command)] if match]
+    return [directory for command in profile["commands"] if (directory := _unittest_directory(command))]
 
 
 def unittest_commands(profile):
-    return [command for command in profile["commands"] if UNITTEST_COMMAND.search(command)]
+    return [command for command in profile["commands"] if _unittest_directory(command)]
 
 
 def has_command(profile, pattern):

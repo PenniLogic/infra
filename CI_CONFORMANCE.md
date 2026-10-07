@@ -207,8 +207,8 @@ security acceptance.
 | `workflow-unpinned-action` | workflow | python | every profile | drift check; consumer checker refuses `actions/checkout@v4` (pinned-action rule) |
 | `workflow-reusable-workflow-job` | workflow | python | every profile | drift check; consumer checker refuses `jobs.reuse.uses` |
 | `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current infra template copied over the scratch checker refuses (step-key rule from PR E, rule 17 of the ordered table) |
-| `python-tests-removed` | python | python | profiles with `unittest discover` | the exact profile command exits 5, `NO TESTS RAN` |
-| `python-test-failing` | python | python | profiles with `unittest discover` | the exact profile command exits 1 naming `test_planted_defect_must_fail` |
+| `python-tests-removed` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | the exact profile command fails with `NO TESTS RAN` |
+| `python-test-failing` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | the exact profile command fails naming `test_planted_defect_must_fail` |
 | `python-pytest-failing` / `python-pytest-removed` | python | uv | ai-service | `uv sync --locked` then `uv run --locked pytest` exits 1 / 5 |
 | `documentation-index-link-broken` | documentation | python | docs | `check_docs.py` fails: `generated slot ADR-001 differs` |
 | `documentation-dangling-supersedes` | documentation | python | docs | `check_docs.py` fails: `supersedes ADR-099, which has no source record` |

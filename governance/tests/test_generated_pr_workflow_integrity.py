@@ -12,7 +12,7 @@ from unittest import mock
 
 import conformance_support as support
 from conformance import steps
-from test_baseline import CONTRACTS_STATE
+from test_baseline import CONTRACTS_STATE, contracts_command_delta
 
 
 GATE = ".github/workflows/pr-workflow-integrity.yml"
@@ -149,6 +149,8 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                                           if step["name"] == "Run checks")
                         run_checks["run"] = "\n".join(generator.profile_for("api")["commands"])
                         expected = json.dumps(value, indent=2) + "\n"
+                    elif name == "contracts":
+                        expected = contracts_command_delta(self, old)[relative]
                     self.assertEqual(expected, new[relative], (name, relative))
                 if name == "api":
                     self.assertEqual({
@@ -159,10 +161,10 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     unchanged += sum(old[path] == new.get(path) for path in old)
                 elif name == "contracts":
                     previous_state = accepted.PROFILES["repositories"][name]["state"]
-                    expected = dict(old)
+                    expected = contracts_command_delta(self, old)
                     for relative in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
                         self.assertEqual(1, old[relative].count(previous_state))
-                        expected[relative] = old[relative].replace(previous_state, CONTRACTS_STATE, 1)
+                        expected[relative] = expected[relative].replace(previous_state, CONTRACTS_STATE, 1)
                     self.assertEqual(expected, new, name)
                     unchanged += sum(old[path] == new.get(path) for path in old)
                 elif name != "infra":
@@ -174,7 +176,7 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                                      {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
                     self.assertEqual(old[".github/workflows/conformance.yml"],
                                      new[".github/workflows/conformance.yml"])
-            self.assertEqual(146, unchanged)
+            self.assertEqual(144, unchanged)
 
     def test_exact_opt_in_checker_extension_never_widens_the_common_template(self):
         original = (support.GOVERNANCE / "templates" / "check_repository.py").read_bytes()
