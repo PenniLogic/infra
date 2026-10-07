@@ -173,13 +173,13 @@ class TokenChannelTests(unittest.TestCase):
 
 
 class RuntimeRenderingTests(unittest.TestCase):
-    def test_node_pin_and_nvmrc_are_canonical_and_infra_only(self):
+    def test_node_pin_and_nvmrc_are_canonical_for_infra_and_api(self):
         self.assertEqual("24.14.0", support.generator.PROFILES["repositories"]["infra"]["node"])
         self.assertEqual("24.14.0\n", support.generator.artifacts("infra")[".nvmrc"])
         for name in support.generator.PROFILES["repositories"]:
             with self.subTest(profile=name):
-                self.assertEqual(name == "infra", ".nvmrc" in support.generator.artifacts(name))
-                self.assertEqual(23 if name in ("infra", "api") else 21 if name == "android" else 20,
+                self.assertEqual(name in ("infra", "api"), ".nvmrc" in support.generator.artifacts(name))
+                self.assertEqual(24 if name == "api" else 23 if name == "infra" else 21 if name == "android" else 20,
                                  len(support.generator.artifacts(name)))
 
     def test_node_and_verified_uv_install_precede_the_authenticated_three_toolchain_run(self):
@@ -251,6 +251,7 @@ class RuntimeRenderingTests(unittest.TestCase):
                         ], previous_profile["commands"])
                         previous_profile["commands"] = support.generator.profile_for("api")["commands"]
                         previous_profile["money_source_materialization"] = True
+                        previous_profile["node"] = "24.14.0"
                     if name == "contracts":
                         previous_profile["state"] = CONTRACTS_STATE
                     for setup in (False, True):
@@ -281,8 +282,27 @@ class RuntimeRenderingTests(unittest.TestCase):
                                               if step["name"] == "Run checks")
                             run_checks["run"] = "\n".join(previous_profile["commands"])
                             expected = json.dumps(value, indent=2) + "\n"
-                        self.assertEqual(expected.encode("utf-8"),
-                                         support.generator.workflow(name, setup=setup).encode("utf-8"))
+                        actual = support.generator.workflow(name, setup=setup)
+                        if name == "api":
+                            value = json.loads(actual)
+                            native_steps = next(iter(value["jobs"].values()))["steps"]
+                            self.assertEqual({
+                                "name": "Node",
+                                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                                "with": {"node-version-file": ".nvmrc"},
+                            }, native_steps.pop(2))
+                            if not setup:
+                                preparation = native_steps.pop(3)
+                                self.assertEqual("Prepare API Node SDK", preparation["name"])
+                                self.assertEqual({"name", "run"}, set(preparation))
+                                flag = (' --money-client-interop-node '
+                                        '"${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"')
+                                for step in native_steps:
+                                    if step["name"] in ("Run checks", "Coverage against explicit base"):
+                                        self.assertEqual(1, step["run"].count(flag))
+                                        step["run"] = step["run"].replace(flag, "")
+                            actual = old.encoded(value)
+                        self.assertEqual(expected.encode("utf-8"), actual.encode("utf-8"))
                     self.assertEqual(previous_profile, support.generator.PROFILES["repositories"][name])
         self.assertEqual("python", registry.expected_language("infra", support.generator.profile_for("infra")))
 

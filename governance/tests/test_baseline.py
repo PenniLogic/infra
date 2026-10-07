@@ -125,7 +125,12 @@ class BaselineTests(unittest.TestCase):
                 output = generator.artifacts(repo)
                 steps = json.loads(output[".github/workflows/ci.yml"])["jobs"]["ci"]["steps"]
                 run = [step for step in steps if step["name"] == "Run checks"]
-                self.assertEqual([commands], [step["run"].split("\n") for step in run])
+                workflow_commands = [
+                    command + ' --money-client-interop-node "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"'
+                    if repo == "api" and command == "python scripts/quality.py build" else command
+                    for command in commands
+                ]
+                self.assertEqual([workflow_commands], [step["run"].split("\n") for step in run])
                 self.assertEqual(commands, json.loads(output[".github/agent-policy.json"])["commands"])
                 block = "```text\npython scripts/setup.py\n" + "\n".join(commands) + "\n```"
                 for name in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
@@ -255,7 +260,7 @@ class BaselineTests(unittest.TestCase):
                         self.assertEqual("Python", steps[steps.index(node[0]) - 1]["name"])
                     else:
                         self.assertEqual([], node)
-        self.assertEqual({"web", "admin", "contracts", "infra"}, {
+        self.assertEqual({"web", "admin", "contracts", "infra", "api"}, {
             repo for repo, profile in generator.PROFILES["repositories"].items() if "node" in profile
         })
 
@@ -301,7 +306,8 @@ class BaselineTests(unittest.TestCase):
                         self.assertNotIn("that guide is not generated", output[name])
         web = generator.artifacts("web")
         self.assertIn("Install Python 3.14, Git, and Node 24.14.0 (see `.nvmrc`), then run:", web["CONTRIBUTING.md"])
-        self.assertIn("Install Python 3.14, Git, and JDK 21, then run:", generator.artifacts("api")["CONTRIBUTING.md"])
+        self.assertIn("Install Python 3.14, Git, Node 24.14.0 (see `.nvmrc`), and JDK 21, then run:",
+                      generator.artifacts("api")["CONTRIBUTING.md"])
         self.assertIn("Install Python 3.14, Git, and Node 24.14.0 (see `.nvmrc`), then run:",
                       generator.artifacts("infra")["CONTRIBUTING.md"])
         contracts = generator.artifacts("contracts")

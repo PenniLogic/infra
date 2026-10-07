@@ -55,6 +55,7 @@
       "money_source_materialization": true,
       "purpose": "Kotlin/Ktor core API with deterministic server-authoritative money",
       "state": "Kotlin/Ktor health-service scaffold from the reviewed initial import only; no authentication, ledger or product APIs are implemented.",
+      "node": "24.14.0",
       "java": "21",
       "timeout_minutes": 30,
       "commands": [
