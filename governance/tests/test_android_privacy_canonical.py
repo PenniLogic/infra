@@ -160,6 +160,8 @@ class CanonicalPrivacyTests(unittest.TestCase):
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
         android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
+        contracts = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/contracts")
+        contracts["workflow_ref"] = "68a59601b4f24986dbc66cf23d8b58c0913327bc"
         api = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/api")
         api["workflow_ref"] = next(entry["workflow_ref"] for entry in current["entries"]
                                    if entry["repo"] == "PenniLogic/api")
