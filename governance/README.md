@@ -40,6 +40,20 @@ missing files, failed probes and unexpected Node/npm versions refuse before
 publishing a path. The step appends only `MONEY_CLIENT_INTEROP_NODE` to the
 runner's step environment file after successful checks.
 
+Before either SDK probe, a finite name-based guard rejects inherited `NODE_OPTIONS`,
+`NODE_PATH` and npm's `node-options` environment selector, including empty values.
+Names are matched case-insensitively; both `npm_config_node_options` and
+`npm_config_node-options` spellings are covered. The fixed `/usr/bin/env -0` inventory
+preserves entry boundaries, and an inventory error also refuses. Diagnostics are
+static: no setting value is printed and the environment file is left byte-identical.
+This follows the existing conformance probe's finite name-boundary approach without
+changing its credential isolation or banning unrelated Node/npm configuration.
+The guard writes no startup setting and does not sanitize away an override silently.
+Real benign-preload controls use an owned forwarding layout and the installed pinned
+Node/npm: the unchanged emitter runs the preload; the guarded emitter starts neither
+probe, and removing the setting restores normal preparation. Test-only reversal of
+the probes covers either first invocation; production probe order is unchanged.
+
 The normal build and explicit-base coverage each pass that value as one quoted
 `--money-client-interop-node` argument. A missing/empty handoff refuses rather
 than selecting an ambient runtime. The same rendering applies to a profile

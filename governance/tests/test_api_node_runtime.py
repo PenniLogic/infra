@@ -16,6 +16,8 @@ import conformance_support as support
 generator = support.generator
 CI = ".github/workflows/ci.yml"
 NODE_ARGUMENT = ' --money-client-interop-node "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"'
+STARTUP_ERROR = b"::error::API Node SDK startup environment check failed.\n"
+PRELOAD_OPTION = '--require "./owned preload.cjs"'
 
 
 def api_steps():
@@ -54,7 +56,7 @@ class ApiNodeRuntimeTests(unittest.TestCase):
         self.assertEqual({"contents": "read"}, workflow["permissions"])
         self.assertEqual(30, workflow["jobs"]["ci"]["timeout-minutes"])
         self.assertNotIn("env", workflow["jobs"]["ci"])
-        for forbidden in ("ORG_GRADLE_PROJECT", "GRADLE_OPTS", "NODE_OPTIONS", "command -v",
+        for forbidden in ("ORG_GRADLE_PROJECT", "GRADLE_OPTS", "command -v",
                           "which node", "sudo", "ln -s", "GITHUB_PATH"):
             self.assertNotIn(forbidden, json.dumps(workflow))
 
@@ -133,7 +135,7 @@ class ApiNodeStepTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="api-node-step-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.cache = self.root / "runner cache with spaces $literal 'quote'"
+        self.cache = self.root / "runner cache with spaces $literal 'quote'=value;literal"
         self.sdk = self.cache / "node/24.14.0/x64"
         self.node = self.sdk / "bin/node"
         self.npm = self.sdk / "lib/node_modules/npm/bin/npm-cli.js"
@@ -153,10 +155,18 @@ class ApiNodeStepTests(unittest.TestCase):
         self.node.chmod(0o755)
         self.environment_file = self.root / "step environment"
         self.environment_file.write_bytes(b"PRIOR_SETTING=kept\n")
-        self.environment = support.defects.probe_environment()
+        self.environment = support.defects.probe_environment({
+            key: value for key, value in os.environ.items()
+            if key.upper() in {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC"}
+        })
+        for key in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"):
+            directory = self.root / key.lower()
+            directory.mkdir()
+            self.environment[key] = str(directory)
         self.environment.update(
             RUNNER_TOOL_CACHE=shell_path(self.cache), GITHUB_ENV=shell_path(self.environment_file),
             FIXTURE_PROBES=shell_path(self.root / "probes"), FIXTURE_NPM=shell_path(self.npm),
+            FIXTURE_NODE=shell_path(self.node),
             FIXTURE_NODE_VERSION="v24.14.0", FIXTURE_NPM_VERSION="11.9.0",
             FIXTURE_NODE_EXIT="0", FIXTURE_NPM_EXIT="0",
             FIXTURE_ARGV=shell_path(self.root / "argv"), BASE_SHA="b" * 40,
@@ -166,20 +176,89 @@ class ApiNodeStepTests(unittest.TestCase):
 
     def run_script(self, source):
         script = self.root / "emitted.sh"
-        script.write_text(source + "\n", encoding="utf-8", newline="\n")
+        script.write_text(source if source.endswith("\n") else source + "\n", encoding="utf-8", newline="\n")
         return subprocess.run(
             [self.bash, "--noprofile", "--norc", "-e", "-o", "pipefail", str(script)],
             cwd=self.root, env=self.environment, capture_output=True, check=False, timeout=15,
         )
 
-    def prepare(self):
+    def preparation_source(self, npm_first=False):
         self.assertIn("Prepare API Node SDK", self.steps)
+        source = self.steps["Prepare API Node SDK"]["run"]
+        if npm_first:
+            # Test-only reversal proves the guard precedes either possible first probe.
+            node = source.index('if ! version="$("$node" --version)"')
+            npm = source.index('if ! version="$("$node" "$npm" --version)"')
+            handoff = source.index("printf 'MONEY_CLIENT_INTEROP_NODE=")
+            source = source[:node] + source[npm:handoff] + source[node:npm] + source[handoff:]
+        return source
+
+    def prepare(self, npm_first=False):
         poison = 'node() { exit 97; }\nnpm() { exit 98; }\n'
-        return self.run_script(poison + self.steps["Prepare API Node SDK"]["run"])
+        return self.run_script(poison + self.preparation_source(npm_first))
 
     def arguments(self, name):
         return [record.decode("utf-8").split("\0")[:-1]
                 for record in (self.root / name).read_bytes().splitlines()]
+
+    def use_real_sdk(self):
+        selected = shutil.which("node")
+        self.assertIsNotNone(selected, "The finite startup controls require the declared Node SDK")
+        node = Path(selected).resolve()
+        npm = (node.parent / "node_modules/npm/bin/npm-cli.js" if os.name == "nt"
+               else node.parent.parent / "lib/node_modules/npm/bin/npm-cli.js")
+        self.assertTrue(npm.is_file(), "The finite startup controls require the SDK's bundled npm")
+        for argv, expected in (([str(node), "--version"], b"v24.14.0"),
+                               ([str(node), str(npm), "--version"], b"11.9.0")):
+            result = subprocess.run(argv, cwd=self.root, env=self.environment,
+                                    capture_output=True, check=False, timeout=15)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(expected, result.stdout.strip())
+        self.environment.update(
+            FIXTURE_REAL_NODE=shell_path(node),
+            FIXTURE_NATIVE_NPM=str(self.npm),
+            FIXTURE_CHILD_ENV=str(self.root / "child-environment"),
+            FIXTURE_PRELOAD_MARKER=str(self.root / "preload-marker"),
+        )
+        # Native-path forwarding avoids MSYS guessing at the fixture's literal semicolon.
+        self.node.write_text(
+            '#!/bin/bash\nprintf "%s\\0" "$@" >> "$FIXTURE_PROBES"\nprintf "\\n" >> "$FIXTURE_PROBES"\n'
+            'if [ "$#" = 2 ] && [ "$1" = "$FIXTURE_NPM" ] && [ "$2" = --version ]; then\n'
+            '  exec "$FIXTURE_REAL_NODE" "$FIXTURE_NATIVE_NPM" --version\n'
+            'fi\n'
+            'exec "$FIXTURE_REAL_NODE" "$@"\n',
+            encoding="ascii", newline="\n",
+        )
+        self.npm.write_text(
+            '// Synthetic forwarding layout; the real installed npm is not modified.\n'
+            "const fs = require('node:fs');\n"
+            "const settings = Object.fromEntries(Object.entries(process.env)\n"
+            "  .filter(([name]) => /^(node_|npm_config_)/i.test(name)));\n"
+            "fs.appendFileSync(process.env.FIXTURE_CHILD_ENV, JSON.stringify(settings) + '\\n');\n"
+            f"require({json.dumps(str(npm))});\n",
+            encoding="ascii", newline="\n",
+        )
+        (self.root / "owned preload.cjs").write_text(
+            "require('node:fs').appendFileSync(process.env.FIXTURE_PRELOAD_MARKER, 'owned benign preload\\n');\n",
+            encoding="ascii", newline="\n",
+        )
+
+    def unchecked_probes(self, npm_first=False):
+        commands = ['"$FIXTURE_NODE" --version', '"$FIXTURE_NODE" "$FIXTURE_NPM" --version']
+        return self.run_script("\n".join(reversed(commands) if npm_first else commands))
+
+    def reset_observations(self):
+        for name in ("probes", "argv", "child-environment", "preload-marker"):
+            (self.root / name).unlink(missing_ok=True)
+        self.environment_file.write_bytes(b"PRIOR_SETTING=kept\n")
+
+    def assert_startup_refused(self, result):
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(b"", result.stdout)
+        self.assertEqual(STARTUP_ERROR, result.stderr)
+        for name in ("probes", "child-environment", "preload-marker"):
+            self.assertFalse((self.root / name).exists(), name)
+        self.assertEqual(b"PRIOR_SETTING=kept\n", self.environment_file.read_bytes())
 
     def test_preparation_uses_exact_sdk_not_ambient_node_and_forwards_one_quoted_argument(self):
         result = self.prepare()
@@ -208,20 +287,27 @@ class ApiNodeStepTests(unittest.TestCase):
 
     def test_missing_or_invalid_runtime_never_publishes_a_path(self):
         for key, value in (
-            ("RUNNER_TOOL_CACHE", ""), ("RUNNER_TOOL_CACHE", "relative"),
+            ("RUNNER_TOOL_CACHE", None), ("RUNNER_TOOL_CACHE", ""), ("RUNNER_TOOL_CACHE", "relative"),
             ("RUNNER_TOOL_CACHE", "/cache\nINJECTED=value"), ("RUNNER_TOOL_CACHE", "/cache\rvalue"),
             ("FIXTURE_NODE_VERSION", "v22.23.3"), ("FIXTURE_NPM_VERSION", "10.9.9"),
+            ("FIXTURE_NODE_VERSION", ""), ("FIXTURE_NPM_VERSION", ""),
+            ("FIXTURE_NODE_VERSION", "v24.14.0\nextra"), ("FIXTURE_NPM_VERSION", "11.9.0\nextra"),
             ("FIXTURE_NODE_EXIT", "1"), ("FIXTURE_NPM_EXIT", "1"),
+            ("GITHUB_ENV", None), ("GITHUB_ENV", ""),
         ):
             with self.subTest(key=key, value=value):
                 original = self.environment[key]
-                self.environment[key] = value
+                if value is None:
+                    self.environment.pop(key)
+                else:
+                    self.environment[key] = value
                 result = self.prepare()
                 self.environment[key] = original
                 self.assertNotEqual(0, result.returncode)
-                self.assertIn(b"::error::", result.stderr)
+                self.assertIn(b"GitHub step environment is missing" if key == "GITHUB_ENV"
+                              else b"::error::", result.stderr)
                 self.assertEqual(b"PRIOR_SETTING=kept\n", self.environment_file.read_bytes())
-        for missing in (self.node, self.npm):
+        for missing in (self.sdk, self.node, self.npm):
             with self.subTest(missing=missing.name):
                 saved = missing.with_name(missing.name + ".saved")
                 missing.rename(saved)
@@ -230,6 +316,15 @@ class ApiNodeStepTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertIn(b"::error::", result.stderr)
                 self.assertEqual(b"PRIOR_SETTING=kept\n", self.environment_file.read_bytes())
+        saved = self.node.with_name("node.saved")
+        self.node.rename(saved)
+        self.node.mkdir()
+        result = self.prepare()
+        self.node.rmdir()
+        saved.rename(self.node)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(b"::error::", result.stderr)
+        self.assertEqual(b"PRIOR_SETTING=kept\n", self.environment_file.read_bytes())
 
     def test_missing_handoff_refuses_build_and_coverage_without_running_the_consumer(self):
         for value in (None, ""):
@@ -246,6 +341,68 @@ class ApiNodeStepTests(unittest.TestCase):
                     self.assertNotEqual(0, result.returncode)
                     self.assertNotIn(b"unexpected consumer", result.stdout)
                     self.assertIn(b"API Node SDK was not prepared", result.stderr)
+
+    def test_real_preload_control_is_blocked_before_either_probe_and_clean_recovery_succeeds(self):
+        self.use_real_sdk()
+        for npm_first in (False, True):
+            with self.subTest(npm_first=npm_first):
+                self.reset_observations()
+                self.environment["NODE_OPTIONS"] = PRELOAD_OPTION
+                control = self.unchecked_probes(npm_first)
+                self.assertEqual(0, control.returncode, control.stderr)
+                self.assertEqual(b"owned benign preload\n", (self.root / "preload-marker").read_bytes())
+                child = json.loads((self.root / "child-environment").read_text(encoding="utf-8"))
+                self.assertEqual(PRELOAD_OPTION, child["NODE_OPTIONS"])
+
+                self.reset_observations()
+                self.assert_startup_refused(self.prepare(npm_first))
+                self.environment.pop("NODE_OPTIONS")
+                result = self.prepare(npm_first)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse((self.root / "preload-marker").exists())
+                expected = [["--version"], [shell_path(self.npm), "--version"]]
+                self.assertEqual(list(reversed(expected)) if npm_first else expected, self.arguments("probes"))
+                self.assertEqual({}, json.loads((self.root / "child-environment").read_text(encoding="utf-8")))
+                self.assertEqual("PRIOR_SETTING=kept\nMONEY_CLIENT_INTEROP_NODE=" + shell_path(self.node) + "\n",
+                                 self.environment_file.read_text(encoding="utf-8"))
+
+    def test_startup_selector_aliases_and_empty_values_refuse_without_any_child(self):
+        self.use_real_sdk()
+        for name in ("NODE_OPTIONS", "node_options", "NODE_PATH", "Node_Path",
+                     "NPM_CONFIG_NODE_OPTIONS", "npm_config_node_options", "Npm_Config_Node_Options",
+                     "npm_config_node-options", "NPM_CONFIG_NODE-OPTIONS"):
+            for value in ("", PRELOAD_OPTION, "--unsupported-startup-setting\nprivate-fixture-value"):
+                for npm_first in (False, True):
+                    with self.subTest(name=name, value=value, npm_first=npm_first):
+                        self.reset_observations()
+                        self.environment[name] = value
+                        result = self.prepare(npm_first)
+                        self.environment.pop(name)
+                        self.assert_startup_refused(result)
+
+    def test_failed_environment_inventory_refuses_without_any_sdk_probe(self):
+        source = self.preparation_source()
+        self.assertIn("/usr/bin/env -0", source)
+        self.assert_startup_refused(self.run_script(source.replace("/usr/bin/env -0", "/missing-env-fixture -0")))
+
+    def test_real_child_keeps_unrelated_neighbors_without_preloading(self):
+        self.use_real_sdk()
+        neighbors = {
+            "NODE_OPTIONS_NEIGHBOR": "literal\nNODE_OPTIONS=" + PRELOAD_OPTION,
+            "NODE_OPTIONS_EMPTY_NEIGHBOR": "", "NODE_REPL_EXTERNAL_MODULE": "./owned preload.cjs",
+            "NODE_NO_WARNINGS": "1", "npm_config_loglevel": "silent",
+            "npm_config_node_options_extra": PRELOAD_OPTION,
+        }
+        self.environment.update(neighbors)
+        for npm_first in (False, True):
+            with self.subTest(npm_first=npm_first):
+                self.reset_observations()
+                result = self.prepare(npm_first)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(neighbors, json.loads((self.root / "child-environment").read_text(encoding="utf-8")))
+                self.assertFalse((self.root / "preload-marker").exists())
+                self.assertEqual(2, len(self.arguments("probes")))
+                self.assertIn(b"MONEY_CLIENT_INTEROP_NODE=", self.environment_file.read_bytes())
 
 
 if __name__ == "__main__":

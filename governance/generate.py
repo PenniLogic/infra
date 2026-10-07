@@ -251,7 +251,18 @@ def uv_install_step():
 def api_node_step(profile):
     # The pinned action has no node-path output. Bind its exact Linux x64 cache
     # layout before repository commands run, without consulting PATH.
-    return {"name": "Prepare API Node SDK", "run": f"""case "${{RUNNER_TOOL_CACHE-}}" in
+    # npm accepts hyphenated environment names that Bash's exported-name list omits.
+    return {"name": "Prepare API Node SDK", "run": f"""set -o pipefail
+if ! /usr/bin/env -0 2>/dev/null | while IFS= read -r -d '' setting; do
+  name="${{setting%%=*}}"
+  case "${{name^^}}" in
+    NODE_OPTIONS|NODE_PATH|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_NODE-OPTIONS) exit 1 ;;
+  esac
+done; then
+  echo "::error::API Node SDK startup environment check failed." >&2
+  exit 1
+fi
+case "${{RUNNER_TOOL_CACHE-}}" in
   /*) ;;
   *) echo "::error::API runner tool cache must be absolute." >&2; exit 1 ;;
 esac
