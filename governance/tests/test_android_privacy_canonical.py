@@ -31,7 +31,8 @@ CHANGED_ARTIFACTS = {
 }
 API_PIN_AND_ADMISSION_ARTIFACTS = {
     "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json",
-    ".github/workflows/ci.yml", "scripts/materialize_money_sources.py",
+    ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml", ".nvmrc",
+    "scripts/materialize_money_sources.py",
     "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
 }
 CONTRACTS_SCOPE_ARTIFACTS = {"AGENTS.md", "README.md", "CONTRIBUTING.md"}
@@ -77,6 +78,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
                                      CONTRACTS_SCOPE_ARTIFACTS if repo == "contracts" else set(), changed)
                     if repo == "api":
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
+                        expected["node"] = "24.14.0"
                         expected["commands"][2] = expected["commands"][2].replace(
                             "contracts-ea56c63d5c9b679537bd9205b04626049c20c572",
                             "contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662",
@@ -86,6 +88,16 @@ class CanonicalPrivacyTests(unittest.TestCase):
                             "python -I -S -B scripts/prepare_database_admission.py verify",
                         ]
                         self.assertEqual(expected, current.PROFILES["repositories"][repo])
+                        self.assertNotIn(".nvmrc", previous)
+                        self.assertEqual("24.14.0\n", candidate[".nvmrc"])
+                        setup = ".github/workflows/copilot-setup-steps.yml"
+                        expected_setup = json.loads(previous[setup])
+                        expected_setup["jobs"]["copilot-setup-steps"]["steps"].insert(2, {
+                            "name": "Node",
+                            "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                            "with": {"node-version-file": ".nvmrc"},
+                        })
+                        self.assertEqual(accepted.encoded(expected_setup), candidate[setup])
                     elif repo == "contracts":
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
                         previous_state = expected["state"]
@@ -111,6 +123,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
                 "python -I -S -B scripts/prepare_database_admission.py prepare --fetch",
                 "python -I -S -B scripts/prepare_database_admission.py verify",
             ]
+            original["repositories"]["api"]["node"] = "24.14.0"
             self.assertEqual(original, current.PROFILES)
 
     def test_accepted_money_inputs_flags_and_registry_survive_android_composition(self):

@@ -125,6 +125,8 @@ def validate_profile(repo, profile):
             raise ValueError(f"{repo}: {field} has an unexpected value")
     if repo == "infra" and profile.get("node") is None:
         raise ValueError("infra: node is required for the real governance fixtures")
+    if repo == "api" and profile.get("node") != "24.14.0":
+        raise ValueError("api: the reviewed SDK is Node 24.14.0 with bundled npm 11.9.0")
     if ".." in profile.get("developer_guide", ""):
         raise ValueError(f"{repo}: developer_guide must stay inside the repository")
     timeout = profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES)
@@ -246,11 +248,61 @@ def uv_install_step():
     return {"name": "Install uv", "run": profile_for("ai-service")["install"][0]}
 
 
+def api_node_step(profile):
+    # The pinned action has no node-path output. Bind its exact Linux x64 cache
+    # layout before repository commands run, without consulting PATH.
+    # npm accepts hyphenated environment names that Bash's exported-name list omits.
+    return {"name": "Prepare API Node SDK", "run": f"""set -o pipefail
+if ! /usr/bin/env -0 2>/dev/null | while IFS= read -r -d '' setting; do
+  name="${{setting%%=*}}"
+  case "${{name^^}}" in
+    NODE_OPTIONS|NODE_PATH|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_NODE-OPTIONS) exit 1 ;;
+  esac
+done; then
+  echo "::error::API Node SDK startup environment check failed." >&2
+  exit 1
+fi
+case "${{RUNNER_TOOL_CACHE-}}" in
+  /*) ;;
+  *) echo "::error::API runner tool cache must be absolute." >&2; exit 1 ;;
+esac
+case "$RUNNER_TOOL_CACHE" in
+  *$'\\n'*|*$'\\r'*) echo "::error::API runner tool cache must be one line." >&2; exit 1 ;;
+esac
+sdk="$RUNNER_TOOL_CACHE/node/{profile["node"]}/x64"
+node="$sdk/bin/node"
+npm="$sdk/lib/node_modules/npm/bin/npm-cli.js"
+if [ ! -f "$node" ] || [ ! -x "$node" ] || [ ! -f "$npm" ]; then
+  echo "::error::API Node SDK or bundled npm is missing." >&2
+  exit 1
+fi
+if ! version="$("$node" --version)" || [ "$version" != "v{profile["node"]}" ]; then
+  echo "::error::API Node SDK version check failed." >&2
+  exit 1
+fi
+if ! version="$("$node" "$npm" --version)" || [ "$version" != "11.9.0" ]; then
+  echo "::error::API bundled npm version check failed." >&2
+  exit 1
+fi
+printf 'MONEY_CLIENT_INTEROP_NODE=%s\\n' "$node" >> "${{GITHUB_ENV:?GitHub step environment is missing}}"
+"""}
+
+
+def api_node_command(command):
+    for task in ("build", "coverage", "gate-self-test"):
+        prefix = f"python scripts/quality.py {task}"
+        if command == prefix or command.startswith(prefix + " "):
+            return command + ' --money-client-interop-node "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"'
+    return command
+
+
 def workflow(repo, setup=False):
     profile = profile_for(repo)
     steps = tool_steps(profile)
     if repo == "infra":
         steps.append(uv_install_step())
+    if repo == "api" and not setup:
+        steps.append(api_node_step(profile))
     if "gradle_wrapper_jar_sha256" in profile and not setup:
         steps.append({
             "name": "Verify Gradle wrapper",
@@ -258,12 +310,14 @@ def workflow(repo, setup=False):
                    " | sha256sum -c -",
         })
     commands = ["python scripts/check_repository.py"] if setup else profile["commands"]
+    if repo == "api" and not setup:
+        commands = [api_node_command(command) for command in commands]
     steps.append({"name": "Verify repository" if setup else "Run checks", "run": "\n".join(commands)})
     if repo == "api" and not setup:
         steps.append({
             "name": "Coverage against explicit base",
             "env": {"BASE_SHA": "${{ github.event.pull_request.base.sha || github.sha }}"},
-            "run": 'python scripts/quality.py coverage --base "$BASE_SHA"',
+            "run": api_node_command('python scripts/quality.py coverage --base "$BASE_SHA"'),
         })
     if setup:
         if profile.get("install"):
@@ -694,8 +748,9 @@ alone is not a license grant. Existing source notices are preserved.
         "scripts/check_repository.py": checker(repo),
         "scripts/setup.py": (HERE / "templates/setup.py").read_text(encoding="utf-8"),
     }
-    if repo == "infra":
+    if repo in ("infra", "api"):
         output[".nvmrc"] = profile["node"] + "\n"
+    if repo == "infra":
         output[".github/workflows/conformance.yml"] = conformance_workflow()
     if profile.get("money_source_materialization", False):
         output["scripts/materialize_money_sources.py"] = money_materializer()

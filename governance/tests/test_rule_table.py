@@ -129,22 +129,26 @@ class RuleTableTests(unittest.TestCase):
         paragraph = self.readme.split("\n\n")[1]
         self.assertTrue(paragraph.startswith("`generate.py` renders"), paragraph)
         listed = [token for token in re.findall(r"`([^`]+)`", paragraph) if token not in NOT_GENERATED]
-        infra_only = {".github/workflows/conformance.yml", ".github/workflows/pr-workflow-integrity.yml", ".nvmrc"}
+        infra_only = {".github/workflows/conformance.yml", ".github/workflows/pr-workflow-integrity.yml"}
+        infra_api = {".nvmrc"}
         android_only = {"scripts/check_privacy_components.py"}
         api_only = {"scripts/materialize_money_sources.py", "scripts/prepare_database_admission.py",
                     "src/main/resources/database-admission-installation.json"}
         self.assertTrue(infra_only <= set(listed))
+        self.assertTrue(infra_api <= set(listed))
         self.assertTrue(android_only <= set(listed))
         self.assertTrue(api_only <= set(listed))
         self.assertIn("20 common files", paragraph)
         self.assertIn("infra alone has 23 files", paragraph)
-        self.assertIn("api alone has 23 files", paragraph)
+        self.assertIn("api alone has 24 files", paragraph)
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 names = sorted(generator.artifacts(repo))
-                self.assertEqual(23 if repo in ("infra", "api") else 21 if repo == "android" else 20, len(names))
+                self.assertEqual(24 if repo == "api" else 23 if repo == "infra" else 21 if repo == "android" else 20,
+                                 len(names))
                 applicable = [token for token in listed
                               if (token not in infra_only or repo == "infra")
+                              and (token not in infra_api or repo in ("infra", "api"))
                               and (token not in android_only or repo == "android")
                               and (token not in api_only or repo == "api")]
                 self.assertIn(".github/instructions/source.instructions.md", names)

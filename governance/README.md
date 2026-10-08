@@ -8,11 +8,12 @@
 `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/*` (two files), `.gitattributes`,
 `.gitignore`, `scripts/setup.py` and `scripts/check_repository.py`). Consumers never hand-edit those
 files: a profile or template change lands here through a reviewed generator PR, then each consumer
-regenerates from the merged `main` in its own PR. Additionally, api alone has 23 files, including `scripts/materialize_money_sources.py`,
+regenerates from the merged `main` in its own PR. Additionally, api alone has 24 files, including `scripts/materialize_money_sources.py`,
 `scripts/prepare_database_admission.py` and `src/main/resources/database-admission-installation.json`;
 infra alone has 23 files: its report
-workflow is `.github/workflows/conformance.yml`, its additive gate is
-`.github/workflows/pr-workflow-integrity.yml`, and `.nvmrc` pins its real governance-fixture Node runtime.
+workflow is `.github/workflows/conformance.yml`, and its additive gate is
+`.github/workflows/pr-workflow-integrity.yml`. Both API and Infra render `.nvmrc` to pin
+the API client SDK and real governance-fixture Node runtime respectively.
 Android alone adds `scripts/check_privacy_components.py` (21 files), a narrow native-inventory
 extractor that invokes the Android-owned assertion.
 `governance/tests/test_rule_table.py` keeps this per-profile list equal to what `artifacts()` renders.
@@ -23,6 +24,83 @@ python governance/generate.py --repository infra --check                      # 
 python governance/generate.py --root <scratch>                                # render every profile
 python -m unittest discover -s governance/tests
 ```
+
+## API Node SDK prerequisite (consumer adoption held)
+
+The API profile now declares the already accepted Node `24.14.0` SDK with bundled
+npm `11.9.0`. Native CI and manual Copilot setup reuse the existing
+`actions/setup-node@820762786026740c76f36085b0efc47a31fe5020` action and the
+generated API `.nvmrc`; there is no new installer, cache selection or action pin.
+Only CI adds `Prepare API Node SDK`, before any repository commands. The pinned
+action exports no executable path, so that step binds its exact Linux x64 layout:
+`$RUNNER_TOOL_CACHE/node/24.14.0/x64/bin/node`, with npm's adjacent
+`lib/node_modules/npm/bin/npm-cli.js`. The root comes from trusted runner metadata,
+not a workspace executable or PATH search. Missing/non-absolute/multiline roots,
+missing files, failed probes and unexpected Node/npm versions refuse before
+publishing a path. The step appends only `MONEY_CLIENT_INTEROP_NODE` to the
+runner's step environment file after successful checks.
+
+Before either SDK probe, a finite name-based guard rejects inherited `NODE_OPTIONS`,
+`NODE_PATH` and npm's `node-options` environment selector, including empty values.
+Names are matched case-insensitively; both `npm_config_node_options` and
+`npm_config_node-options` spellings are covered. The fixed `/usr/bin/env -0` inventory
+preserves entry boundaries, and an inventory error also refuses. Diagnostics are
+static: no setting value is printed and the environment file is left byte-identical.
+This follows the existing conformance probe's finite name-boundary approach without
+changing its credential isolation or banning unrelated Node/npm configuration.
+The guard writes no startup setting and does not sanitize away an override silently.
+Real benign-preload controls use an owned forwarding layout and the installed pinned
+Node/npm: the unchanged emitter runs the preload; the guarded emitter starts neither
+probe, and removing the setting restores normal preparation. Test-only reversal of
+the probes covers either first invocation; production probe order is unchanged.
+
+The normal build and explicit-base coverage each pass that value as one quoted
+`--money-client-interop-node` argument. A missing/empty handoff refuses rather
+than selecting an ambient runtime. The same rendering applies to a profile
+`gate-self-test` command, but no self-test or other gate is added by this change.
+The base expression, Money/database source preparation, task lists, budgets,
+permissions, action pins, concurrency and timeouts are unchanged. No Gradle
+startup variable, runtime allowlist, symlink or global configuration is changed.
+Manual profile commands retain the optional/default-None API behavior.
+
+**Do not adopt these generated API outputs until the API-owned parser bridge is
+composed in the same consumer change.** Its agreed interface is:
+
+```text
+python scripts\quality.py build --money-client-interop-node "<ABSOLUTE_NODE>"
+python scripts\quality.py coverage --base "<FULL_BASE_SHA>" --money-client-interop-node "<ABSOLUTE_NODE>"
+python scripts\quality.py gate-self-test --artifact-dir "<OWNED_PARENT>" --money-client-interop-node "<ABSOLUTE_NODE>"
+```
+
+API owns validation with `money_client_interop.node_runtime`, one
+`-PmoneyClientInteropNode=<absolute>` Gradle argument, and forwarding to the
+collector. There is no prepare/verify flag. After the producer is independently
+reviewed and accepted, the API owner regenerates from that exact accepted Infra
+source in the API owner's exclusive checkout, atomically with the bridge:
+
+```text
+python "<ACCEPTED_INFRA_CHECKOUT>\governance\generate.py" --repository api --root "<OWNED_API_CHECKOUT>"
+python "<ACCEPTED_INFRA_CHECKOUT>\governance\generate.py" --repository api --root "<OWNED_API_CHECKOUT>" --check
+```
+
+The API output delta is `.github/workflows/ci.yml`,
+`.github/workflows/copilot-setup-steps.yml`, `CONTRIBUTING.md`, and new `.nvmrc`.
+All other API artifacts and all eight other profiles' outputs stay byte-identical.
+The shared checker and its allowlists are unchanged; generator `--check` binds
+the exact SDK preparation and both CLI handoffs.
+
+The documented Ubuntu image default Node `22.23.3`/npm `10.9.9` is unsupported
+by the immutable Contracts engines. That missing prerequisite is real, but
+the unavailable hosted npm stderr from [PenniLogic/api#102](https://github.com/PenniLogic/api/pull/102)
+is not evidence of an `EBADENGINE` cause. Rendering and finite shell/argv fixtures
+are not an SDK install run, API application execution or hosted recovery proof.
+The Contracts command proposal in [Infra #72](https://github.com/PenniLogic/infra/pull/72)
+is not adopted. [Infra #22](https://github.com/PenniLogic/infra/issues/22),
+[PenniLogic/api#1](https://github.com/PenniLogic/api/issues/1) and
+[PenniLogic/api#22](https://github.com/PenniLogic/api/issues/22) remain open in scope:
+independent review, consumer/native acceptance, whole-job and whole-workflow
+under-600-second evidence, and the trusted-workflow identity/mandatory-absence
+gap are not resolved by this runtime prerequisite.
 
 ## API database admission installation (accepted source binding)
 

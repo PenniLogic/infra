@@ -222,7 +222,8 @@ class CatalogAndRendererTests(unittest.TestCase):
         self.assertEqual({"contents": "read"}, workflow["permissions"])
         self.assertEqual(30, workflow["jobs"]["ci"]["timeout-minutes"])
         self.assertEqual("CI", workflow["jobs"]["ci"]["name"])
-        self.assertEqual('python scripts/quality.py coverage --base "$BASE_SHA"',
+        self.assertEqual('python scripts/quality.py coverage --base "$BASE_SHA"'
+                         ' --money-client-interop-node "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"',
                          workflow["jobs"]["ci"]["steps"][-1]["run"])
         self.assertNotIn("GH_TOKEN", json.dumps(workflow))
         self.assertNotIn("authenticated-local", json.dumps(workflow))
