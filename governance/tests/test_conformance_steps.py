@@ -4,10 +4,13 @@ exactly the required native check, and a required context without a producing wo
 reported as missing."""
 
 import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import conformance_support as support
-from conformance import github_api, steps
+from conformance import defects, github_api, run, steps
+from test_api_node_runtime import NODE_ARGUMENT
 
 
 class ClassificationTests(unittest.TestCase):
@@ -103,8 +106,56 @@ class ProducedCheckTests(unittest.TestCase):
                 workflow = artifacts[".github/workflows/ci.yml"].encode("utf-8")
                 policy = json.loads(artifacts[".github/agent-policy.json"])
                 self.assertEqual({policy["required_native_check"]}, steps.produced_check_names(workflow))
-                self.assertEqual(support.generator.PROFILES["repositories"][name]["commands"],
-                                 steps.workflow_run_commands(workflow))
+                manual = support.generator.PROFILES["repositories"][name]["commands"]
+                expected = [
+                    command + NODE_ARGUMENT if name == "api" and command == "python scripts/quality.py build"
+                    else command for command in manual
+                ]
+                actual = steps.workflow_run_commands(workflow)
+                self.assertEqual(expected, actual)
+                self.assertEqual(manual, policy["commands"])
+                if name == "api":
+                    self.assertEqual(9, len(actual))
+                    self.assertEqual(1, manual.count("python scripts/quality.py build"))
+                    for category in ("build", "test", "lint"):
+                        self.assertIn("python scripts/quality.py build" + NODE_ARGUMENT,
+                                      steps.detect_steps(actual)[category])
+
+    def test_api_report_drift_refuses_actual_removed_and_stubbed_rendered_tests(self):
+        profile = support.generator.profile_for("api")
+        with tempfile.TemporaryDirectory(prefix="api-sdk-conformance-drift-") as temporary:
+            root = Path(temporary)
+            support.generator.generate("api", root)
+            context = defects.Context("api", profile, root, support.GOVERNANCE.parent)
+            path = root / ".github/workflows/ci.yml"
+            original = path.read_bytes()
+            runner = lambda command, cwd: defects.subprocess_runner(command, cwd, 30)
+            baseline = run.generated_baseline(support.generator, "api", root, support.GOVERNANCE.parent, runner)
+            self.assertTrue(baseline["workflow_files_identical"])
+            self.assertEqual(0, baseline["exit_code"])
+            for transform in (defects._remove_test_lines, defects._stub_run_checks):
+                with self.subTest(transform=transform.__name__):
+                    document = json.loads(original)
+                    transform(context, document)
+                    mutated = support.generator.encoded(document).encode("utf-8")
+                    actual = steps.workflow_run_commands(mutated)
+                    self.assertNotIn("python scripts/quality.py build" + NODE_ARGUMENT, actual)
+                    self.assertEqual(profile["commands"][:7] if transform is defects._remove_test_lines
+                                     else ["echo tests skipped"], actual)
+                    path.write_bytes(mutated)
+                    refused = run.generated_baseline(
+                        support.generator, "api", root, support.GOVERNANCE.parent, runner,
+                    )
+                    self.assertEqual(1, refused["exit_code"])
+                    self.assertFalse(refused["workflow_files_identical"])
+                    self.assertEqual([".github/workflows/ci.yml"], refused["workflow_differences"])
+                    self.assertEqual([], refused["stale_files"])
+            path.write_bytes(original)
+            recovered = run.generated_baseline(
+                support.generator, "api", root, support.GOVERNANCE.parent, runner,
+            )
+            self.assertEqual(0, recovered["exit_code"])
+            self.assertTrue(recovered["workflow_files_identical"])
 
     def test_job_without_a_name_produces_its_id_and_malformed_documents_produce_nothing(self):
         self.assertEqual({"build", "Named"}, steps.produced_check_names(
