@@ -10,7 +10,7 @@ import unittest
 
 import conformance_support as support
 from conformance import defects, github_api, run, steps
-from test_api_node_runtime import NODE_ARGUMENT
+from test_api_node_runtime import BUILD_COMMAND
 
 
 class ClassificationTests(unittest.TestCase):
@@ -105,10 +105,13 @@ class ProducedCheckTests(unittest.TestCase):
                 artifacts = support.generator.artifacts(name)
                 workflow = artifacts[".github/workflows/ci.yml"].encode("utf-8")
                 policy = json.loads(artifacts[".github/agent-policy.json"])
-                self.assertEqual({policy["required_native_check"]}, steps.produced_check_names(workflow))
+                expected_checks = ({policy["required_native_check"], "Linux qualification", "Windows qualification"}
+                                   if name in ("api", "infra") else {policy["required_native_check"]})
+                self.assertEqual(expected_checks, steps.produced_check_names(workflow))
                 manual = support.generator.PROFILES["repositories"][name]["commands"]
                 expected = [
-                    command + NODE_ARGUMENT if name == "api" and command == "python scripts/quality.py build"
+                    BUILD_COMMAND if name == "api" and command == "python scripts/quality.py build"
+                    else support.generator.infra_ci_command(command) if name == "infra"
                     else command for command in manual
                 ]
                 actual = steps.workflow_run_commands(workflow)
@@ -118,8 +121,7 @@ class ProducedCheckTests(unittest.TestCase):
                     self.assertEqual(9, len(actual))
                     self.assertEqual(1, manual.count("python scripts/quality.py build"))
                     for category in ("build", "test", "lint"):
-                        self.assertIn("python scripts/quality.py build" + NODE_ARGUMENT,
-                                      steps.detect_steps(actual)[category])
+                        self.assertIn(BUILD_COMMAND, steps.detect_steps(actual)[category])
 
     def test_api_report_drift_refuses_actual_removed_and_stubbed_rendered_tests(self):
         profile = support.generator.profile_for("api")
@@ -139,7 +141,7 @@ class ProducedCheckTests(unittest.TestCase):
                     transform(context, document)
                     mutated = support.generator.encoded(document).encode("utf-8")
                     actual = steps.workflow_run_commands(mutated)
-                    self.assertNotIn("python scripts/quality.py build" + NODE_ARGUMENT, actual)
+                    self.assertNotIn(BUILD_COMMAND, actual)
                     self.assertEqual(profile["commands"][:7] if transform is defects._remove_test_lines
                                      else ["echo tests skipped"], actual)
                     path.write_bytes(mutated)
@@ -181,10 +183,12 @@ class ProducedCheckTests(unittest.TestCase):
             files = {path: text.encode("utf-8") for path, text in support.generator.artifacts(name).items()
                      if path.startswith(".github/workflows/")}
             with self.subTest(profile=name):
-                expected = {"CI", "PR workflow integrity"} if name == "infra" else {"CI"}
+                native = ({"CI", "Linux qualification", "Windows qualification"}
+                          if name in ("api", "infra") else {"CI"})
+                expected = native | {"PR workflow integrity"} if name == "infra" else native
                 self.assertEqual(expected, steps.produced_pr_check_names(files))
                 files.pop(".github/workflows/pr-workflow-integrity.yml", None)
-                self.assertEqual({"CI"}, steps.produced_pr_check_names(files))
+                self.assertEqual(native, steps.produced_pr_check_names(files))
         self.assertEqual(set(), steps.produced_pr_check_names({
             ".github/workflows/pr-workflow-integrity.yml":
                 b'{"on":{"workflow_dispatch":{}},"jobs":{"g":{"name":"PR workflow integrity"}}}',

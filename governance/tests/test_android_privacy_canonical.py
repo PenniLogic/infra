@@ -34,8 +34,12 @@ API_PIN_AND_ADMISSION_ARTIFACTS = {
     ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml", ".nvmrc",
     "scripts/materialize_money_sources.py",
     "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
+    "scripts/check_repository.py", "scripts/qualify_windows.py",
 }
 CONTRACTS_SCOPE_ARTIFACTS = {"AGENTS.md", "README.md", "CONTRIBUTING.md"}
+INFRA_QUALIFICATION_ARTIFACTS = {
+    ".github/workflows/ci.yml", ".github/workflows/pr-workflow-integrity.yml", "scripts/check_repository.py",
+}
 
 
 def load(name, path):
@@ -75,7 +79,8 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     }
                     self.assertEqual(CHANGED_ARTIFACTS if repo == "android" else
                                      API_PIN_AND_ADMISSION_ARTIFACTS if repo == "api" else
-                                     CONTRACTS_SCOPE_ARTIFACTS if repo == "contracts" else set(), changed)
+                                     CONTRACTS_SCOPE_ARTIFACTS if repo == "contracts" else
+                                     INFRA_QUALIFICATION_ARTIFACTS if repo == "infra" else set(), changed)
                     if repo == "api":
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
                         expected["node"] = "24.14.0"
