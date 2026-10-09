@@ -223,7 +223,8 @@ class WindowsOutcomeTests(unittest.TestCase):
         self.assertNotIn(MARKER, json.dumps(records))
 
     def real_admissions(self, body, *, diagnostic=b"", description=None, decorator="",
-                        other_body=None, expected_exit=0, expected_tail=b"OK (skipped=1)", accepted=False):
+                        other_body=None, allowed_skip=True, expected_exit=0,
+                        expected_tail=b"OK (skipped=1)", accepted=False):
         module, class_name, method = qualification.PYTHON_TARGET.rsplit(".", 2)
         other = f"{module}.{class_name}.test_other"
         source = f"import sys\nimport unittest\n\nclass {class_name}(unittest.TestCase):\n"
@@ -262,13 +263,16 @@ class WindowsOutcomeTests(unittest.TestCase):
                         "a" * 40, "b" * 40, [{"path_sha256": "c" * 64, "mode": "100644", "git_blob": "d" * 40}],
                     )), \
                     mock.patch.object(infra_qualification, "REQUIRED", {"governance": {qualification.PYTHON_TARGET, other}}), \
-                    mock.patch.object(infra_qualification, "SKIPS", {sys.platform: {"governance": {other}}}), \
+                    mock.patch.object(infra_qualification, "SKIPS", {
+                        sys.platform: {"governance": {other} if allowed_skip else set()},
+                    }), \
                     contextlib.redirect_stdout(output):
                 if accepted:
                     infra_qualification.qualify(root, "governance")
                     records = [json.loads(line) for line in output.getvalue().splitlines()]
                     self.assertEqual(
-                        {"event": "infra_qualification", "suite": "governance", "ok": True, "tests": 2, "skipped": 1},
+                        {"event": "infra_qualification", "suite": "governance", "ok": True,
+                         "tests": 2, "skipped": int(allowed_skip)},
                         records[-1],
                     )
                 else:
@@ -310,6 +314,23 @@ class WindowsOutcomeTests(unittest.TestCase):
                     f"self.skipTest('{MARKER}')", other_body=other,
                     diagnostic=b"synthetic diagnostic\nok\ntail " if diagnostic else b"",
                 )
+
+    def test_real_first_prefix_and_later_status_diagnostics_refuse_with_one_passing_control(self):
+        other = "        self.assertTrue(True)\n"
+        for description in (None, MARKER):
+            with self.subTest(docstring=description is not None, control="both-passing"):
+                self.real_admissions("self.assertTrue(True)", other_body=other, allowed_skip=False,
+                                     description=description, expected_tail=b"OK", accepted=True)
+            for body, decorator, tail in (
+                (f"self.skipTest('{MARKER}')", "", b"OK (skipped=1)"),
+                (f"self.fail('{MARKER}')", "expectedFailure", b"OK (expected failures=1)"),
+            ):
+                for diagnostic in (b"", b"ok\n", b"synthetic diagnostic\nok\n"):
+                    with self.subTest(decorator=decorator, docstring=description is not None, diagnostic=diagnostic):
+                        self.real_admissions(
+                            body, decorator=decorator, diagnostic=diagnostic, description=description,
+                            other_body=other, allowed_skip=False, expected_tail=tail,
+                        )
 
     def test_python_inventory_is_complete_unique_and_independent_of_diagnostic_encoding(self):
         valid = self.python_report().encode("utf-8")
