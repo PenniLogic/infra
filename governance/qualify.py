@@ -18,6 +18,14 @@ from templates.qualify_windows import Refused, python_outcomes
 
 
 ROOT = Path(__file__).resolve().parents[1]
+UNITTEST_DISCOVERY = """import sys
+import unittest
+
+with open(sys.argv[1], "x", encoding="utf-8", newline="\\n") as report:
+    sys.argv = ["unittest", "discover", "-s", sys.argv[2], "-v"]
+    unittest.main(module=None,
+                  testRunner=unittest.TextTestRunner(stream=report, verbosity=2))
+"""
 WINDOWS_GOVERNANCE = frozenset(
     "test_conformance_processes.WindowsProcessTests." + name for name in (
         "test_finite_shell_and_argv_descendants_are_terminated_before_the_runner_returns",
@@ -285,20 +293,31 @@ def qualify(root, suite):
     for digest in sorted(inventory):
         emit("test_inventory", suite=suite, id_sha256=digest)
     started = time.monotonic()
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+    with tempfile.TemporaryDirectory(prefix="infra-unittest-report-") as directory, \
+            tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        report = Path(directory) / "unittest.txt"
         result = subprocess.run(
-            [sys.executable, "-m", "unittest", "discover", "-s", str(Path(suite) / "tests"), "-v"],
+            [sys.executable, "-c", UNITTEST_DISCOVERY, str(report), str(Path(suite) / "tests")],
             cwd=root, stdout=stdout, stderr=stderr, check=False,
         )
         emit("ordinary_discovery", suite=suite, exit_code=result.returncode,
              wall_seconds=round(time.monotonic() - started, 6))
         stdout.seek(0)
         stderr.seek(0)
-        data = stderr.read()
+        if report.is_file() and not report.is_symlink():
+            data = report.read_bytes()
+        elif result.returncode == 0:
+            raise Refused("missing-ordinary-unittest-report")
+        else:
+            data = stderr.read()
         if result.returncode != 0:
             discovery_diagnostics(root, suite, data, inventory, source[2])
             raise Refused("ordinary-discovery-or-setup-teardown-failed")
         records = python_outcomes(data)
+        skipped = sum(record["outcome"] == "skipped" for record in records)
+        summary = f"OK (skipped={skipped})".encode("ascii") if skipped else b"OK"
+        if data.splitlines()[-1] != summary:
+            raise Refused("ordinary-discovery-summary-does-not-match-outcomes")
         output = stdout.read()
     for record in records:
         emit("test_outcome", suite=suite, id_sha256=record["id_sha256"], outcome=record["outcome"])

@@ -153,11 +153,17 @@ immediate exit-code guard, including installation and each repository/generation
 
 Both OS jobs execute full governance discovery followed serially by full scripts
 discovery. Only those two commands receive the transparent
-`python governance/qualify.py -- <canonical discovery command>` wrapper; it launches
-the same `python -m unittest discover -s <suite>/tests` command once, adding only `-v`
-for per-test outcomes. It is not a selector, replacement test runner or optional gate.
-The helper is manually maintained Infra source, not an additional generated consumer
-file. It reuses the API qualifier's safe unittest parser rather than duplicating it.
+`python governance/qualify.py -- <canonical discovery command>` wrapper; it executes
+the complete ordinary discovery once, using `-v` for per-test outcomes.
+It is not a selector, replacement test framework or optional gate.
+The child invokes stdlib `unittest.main` discovery with an ordinary `TextTestRunner`
+whose stream is an exclusively created report inside an owned temporary directory.
+Test stdout and stderr remain separate diagnostic streams, including direct descriptor
+writes; neither can impersonate per-ID runner statuses. The complete runner report
+must pass the unchanged S1 parser and end with the matching successful terminal
+summary. Nonzero exit, a missing/incomplete report or any disallowed outcome refuses.
+Cleanup receipts still come only from stdout. The helper is manually maintained Infra
+source, not an additional generated consumer file; the shared API parser is unchanged.
 
 The native helper requires a clean, non-shallow checkout matching `GITHUB_SHA`,
 records commit/tree and the entire Git file inventory (hashed paths, modes and blobs),
@@ -184,6 +190,12 @@ hints never supply outcomes or authorize a pass; successful commands still use
 the unchanged strict S1 parser. The earlier D run's discarded transcript cannot
 be reconstructed. Later runs can locate their own failures with these hints,
 but cannot retroactively prove D's cause.
+
+F's zero-exit scripts runs emitted no admitted outcomes: their raw stderr was
+discarded, so their exact offending text remains unknown. A finite file-only
+bootstrap test and tiny real unittest cases reproduce mixed-stderr ambiguity.
+Separating the normal runner's report fixes that proven reporting defect without
+relaxing S1; it is not retrospective scripts, lifecycle or cleanup qualification.
 
 Canonical-composition fixtures pin the three API/Infra registry references to
 source `889c5c35a1677ef33899a2e63bc528d3bac802f9` and prove its historical renderings

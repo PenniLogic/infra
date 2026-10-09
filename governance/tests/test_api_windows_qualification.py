@@ -224,7 +224,9 @@ class WindowsOutcomeTests(unittest.TestCase):
 
     def real_admissions(self, body, *, diagnostic=b"", description=None, decorator="",
                         other_body=None, allowed_skip=True, expected_exit=0,
-                        expected_tail=b"OK (skipped=1)", accepted=False):
+                        expected_tail=b"OK (skipped=1)", accepted=False, infra_accepted=None):
+        if infra_accepted is None:
+            infra_accepted = accepted
         module, class_name, method = qualification.PYTHON_TARGET.rsplit(".", 2)
         other = f"{module}.{class_name}.test_other"
         source = f"import sys\nimport unittest\n\nclass {class_name}(unittest.TestCase):\n"
@@ -267,7 +269,7 @@ class WindowsOutcomeTests(unittest.TestCase):
                         sys.platform: {"governance": {other} if allowed_skip else set()},
                     }), \
                     contextlib.redirect_stdout(output):
-                if accepted:
+                if infra_accepted:
                     infra_qualification.qualify(root, "governance")
                     records = [json.loads(line) for line in output.getvalue().splitlines()]
                     self.assertEqual(
@@ -300,7 +302,7 @@ class WindowsOutcomeTests(unittest.TestCase):
         for diagnostic in (b"", b"synthetic diagnostic\nok\n", b"ok\n", b"synthetic ... ok\n"):
             with self.subTest(diagnostic=diagnostic):
                 if diagnostic:
-                    self.real_admissions("self.assertTrue(True)", diagnostic=diagnostic)
+                    self.real_admissions("self.assertTrue(True)", diagnostic=diagnostic, infra_accepted=True)
                 self.real_admissions(f"self.fail('{MARKER}')", diagnostic=diagnostic,
                                      expected_exit=1, expected_tail=b"FAILED (failures=1, skipped=1)")
 

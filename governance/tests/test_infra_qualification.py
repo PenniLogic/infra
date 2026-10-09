@@ -93,7 +93,8 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
 
 
 class InfraDiscoveryTests(unittest.TestCase):
-    def exercise(self, system, suite, *, statuses=None, missing=False, exit_code=0, cleanup=True, changed_source=False):
+    def exercise(self, system, suite, *, statuses=None, missing=False, exit_code=0, cleanup=True,
+                 changed_source=False, report=True, summary=None):
         names = sorted(qualification.REQUIRED[suite] | {"test_fixture.Example.test_extra"})
         inventory = {qualification.identifier(name): name for name in names}
         allowed = qualification.SKIPS[system][suite]
@@ -103,14 +104,22 @@ class InfraDiscoveryTests(unittest.TestCase):
         for name in observed:
             status = statuses.get(name, "skipped 'platform'" if name in allowed else "ok")
             lines.append(f"{name.rsplit('.', 1)[-1]} ({name}) ... {status}")
-        lines.append(f"\nRan {len(observed)} tests in 0.001s\n\nOK\n")
+        skipped = sum(line.rsplit(" ... ", 1)[-1].startswith("skipped ") for line in lines)
+        if summary is None:
+            summary = f"OK (skipped={skipped})" if skipped else "OK"
+        lines.append(f"\nRan {len(observed)} tests in 0.001s\n\n{summary}\n")
         output = io.StringIO()
 
         def run(command, **options):
-            self.assertEqual([sys.executable, "-m", "unittest", "discover", "-s", str(Path(suite) / "tests"), "-v"], command)
+            self.assertEqual([sys.executable, "-c", qualification.UNITTEST_DISCOVERY,
+                              command[3], str(Path(suite) / "tests")], command)
             self.assertEqual("1" if system == "win32" and suite == "scripts" else None,
                              os.environ.get("PENNILOGIC_SKIP_DOCKER_TESTS"))
-            options["stderr"].write("\n".join(lines).encode() + MARKER.encode() + b"\xff\n")
+            if report:
+                Path(command[3]).write_bytes("\n".join(lines).encode())
+            else:
+                options["stderr"].write("\n".join(lines).encode())
+            options["stderr"].write(MARKER.encode() + b"\xff\n")
             if cleanup and system == "linux" and suite == "scripts":
                 for suffix in ("", "-conflict", "-bind", "-race"):
                     value = {"project": "pennilogic-test-01234567" + suffix, "containers": 0, "volumes": 0, "networks": 0}
@@ -154,6 +163,12 @@ class InfraDiscoveryTests(unittest.TestCase):
             ("linux", "governance", {"missing": True}),
             ("linux", "governance", {"exit_code": 1}),
             ("linux", "governance", {"changed_source": True}),
+            ("linux", "governance", {"report": False}),
+            ("linux", "governance", {"summary": "FAILED (failures=1)"}),
+            ("linux", "governance", {"summary": "OK"}),
+            ("linux", "governance", {"summary": "OK (skipped=0)"}),
+            ("linux", "governance", {"summary": "OK (expected failures=1)"}),
+            ("linux", "governance", {"summary": ""}),
         ]
         for system, suite, options in cases:
             with self.subTest(system=system, suite=suite, options=options), self.assertRaises(qualification.Refused):
@@ -337,6 +352,102 @@ class InfraDiscoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(qualification.Refused, "ordinary-discovery-or-setup-teardown-failed"):
                 self.exercise("linux", "governance", exit_code=9)
             parser.assert_not_called()
+
+    def reporting_fixture(self, source, *, suite="governance", system=None, allowed=()):
+        system = system or sys.platform
+        module = "test_reporting_fixture"
+        names = {f"{module}.Example.test_first", f"{module}.Example.test_second"}
+        with tempfile.TemporaryDirectory(prefix="infra-reporting-") as temporary:
+            root = Path(temporary)
+            path = root / suite / "tests" / (module + ".py")
+            path.parent.mkdir(parents=True)
+            path.write_text(source, encoding="utf-8")
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.dict(sys.modules), \
+                    mock.patch.object(sys, "path", sys.path[:]), mock.patch.object(sys, "platform", system), \
+                    mock.patch.object(qualification, "ROOT", root), \
+                    mock.patch.object(sys, "argv", ["qualify.py", "--", "python", "-m", "unittest",
+                                                   "discover", "-s", f"{suite}/tests"]), \
+                    mock.patch.object(qualification, "versions", return_value={"image_version": "synthetic"}), \
+                    mock.patch.object(qualification, "source_inventory", return_value=SOURCE), \
+                    mock.patch.object(qualification, "REQUIRED", {suite: names}), \
+                    mock.patch.object(qualification, "SKIPS", {system: {suite: set(allowed)}}), \
+                    contextlib.redirect_stdout(output):
+                code = qualification.main()
+            self.assertNotIn(MARKER, output.getvalue())
+            self.assertNotIn(str(root), output.getvalue())
+            return code, [json.loads(line) for line in output.getvalue().splitlines()]
+
+    def test_real_diagnostics_do_not_share_the_stdlib_result_stream(self):
+        for phase in ("test", "setUpClass", "tearDownClass", "setUpModule", "tearDownModule"):
+            for diagnostic in (f"{MARKER}\n", "ok\n", f"{MARKER}\nok\n"):
+                write = f"sys.stderr.buffer.write({diagnostic.encode()!r}); os.write(2, {diagnostic.encode()!r})"
+                source = "import os\nimport sys\nimport unittest\n\n"
+                if phase.endswith("Module"):
+                    source += f"def {phase}():\n    {write}\n\n"
+                source += "class Example(unittest.TestCase):\n"
+                if phase.endswith("Class"):
+                    source += f"    @classmethod\n    def {phase}(cls):\n        {write}\n"
+                source += (f"    def test_first(self):\n        '''{MARKER}'''\n"
+                           f"        {write if phase == 'test' else 'pass'}\n"
+                           "    def test_second(self):\n        self.assertTrue(True)\n")
+                with self.subTest(phase=phase, diagnostic=diagnostic):
+                    code, rows = self.reporting_fixture(source)
+                    self.assertEqual(0, code)
+                    self.assertEqual([0], [row["exit_code"] for row in rows if row["event"] == "ordinary_discovery"])
+                    self.assertEqual(["passed", "passed"],
+                                     [row["outcome"] for row in rows if row["event"] == "test_outcome"])
+                    self.assertEqual(
+                        {row["id_sha256"] for row in rows if row["event"] == "test_inventory"},
+                        {row["id_sha256"] for row in rows if row["event"] == "test_outcome"},
+                    )
+                    self.assertTrue(rows[-1]["ok"])
+
+    def test_real_separated_reports_preserve_adverse_outcomes_and_exact_allowed_skips(self):
+        for body, decorator, expected_exit in (
+            (f"self.skipTest('{MARKER}')", "", 0),
+            (f"self.fail('{MARKER}')", "    @unittest.expectedFailure\n", 0),
+            (f"self.fail('{MARKER}')", "", 1),
+            (f"raise RuntimeError('{MARKER}')", "", 1),
+        ):
+            for diagnostic in ("", "ok\n", f"{MARKER}\nok\n"):
+                source = ("import os\nimport sys\nimport unittest\n\nclass Example(unittest.TestCase):\n"
+                          + decorator + "    def test_first(self):\n"
+                          f"        sys.stderr.write({diagnostic!r}); os.write(2, {diagnostic.encode()!r})\n"
+                          f"        {body}\n"
+                          "    def test_second(self):\n        self.assertTrue(True)\n")
+                with self.subTest(body=body, diagnostic=diagnostic):
+                    code, rows = self.reporting_fixture(source)
+                    self.assertEqual(1, code)
+                    self.assertEqual([expected_exit],
+                                     [row["exit_code"] for row in rows if row["event"] == "ordinary_discovery"])
+                    self.assertNotIn("infra_qualification", [row["event"] for row in rows])
+                    if body.startswith("self.skipTest"):
+                        code, rows = self.reporting_fixture(
+                            source, allowed={"test_reporting_fixture.Example.test_first"},
+                        )
+                        self.assertEqual(0, code)
+                        self.assertEqual(["skipped", "passed"],
+                                         [row["outcome"] for row in rows if row["event"] == "test_outcome"])
+
+    def test_real_separate_report_keeps_cleanup_stdout_and_stderr_distinct(self):
+        source = (
+            "import sys\nimport unittest\n\nclass Example(unittest.TestCase):\n"
+            "    def test_first(self):\n        self.assertTrue(True)\n"
+            "    def test_second(self):\n        self.assertTrue(True)\n"
+            "    @classmethod\n    def tearDownClass(cls):\n"
+            f"        sys.stderr.write('INFRA_STACK_CLEANUP {MARKER}\\nok\\n')\n"
+        )
+        for suffix in ("", "-conflict", "-bind", "-race"):
+            value = {"project": "pennilogic-test-01234567" + suffix, "containers": 0, "volumes": 0, "networks": 0}
+            source += f"        print({'INFRA_STACK_CLEANUP ' + json.dumps(value)!r})\n"
+        source += ("        print('INFRA_STACK_CLEANUP_TEMP "
+                   "{\"project\":\"pennilogic-test-01234567\",\"removed\":true}')\n")
+        code, rows = self.reporting_fixture(source, suite="scripts", system="linux")
+        self.assertEqual(0, code)
+        self.assertEqual(4, sum(row["event"] == "owned_stack_cleanup" for row in rows))
+        self.assertEqual(1, sum(row["event"] == "owned_stack_temporary_cleanup" for row in rows))
+        self.assertTrue(rows[-1]["ok"])
 
     def test_resource_receipts_cannot_hide_duplicates_nonzero_or_boolean_counts(self):
         for body in (
