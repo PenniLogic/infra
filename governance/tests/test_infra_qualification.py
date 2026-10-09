@@ -224,7 +224,7 @@ class InfraDiscoveryTests(unittest.TestCase):
                         self.assertEqual(names, set(inventory.values()))
                         self.assertFalse(executed.exists(), "inventory must not run a test body")
                         if teardown_failure:
-                            with self.assertRaisesRegex(qualification.Refused, "unbound-python-outcome"):
+                            with self.assertRaisesRegex(qualification.Refused, "setup-teardown"):
                                 qualification.qualify(root, "governance")
                         else:
                             qualification.qualify(root, "governance")
@@ -236,6 +236,107 @@ class InfraDiscoveryTests(unittest.TestCase):
                         self.assertNotIn('"ok": true', output.getvalue())
             finally:
                 sys.modules.pop(module, None)
+
+    def test_real_failed_discovery_reports_only_known_diagnostic_ids_and_source_locations(self):
+        module = "test_qualification_failure_fixture"
+        names = {f"{module}.Example.test_first", f"{module}.Example.test_second"}
+        relative = f"governance/tests/{module}.py"
+        path_digest = qualification.identifier(relative)
+        source = (SOURCE[0], SOURCE[1], [
+            {"path_sha256": path_digest, "mode": "100644", "git_blob": "d" * 40},
+        ])
+        for phase in ("test", "setUpClass", "tearDownClass", "setUpModule", "tearDownModule"):
+            code = "import sys\nimport unittest\n\n"
+            if phase.endswith("Module"):
+                code += f"def {phase}():\n    raise RuntimeError('{MARKER}')\n\n"
+            code += "class Example(unittest.TestCase):\n"
+            if phase.endswith("Class"):
+                code += f"    @classmethod\n    def {phase}(cls):\n        raise RuntimeError('{MARKER}')\n"
+            code += "    def test_first(self):\n"
+            code += (f"        sys.stderr.write('{MARKER}\\nok\\n')\n"
+                     f"        self.fail('{MARKER}')\n" if phase == "test" else "        self.assertTrue(True)\n")
+            code += "    def test_second(self):\n        self.assertTrue(True)\n"
+            line = next(index for index, text in enumerate(code.splitlines(), 1)
+                        if "raise RuntimeError" in text or "self.fail(" in text)
+            identity = f"{module}.Example.test_first" if phase == "test" else (
+                f"{module}.Example" if phase.endswith("Class") else module
+            )
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory(prefix="infra-failure-diagnostic-") as temporary:
+                root = Path(temporary)
+                fixture = root / relative
+                fixture.parent.mkdir(parents=True)
+                fixture.write_text(code, encoding="utf-8")
+                output = io.StringIO()
+                with mock.patch.dict(os.environ, {}, clear=True), mock.patch.dict(sys.modules), \
+                        mock.patch.object(sys, "path", sys.path[:]), \
+                        mock.patch.object(qualification, "ROOT", root), \
+                        mock.patch.object(sys, "argv", ["qualify.py", "--", "python", "-m", "unittest",
+                                                       "discover", "-s", "governance/tests"]), \
+                        mock.patch.object(qualification, "versions", return_value={"image_version": "synthetic"}), \
+                        mock.patch.object(qualification, "source_inventory", return_value=source), \
+                        mock.patch.object(qualification, "REQUIRED", {"governance": names}), \
+                        contextlib.redirect_stdout(output):
+                    self.assertEqual(1, qualification.main())
+                rows = [json.loads(text) for text in output.getvalue().splitlines()]
+                self.assertEqual([1], [row["exit_code"] for row in rows if row["event"] == "ordinary_discovery"])
+                diagnostics = [row for row in rows if row["event"] == "ordinary_discovery_diagnostics"]
+                self.assertEqual(1, len(diagnostics))
+                self.assertEqual({
+                    "event": "ordinary_discovery_diagnostics", "suite": "governance", "diagnostic_only": True,
+                    "unrecognized_headers": 0, "truncated": False,
+                    "reports": [{
+                        "reported_status": "FAIL" if phase == "test" else "ERROR", "scope": phase,
+                        "reported_id_sha256": qualification.identifier(identity),
+                        "source_frames": [{"path_sha256": path_digest, "line": line}],
+                    }],
+                }, diagnostics[0])
+                self.assertEqual("ordinary-discovery-or-setup-teardown-failed", rows[-1]["code"])
+                self.assertFalse(any(row["event"] in ("test_outcome", "infra_qualification") for row in rows))
+                self.assertNotIn(MARKER, output.getvalue())
+                self.assertNotIn(str(root), output.getvalue())
+                self.assertNotIn(module, output.getvalue())
+
+    def test_failure_diagnostic_hints_are_bounded_source_scoped_and_never_outcomes(self):
+        name = "test_fixture.Example.test_case"
+        relative = "governance/tests/test_fixture.py"
+        inventory = {qualification.identifier(name): name, qualification.identifier("opaque"): "opaque"}
+        files = [{"path_sha256": qualification.identifier(relative)}]
+        with tempfile.TemporaryDirectory(prefix="infra-diagnostic-scope-") as temporary:
+            root = Path(temporary)
+            header = f"FAIL: test_case ({name}) (payload='{MARKER}')\n"
+            frames = "".join(f'  File "{root / relative}", line {line}, in test_case\n' for line in range(1, 10))
+            data = (
+                header +
+                f'  File "{root.parent / "outside.py"}", line 1, in {MARKER}\n' +
+                f'  File "{root / "untracked.py"}", line 1, in {MARKER}\n' +
+                frames + f"AssertionError: {MARKER}\n" +
+                (header + frames) * 20 +
+                f"ERROR: test_unknown (test_unknown.Example.test_unknown)\n" +
+                f"FAIL: test_wrong ({name})\nFAIL: {MARKER}\n"
+            ).encode() + b"\xff\n"
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), mock.patch.object(qualification, "python_outcomes") as parser:
+                qualification.discovery_diagnostics(root, "governance", data, inventory, files)
+                parser.assert_not_called()
+            row = json.loads(output.getvalue())
+            self.assertTrue(row["diagnostic_only"])
+            self.assertTrue(row["truncated"])
+            self.assertEqual(3, row["unrecognized_headers"])
+            self.assertEqual(20, len(row["reports"]))
+            for report in row["reports"]:
+                self.assertEqual("FAIL", report["reported_status"])
+                self.assertEqual(qualification.identifier(name), report["reported_id_sha256"])
+                self.assertEqual([
+                    {"path_sha256": qualification.identifier(relative), "line": number} for number in range(1, 9)
+                ], report["source_frames"])
+            for value in (MARKER, str(root), "test_fixture", "outside.py", "untracked.py", '"ok"', '"outcome"'):
+                self.assertNotIn(value, output.getvalue())
+
+    def test_nonzero_discovery_is_primary_and_does_not_consult_outcome_admission(self):
+        with mock.patch.object(qualification, "python_outcomes") as parser:
+            with self.assertRaisesRegex(qualification.Refused, "ordinary-discovery-or-setup-teardown-failed"):
+                self.exercise("linux", "governance", exit_code=9)
+            parser.assert_not_called()
 
     def test_resource_receipts_cannot_hide_duplicates_nonzero_or_boolean_counts(self):
         for body in (
@@ -292,7 +393,11 @@ class InfraVersionTests(unittest.TestCase):
                 "GITHUB_REPOSITORY_ID": "1394135059", "ImageOS": "win25", "ImageVersion": "20261001.3.2"}
 
     def test_actual_version_formats_and_image_build_identifier_are_required_not_an_image_byte_pin(self):
-        for system, runner, image in (("win32", "Windows", "win25"), ("linux", "Linux", "ubuntu24")):
+        for system, runner, image, image_version in (
+            ("win32", "Windows", "win25", "20261001.3.2"),
+            ("win32", "Windows", "win25-vs2026", "20260925.250.1"),
+            ("linux", "Linux", "ubuntu24", "20261001.3.2"),
+        ):
             with self.subTest(system=system), tempfile.TemporaryDirectory(prefix="infra-version-fixture-") as temporary:
                 root = Path(temporary)
                 node = root / ("node.exe" if system == "win32" else "bin/node")
@@ -300,7 +405,8 @@ class InfraVersionTests(unittest.TestCase):
                               else "lib/node_modules/npm/bin/npm-cli.js")
                 npm.parent.mkdir(parents=True)
                 npm.write_text("", encoding="utf-8")
-                environment = {**self.environment(), "RUNNER_OS": runner, "ImageOS": image}
+                environment = {**self.environment(), "RUNNER_OS": runner, "ImageOS": image,
+                               "ImageVersion": image_version}
                 tools = {"node": str(node), "uv": "uv", "git": "git", "bash": "bash"}
                 replies = [b"v24.14.0\n", b"11.9.0\n", b"uv 0.11.33 (fixture)\n",
                            b"git version 2.53.0.windows.1\n", b"GNU bash, version 5.2.37(1)-release\n"]
@@ -309,7 +415,7 @@ class InfraVersionTests(unittest.TestCase):
                         mock.patch.object(qualification.shutil, "which", side_effect=tools.get), \
                         mock.patch.object(qualification, "checked", side_effect=replies):
                     values = qualification.versions(root)
-                self.assertEqual("20261001.3.2", values["image_version"])
+                self.assertEqual(image_version, values["image_version"])
                 self.assertEqual(image, values["image_family"])
                 self.assertEqual(("24.14.0", "11.9.0", "0.11.33", "5.2.37"),
                                  tuple(values[key] for key in ("node", "npm", "uv", "bash")))
@@ -325,17 +431,21 @@ class InfraVersionTests(unittest.TestCase):
                         qualification.versions(root)
 
     def test_missing_wrong_platform_or_node_startup_metadata_stops_before_probes(self):
-        for key, value in (("ImageVersion", ""), ("ImageVersion", "."), ("ImageVersion", "2026..1"),
-                           ("ImageOS", "win22"), ("RUNNER_ENVIRONMENT", "self-hosted"),
-                           ("GITHUB_REPOSITORY_ID", "1"), ("NODE_OPTIONS", MARKER)):
-            environment = self.environment()
-            environment[key] = value
-            with self.subTest(key=key), mock.patch.dict(os.environ, environment, clear=True), \
-                    mock.patch.object(sys, "platform", "win32"), \
-                    mock.patch.object(qualification, "checked") as probe:
-                with self.assertRaises(qualification.Refused):
-                    qualification.versions(Path.cwd())
-                probe.assert_not_called()
+        for image in ("win25", "win25-vs2026"):
+            for key, value in (("ImageVersion", ""), ("ImageVersion", "."), ("ImageVersion", "2026..1"),
+                               ("ImageOS", ""), ("ImageOS", "win22"), ("ImageOS", "win25-vs2026-unreviewed"),
+                               ("ImageOS", "win25-vs2027"), ("ImageOS", "ubuntu24"),
+                               ("GITHUB_ACTIONS", "false"), ("RUNNER_ENVIRONMENT", "self-hosted"),
+                               ("RUNNER_OS", "Linux"), ("RUNNER_ARCH", "ARM64"),
+                               ("GITHUB_REPOSITORY", "Other/infra"),
+                               ("GITHUB_REPOSITORY_ID", "1"), ("NODE_OPTIONS", MARKER)):
+                environment = {**self.environment(), "ImageOS": image, key: value}
+                with self.subTest(image=image, key=key), mock.patch.dict(os.environ, environment, clear=True), \
+                        mock.patch.object(sys, "platform", "win32"), \
+                        mock.patch.object(qualification, "checked") as probe:
+                    with self.assertRaises(qualification.Refused):
+                        qualification.versions(Path.cwd())
+                    probe.assert_not_called()
 
     def test_missing_tools_and_unsupported_python_fail_before_any_version_child(self):
         for missing_tool in ("node", "npm", "uv", "git", "bash"):

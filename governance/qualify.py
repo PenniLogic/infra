@@ -110,13 +110,14 @@ def source_inventory(root):
 
 def versions(root):
     system = {"win32": "Windows", "linux": "Linux"}.get(sys.platform)
-    image = {"win32": "win25", "linux": "ubuntu24"}.get(sys.platform)
+    images = {"win32": {"win25", "win25-vs2026"}, "linux": {"ubuntu24"}}.get(sys.platform, set())
+    image = os.environ.get("ImageOS")
     if (system is None or os.environ.get("GITHUB_ACTIONS") != "true"
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
             or os.environ.get("RUNNER_OS") != system or os.environ.get("RUNNER_ARCH") != "X64"
             or os.environ.get("GITHUB_REPOSITORY") != "PenniLogic/infra"
             or os.environ.get("GITHUB_REPOSITORY_ID") != "1394135059"
-            or os.environ.get("ImageOS") != image
+            or image not in images
             or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", os.environ.get("ImageVersion", ""))
             or len(os.environ["ImageVersion"]) > 64):
         raise Refused("expected-standard-hosted-infra-platform-metadata")
@@ -168,6 +169,65 @@ def discovery_inventory(root, suite):
     if not names or len(set(names)) != len(names) or not REQUIRED[suite] <= set(names):
         raise Refused("full-discovery-inventory-is-incomplete")
     return {identifier(name): name for name in names}
+
+
+def discovery_diagnostics(root, suite, data, inventory, files):
+    known = {("test", name): digest for digest, name in inventory.items()}
+    for name in inventory.values():
+        parts = name.rsplit(".", 2)
+        if len(parts) != 3:
+            continue
+        module, class_name, _ = parts
+        for scope in ("setUpClass", "tearDownClass"):
+            known[scope, module + "." + class_name] = identifier(module + "." + class_name)
+        for scope in ("setUpModule", "tearDownModule"):
+            known[scope, module] = identifier(module)
+    paths = {entry["path_sha256"] for entry in files}
+    prefix = os.fsencode(root).replace(b"\\", b"/").rstrip(b"/") + b"/"
+    reports, current, unrecognized, truncated = [], None, 0, False
+    for line in data.splitlines():
+        if line.startswith((b"FAIL:", b"ERROR:")):
+            current = None
+            header = re.fullmatch(
+                rb"(FAIL|ERROR): (test[A-Za-z0-9_]*|setUpClass|tearDownClass|setUpModule|tearDownModule)"
+                rb" \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \(.*\))?", line,
+            )
+            if header is None:
+                unrecognized += 1
+                continue
+            method, name = header.group(2).decode("ascii"), header.group(3).decode("ascii")
+            scope = "test" if method.startswith("test") else method
+            digest = known.get((scope, name))
+            if digest is None or (scope == "test" and not name.endswith("." + method)):
+                unrecognized += 1
+                continue
+            if len(reports) == 20:
+                truncated = True
+                continue
+            current = {"reported_status": header.group(1).decode("ascii"), "scope": scope,
+                       "reported_id_sha256": digest, "source_frames": []}
+            reports.append(current)
+            continue
+        if current is None:
+            continue
+        frame = re.fullmatch(rb'  File "([^"\r\n]+)", line ([1-9][0-9]{0,7}), in [^\r\n]+', line)
+        if frame is None:
+            continue
+        path = frame.group(1).replace(b"\\", b"/")
+        if not path.startswith(prefix):
+            continue
+        digest = hashlib.sha256(path[len(prefix):]).hexdigest()
+        if digest not in paths:
+            continue
+        location = {"path_sha256": digest, "line": int(frame.group(2))}
+        if location not in current["source_frames"]:
+            if len(current["source_frames"]) == 8:
+                truncated = True
+            else:
+                current["source_frames"].append(location)
+    # These are untrusted failure hints, never inputs to outcome admission.
+    emit("ordinary_discovery_diagnostics", suite=suite, diagnostic_only=True,
+         reports=reports, unrecognized_headers=unrecognized, truncated=truncated)
 
 
 def cleanup_evidence(data, required):
@@ -234,12 +294,14 @@ def qualify(root, suite):
              wall_seconds=round(time.monotonic() - started, 6))
         stdout.seek(0)
         stderr.seek(0)
-        records = python_outcomes(stderr.read())
+        data = stderr.read()
+        if result.returncode != 0:
+            discovery_diagnostics(root, suite, data, inventory, source[2])
+            raise Refused("ordinary-discovery-or-setup-teardown-failed")
+        records = python_outcomes(data)
         output = stdout.read()
     for record in records:
         emit("test_outcome", suite=suite, id_sha256=record["id_sha256"], outcome=record["outcome"])
-    if result.returncode != 0:
-        raise Refused("ordinary-discovery-or-setup-teardown-failed")
     if {record["id_sha256"] for record in records} != set(inventory):
         raise Refused("executed-test-ids-differ-from-full-discovery")
     allowed = SKIPS[sys.platform][suite]

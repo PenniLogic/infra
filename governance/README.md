@@ -165,8 +165,25 @@ enumerates every discovery ID before execution, then requires the exact same ID 
 in the child outcomes. It records actual Python/Node/npm/uv/Git/Bash versions and
 runner OS/image build identifiers. `windows-2025`/`ubuntu-24.04` are mutable labels;
 `ImageOS`/`ImageVersion` are recorded metadata, not image-byte pins or attestations.
+The exact Windows image families are `win25` and `win25-vs2026`; Linux accepts only
+`ubuntu24`. The `windows-2025` job in [#74](https://github.com/PenniLogic/infra/pull/74)
+reported `windows-2025-vs2026/20260925.250.1`. Its
+[published image builder](https://github.com/actions/runner-images/blob/1c7b9f1e082099ad9e2cfa02f257a2e352e753ee/helpers/GenerateResourcesAndImage.ps1#L30-L33)
+maps that variant to `ImageOS=win25-vs2026`; this is not an arbitrary image-prefix
+allowlist or a waiver of repository, hosted-runner, architecture or tool checks.
 Missing tools, import errors, missing historical-object skips, changed source, unknown
 skips, setup/teardown failures or nonzero commands cannot qualify.
+
+Nonzero discovery remains the primary failure even if its unittest protocol is
+ambiguous. Before refusing, the helper emits diagnostic-only hints: at most 20
+failure/error report headings matching the discovered test/class/module identities,
+and at most eight source-inventory-bound hashed file/line locations per report.
+Truncation and unrecognized headings are explicit. Raw messages, docstrings,
+subtest values, tracebacks and external paths are not printed. These untrusted
+hints never supply outcomes or authorize a pass; successful commands still use
+the unchanged strict S1 parser. The failed native run's missing transcript cannot
+be reconstructed by this change; identifying its actual test failure needs a
+separately authorized hosted run with these diagnostics.
 
 The only Windows Docker allowance sets the existing `PENNILOGIC_SKIP_DOCKER_TESTS=1`
 inside the Windows scripts-qualification process, for exactly the nine existing
