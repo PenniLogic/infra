@@ -16,6 +16,8 @@ import conformance_support as support
 generator = support.generator
 CI = ".github/workflows/ci.yml"
 NODE_ARGUMENT = ' --money-client-interop-node "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"'
+BASE_ARGUMENT = ' --base "$BASE_SHA"'
+BUILD_COMMAND = "python scripts/quality.py build" + BASE_ARGUMENT + NODE_ARGUMENT
 STARTUP_ERROR = b"::error::API Node SDK startup environment check failed.\n"
 PRELOAD_OPTION = '--require "./owned preload.cjs"'
 
@@ -37,7 +39,7 @@ class ApiNodeRuntimeTests(unittest.TestCase):
         self.assertEqual("24.14.0\n", generator.artifacts("api")[".nvmrc"])
         self.assertEqual([
             "Checkout", "Python", "Node", "JDK", "Prepare API Node SDK",
-            "Run checks", "Coverage against explicit base",
+            "Run checks",
         ], [step["name"] for step in steps])
         self.assertEqual({
             "name": "Node",
@@ -47,12 +49,10 @@ class ApiNodeRuntimeTests(unittest.TestCase):
         self.assertIn('/node/24.14.0/x64"', steps[4]["run"])
         self.assertIn('"11.9.0"', steps[4]["run"])
         commands = list(generator.profile_for("api")["commands"])
-        commands[commands.index("python scripts/quality.py build")] += NODE_ARGUMENT
+        commands[commands.index("python scripts/quality.py build")] = BUILD_COMMAND
         self.assertEqual("\n".join(commands), steps[5]["run"])
-        self.assertEqual('python scripts/quality.py coverage --base "$BASE_SHA"' + NODE_ARGUMENT,
-                         steps[6]["run"])
         self.assertEqual({"BASE_SHA": "${{ github.event.pull_request.base.sha || github.sha }}"},
-                         steps[6]["env"])
+                         steps[5]["env"])
         self.assertEqual({"contents": "read"}, workflow["permissions"])
         self.assertEqual(30, workflow["jobs"]["ci"]["timeout-minutes"])
         self.assertNotIn("env", workflow["jobs"]["ci"])
@@ -96,14 +96,14 @@ class ApiNodeRuntimeTests(unittest.TestCase):
                              for command in generator.profile_for("api")["commands"]))
         self.assertNotIn("gate-self-test", json.dumps(api_steps()))
 
-    def test_generator_drift_check_refuses_missing_or_altered_sdk_and_either_handoff(self):
+    def test_generator_drift_check_refuses_missing_or_altered_sdk_and_combined_handoff(self):
         with tempfile.TemporaryDirectory(prefix="api-node-drift-") as temporary:
             root = Path(temporary)
             generator.generate("api", root)
             generator.generate("api", root, check=True)
             original = (root / CI).read_bytes()
             for change in ("remove-node", "remove-preparation", "action-pin", "sdk-version",
-                           "build-argument", "coverage-argument"):
+                           "build-argument", "base-argument"):
                 document = json.loads(original)
                 steps = document["jobs"]["ci"]["steps"]
                 if change == "remove-node":
@@ -114,10 +114,11 @@ class ApiNodeRuntimeTests(unittest.TestCase):
                     next(step for step in steps if step["name"] == "Node")["uses"] = "actions/setup-node@" + "a" * 40
                 else:
                     name = {"sdk-version": "Prepare API Node SDK", "build-argument": "Run checks",
-                            "coverage-argument": "Coverage against explicit base"}[change]
+                            "base-argument": "Run checks"}[change]
                     step = next(step for step in steps if step["name"] == name)
                     step["run"] = (step["run"].replace("24.14.0", "24.21.0") if change == "sdk-version"
-                                   else step["run"].replace(NODE_ARGUMENT, ""))
+                                   else step["run"].replace(BASE_ARGUMENT if change == "base-argument"
+                                                            else NODE_ARGUMENT, ""))
                 (root / CI).write_bytes(generator.encoded(document).encode("utf-8"))
                 with self.subTest(change=change), self.assertRaisesRegex(ValueError, "Generated setup differs"):
                     generator.generate("api", root, check=True)
@@ -270,14 +271,15 @@ class ApiNodeStepTests(unittest.TestCase):
         key, value = self.environment_file.read_text(encoding="utf-8").splitlines()[1].split("=", 1)
         self.environment[key] = value
         recorder = 'python() { printf "%s\\0" "$@" >> "$FIXTURE_ARGV"; printf "\\n" >> "$FIXTURE_ARGV"; }\n'
+        coverage = generator.api_node_command('python scripts/quality.py coverage --base "$BASE_SHA"')
         self_test = generator.api_node_command('python scripts/quality.py gate-self-test --artifact-dir "$RUNNER_TEMP"')
         result = self.run_script(recorder + self.steps["Run checks"]["run"] + "\n"
-                                 + self.steps["Coverage against explicit base"]["run"] + "\n" + self_test)
+                                 + coverage + "\n" + self_test)
         self.assertEqual(0, result.returncode, result.stderr)
         calls = self.arguments("argv")
         quality = [call for call in calls if call[:1] == ["scripts/quality.py"]]
         self.assertEqual([
-            ["scripts/quality.py", "build", "--money-client-interop-node", node],
+            ["scripts/quality.py", "build", "--base", "b" * 40, "--money-client-interop-node", node],
             ["scripts/quality.py", "coverage", "--base", "b" * 40, "--money-client-interop-node", node],
             ["scripts/quality.py", "gate-self-test", "--artifact-dir", self.environment["RUNNER_TEMP"],
              "--money-client-interop-node", node],
@@ -332,8 +334,8 @@ class ApiNodeStepTests(unittest.TestCase):
             if value is not None:
                 self.environment["MONEY_CLIENT_INTEROP_NODE"] = value
             for command in (
-                generator.api_node_command("python scripts/quality.py build"),
-                self.steps["Coverage against explicit base"]["run"],
+                BUILD_COMMAND,
+                generator.api_node_command('python scripts/quality.py coverage --base "$BASE_SHA"'),
                 generator.api_node_command('python scripts/quality.py gate-self-test --artifact-dir "$RUNNER_TEMP"'),
             ):
                 with self.subTest(value=value, command=command):

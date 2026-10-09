@@ -12,7 +12,7 @@ from unittest import mock
 
 import conformance_support as support
 from conformance import steps
-from test_api_node_runtime import NODE_ARGUMENT
+from test_api_node_runtime import BUILD_COMMAND
 from test_baseline import CONTRACTS_STATE
 
 
@@ -173,10 +173,26 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                                 if step["name"] == "Run checks":
                                     commands = step["run"].split("\n")
                                     self.assertEqual(1, commands.count("python scripts/quality.py build"))
-                                    commands[commands.index("python scripts/quality.py build")] += NODE_ARGUMENT
+                                    commands[commands.index("python scripts/quality.py build")] = BUILD_COMMAND
                                     step["run"] = "\n".join(commands)
-                                elif step["name"] == "Coverage against explicit base":
-                                    step["run"] += NODE_ARGUMENT
+                            coverage = next(step for step in native_steps
+                                            if step["name"] == "Coverage against explicit base")
+                            next(step for step in native_steps
+                                 if step["name"] == "Run checks")["env"] = coverage["env"]
+                            native_steps.remove(coverage)
+                            value["jobs"]["ci"]["name"] = "Linux qualification"
+                            value["jobs"]["windows"] = generator.api_windows_job(generator.profile_for("api"))
+                            value["jobs"]["ci-result"] = generator.ci_result_job("api")
+                        expected = generator.encoded(value)
+                    if name == "infra" and relative == ".github/workflows/ci.yml":
+                        value = json.loads(expected)
+                        linux = value["jobs"]["ci"]
+                        linux["name"] = "Linux qualification"
+                        checks = next(step for step in linux["steps"] if step["name"] == "Run checks")
+                        checks["run"] = "\n".join(generator.infra_ci_command(command)
+                                                  for command in checks["run"].split("\n"))
+                        value["jobs"]["windows"] = generator.infra_windows_job(generator.profile_for("infra"))
+                        value["jobs"]["ci-result"] = generator.ci_result_job("infra")
                         expected = generator.encoded(value)
                     self.assertEqual(expected, actual, (name, relative))
                 if name == "api":
@@ -185,6 +201,7 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                         ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml", ".nvmrc",
                         "scripts/materialize_money_sources.py",
                         "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
+                        "scripts/check_repository.py", "scripts/qualify_windows.py",
                     }, {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
                     self.assertNotIn(".nvmrc", old)
                     self.assertEqual("24.14.0\n", new[".nvmrc"])
@@ -202,11 +219,11 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     unchanged += len(new)
                 else:
                     self.assertEqual(23, len(new))
-                    self.assertEqual({GATE, "scripts/check_repository.py"},
+                    self.assertEqual({GATE, "scripts/check_repository.py", ".github/workflows/ci.yml"},
                                      {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
                     self.assertEqual(old[".github/workflows/conformance.yml"],
                                      new[".github/workflows/conformance.yml"])
-            self.assertEqual(145, unchanged)
+            self.assertEqual(144, unchanged)
 
     def test_exact_opt_in_checker_extension_never_widens_the_common_template(self):
         original = (support.GOVERNANCE / "templates" / "check_repository.py").read_bytes()

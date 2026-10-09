@@ -133,18 +133,18 @@ class RuleTableTests(unittest.TestCase):
         infra_api = {".nvmrc"}
         android_only = {"scripts/check_privacy_components.py"}
         api_only = {"scripts/materialize_money_sources.py", "scripts/prepare_database_admission.py",
-                    "src/main/resources/database-admission-installation.json"}
+                    "src/main/resources/database-admission-installation.json", "scripts/qualify_windows.py"}
         self.assertTrue(infra_only <= set(listed))
         self.assertTrue(infra_api <= set(listed))
         self.assertTrue(android_only <= set(listed))
         self.assertTrue(api_only <= set(listed))
         self.assertIn("20 common files", paragraph)
         self.assertIn("infra alone has 23 files", paragraph)
-        self.assertIn("api alone has 24 files", paragraph)
+        self.assertIn("api alone has 25 files", paragraph)
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 names = sorted(generator.artifacts(repo))
-                self.assertEqual(24 if repo == "api" else 23 if repo == "infra" else 21 if repo == "android" else 20,
+                self.assertEqual(25 if repo == "api" else 23 if repo == "infra" else 21 if repo == "android" else 20,
                                  len(names))
                 applicable = [token for token in listed
                               if (token not in infra_only or repo == "infra")

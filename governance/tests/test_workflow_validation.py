@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import conformance_support as support
+
 
 HERE = Path(__file__).resolve().parents[1]
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -54,7 +56,7 @@ CONDITION_LEVELS = ("job-if", "snapshot-if", "step-if")
 
 def placed(level, text, repo="web"):
     """Return the generated CI workflow of `repo` with `text` inserted at one placement."""
-    workflow = json.loads(generator.workflow(repo))
+    workflow = json.loads(support.standard_workflow(generator, repo))
     job = workflow["jobs"]["ci"]
     step = job["steps"][-1]
     if level == "workflow-name":
@@ -420,7 +422,7 @@ class ActionAllowlistTests(unittest.TestCase):
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):
                 name = f".github/workflows/{'copilot-setup-steps' if setup else 'ci'}.yml"
-                checker.validate_workflow(name, generator.workflow(repo, setup=setup).encode())
+                checker.validate_workflow(name, support.standard_workflow(generator, repo, setup).encode())
 
     def test_unlisted_inputs_of_listed_actions_are_refused(self):
         # actions/checkout binds `AUTHORIZATION: basic x-access-token:<github.token>` to the origin
@@ -485,7 +487,7 @@ class ActionPinTests(unittest.TestCase):
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):
                 name = f".github/workflows/{'copilot-setup-steps' if setup else 'ci'}.yml"
-                document = json.loads(generator.workflow(repo, setup=setup))
+                document = json.loads(support.standard_workflow(generator, repo, setup))
                 steps = next(iter(document["jobs"].values()))["steps"]
                 for index, step in enumerate(steps):
                     if "uses" not in step:
@@ -497,7 +499,7 @@ class ActionPinTests(unittest.TestCase):
                     for commit in (SHA, other[action], pin[:-1] + ("0" if pin[-1] != "0" else "1"),
                                    ("1" if pin[0] != "1" else "2") + pin[1:], pin[::-1]):
                         with self.subTest(repo=repo, name=name, index=index, commit=commit):
-                            planted = json.loads(generator.workflow(repo, setup=setup))
+                            planted = json.loads(support.standard_workflow(generator, repo, setup))
                             next(iter(planted["jobs"].values()))["steps"][index]["uses"] = f"{action}@{commit}"
                             self.assertIsNotNone(checker.ACTION_COMMIT.fullmatch(commit))
                             self.assertFalse(tripwire_hits(planted))
@@ -575,7 +577,7 @@ class ActionPinTests(unittest.TestCase):
                 for repo in generator.PROFILES["repositories"]:
                     with self.subTest(pins=pins, repo=repo):
                         with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
-                            validate(json.loads(generator.workflow(repo)))
+                            validate(json.loads(support.standard_workflow(generator, repo)))
         # A mapping that binds a listed action to a non-commit still refuses the commit shape first.
         with mock.patch.object(checker, "WORKFLOW_ACTION_PINS", {**PINS, "actions/checkout": "v4"}):
             with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
@@ -601,13 +603,14 @@ class ActionPinTests(unittest.TestCase):
                     document = json.loads(generator.workflow(repo, setup=setup))
                     step = next(iter(document["jobs"].values()))["steps"][0]
                     step["uses"] = f"actions/checkout@{SHA}"
-                    with self.assertRaisesRegex(ValueError, f"^{PIN_RULE}$"):
+                    rule = "CI must match" if repo in ("api", "infra") and not setup else f"^{PIN_RULE}$"
+                    with self.assertRaisesRegex(ValueError, rule):
                         rendered.validate_workflow(name, json.dumps(document).encode())
                 self.assertEqual([], rendered.check(complete_repository(repo)))
         # Normalize the common layer; opted-in extensions have their own exact-byte tests.
         self.assertEqual({template}, {
             generator.WORKFLOW_REPOSITORY_LINE.sub('WORKFLOW_REPOSITORY = "infra"\n',
-                                                   generator.checker(repo, integrity=False))
+                                                   generator.standard_checker(repo))
             for repo in generator.PROFILES["repositories"]
         })
 
@@ -615,7 +618,7 @@ class ActionPinTests(unittest.TestCase):
         # The template carries the current pins so it can be imported and tested unrendered; the
         # rendered copy must be byte-identical, so a pin bump that forgets the template fails here.
         template = (HERE / "templates/check_repository.py").read_text(encoding="utf-8")
-        self.assertEqual(template, generator.checker(integrity=False))
+        self.assertEqual(template, generator.standard_checker())
         block = generator.ACTION_PINS_BLOCK.findall(template)
         self.assertEqual(1, len(block))
         expected = "WORKFLOW_ACTION_PINS = {\n" + "".join(
@@ -637,14 +640,14 @@ class ActionPinTests(unittest.TestCase):
         for variant in (stale, emptied, reordered):
             self.assertNotEqual(template, variant)
             with mock.patch.object(generator.Path, "read_text", lambda self, encoding=None: variant):
-                self.assertEqual(template, generator.checker(integrity=False))
+                self.assertEqual(template, generator.standard_checker())
         # A template that lost the block, or defines it twice, is refused rather than copied.
         for variant in (template.replace(block, ""), template.replace(block, block + block),
                         template.replace(block, block.replace("WORKFLOW_ACTION_PINS", "PINS")),
                         template.replace(block, block.replace('    "actions/checkout"', '  "actions/checkout"'))):
             with mock.patch.object(generator.Path, "read_text", lambda self, encoding=None: variant):
                 with self.assertRaisesRegex(ValueError, "WORKFLOW_ACTION_PINS exactly once"):
-                    generator.checker(integrity=False)
+                    generator.standard_checker()
 
     def test_a_pin_bump_changes_the_workflows_and_the_checker_in_one_regeneration(self):
         new = "f" * 40

@@ -18,7 +18,7 @@ import urllib.error
 
 import conformance_support as support
 from conformance import steps
-from test_api_node_runtime import NODE_ARGUMENT
+from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT
 
 
 gate = support.pr_gate_module()
@@ -150,7 +150,8 @@ class CommandBindingTests(unittest.TestCase):
                     self.assertLessEqual(report["requests"], 32)
             rendered_commands = steps.workflow_run_commands(support.generator.workflow(name).encode("utf-8"))
             self.assertEqual([
-                command + NODE_ARGUMENT if name == "api" and command == "python scripts/quality.py build"
+                BUILD_COMMAND if name == "api" and command == "python scripts/quality.py build"
+                else support.generator.infra_ci_command(command) if name == "infra"
                 else command for command in profile["commands"]
             ], rendered_commands)
             for position, command in enumerate(rendered_commands):
@@ -175,41 +176,42 @@ class CommandBindingTests(unittest.TestCase):
                                          len(mutated))
                         report = self.assert_binding_failure(support.PRMetadata(name, {CI: changed}))
                         self.assertIn({"path": CI, "matches": False}, report["bindings"])
-                        if name == "api" and command == "python scripts/quality.py build" + NODE_ARGUMENT:
+                        if name == "api" and command == BUILD_COMMAND:
                             api_build_cases += 1
         self.assertEqual(49, commands)
         self.assertEqual(2, api_build_cases)
 
-    def test_api_sdk_handoff_mutations_fail_exact_workflow_binding(self):
-        for step_name, command in (
-            ("Run checks", "python scripts/quality.py build" + NODE_ARGUMENT),
-            ("Coverage against explicit base", 'python scripts/quality.py coverage --base "$BASE_SHA"' + NODE_ARGUMENT),
-        ):
-            mutations = {
-                "missing-flag": command.removesuffix(NODE_ARGUMENT),
-                "missing-value": command.removesuffix(NODE_ARGUMENT) + " --money-client-interop-node",
-                "wrong-variable": command.replace("MONEY_CLIENT_INTEROP_NODE", "UNAPPROVED_NODE"),
-                "missing-refusal": command.replace(
-                    "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}", "$MONEY_CLIENT_INTEROP_NODE",
-                ),
-                "unquoted-path": command.replace(NODE_ARGUMENT, NODE_ARGUMENT.replace('"', "")),
-                "split-command": command.replace(" --money-client-interop-node", "\n--money-client-interop-node", 1),
-                "extra-sdk-flag": command + NODE_ARGUMENT,
-                "unexpected-argument": command + " --unexpected",
-                "unexpected-command": command + "\necho " + MARKER,
-            }
-            for mutation, replacement in mutations.items():
-                def update(_document, job):
-                    step = next(step for step in job["steps"] if step["name"] == step_name)
-                    lines = step["run"].split("\n")
-                    self.assertEqual(1, lines.count(command))
-                    lines[lines.index(command)] = replacement
-                    step["run"] = "\n".join(lines)
-                with self.subTest(step=step_name, mutation=mutation):
-                    changed = edited_ci("api", update)
-                    self.assertNotEqual(support.generator.workflow("api").encode("utf-8"), changed)
-                    report = self.assert_binding_failure(support.PRMetadata("api", {CI: changed}))
-                    self.assertIn({"path": CI, "matches": False}, report["bindings"])
+    def test_api_combined_handoff_mutations_fail_exact_workflow_binding(self):
+        command = BUILD_COMMAND
+        mutations = {
+            "missing-flag": command.removesuffix(NODE_ARGUMENT),
+            "missing-value": command.removesuffix(NODE_ARGUMENT) + " --money-client-interop-node",
+            "wrong-variable": command.replace("MONEY_CLIENT_INTEROP_NODE", "UNAPPROVED_NODE"),
+            "missing-refusal": command.replace(
+                "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}", "$MONEY_CLIENT_INTEROP_NODE",
+            ),
+            "unquoted-path": command.replace(NODE_ARGUMENT, NODE_ARGUMENT.replace('"', "")),
+            "split-command": command.replace(" --money-client-interop-node", "\n--money-client-interop-node", 1),
+            "extra-sdk-flag": command + NODE_ARGUMENT,
+            "missing-base": command.replace(BASE_ARGUMENT, ""),
+            "head-base": command.replace(BASE_ARGUMENT, ' --base "$GITHUB_SHA"'),
+            "empty-base": command.replace(BASE_ARGUMENT, ' --base ""'),
+            "unquoted-base": command.replace(BASE_ARGUMENT, BASE_ARGUMENT.replace('"', "")),
+            "unexpected-argument": command + " --unexpected",
+            "unexpected-command": command + "\necho " + MARKER,
+        }
+        for mutation, replacement in mutations.items():
+            def update(_document, job):
+                step = next(step for step in job["steps"] if step["name"] == "Run checks")
+                lines = step["run"].split("\n")
+                self.assertEqual(1, lines.count(command))
+                lines[lines.index(command)] = replacement
+                step["run"] = "\n".join(lines)
+            with self.subTest(mutation=mutation):
+                changed = edited_ci("api", update)
+                self.assertNotEqual(support.generator.workflow("api").encode("utf-8"), changed)
+                report = self.assert_binding_failure(support.PRMetadata("api", {CI: changed}))
+                self.assertIn({"path": CI, "matches": False}, report["bindings"])
 
     def test_api_node_profile_delta_is_not_a_protected_source_admission_waiver(self):
         accepted = support.git(
@@ -547,7 +549,7 @@ class MetadataBoundaryTests(unittest.TestCase):
 class RealCLIAndStepTests(unittest.TestCase):
     def run_cli(self, fixture, bash_step=False, env_changes=None, http_case=None):
         with tempfile.TemporaryDirectory(prefix="pr-integrity-cli-") as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             program = root / "validator.py"
             program.write_text(support.generator.pr_integrity_program(fixture.name), encoding="utf-8")
             driver = root / "fixture_driver.py"
@@ -584,6 +586,34 @@ class RealCLIAndStepTests(unittest.TestCase):
             self.assertNotIn(fixture.token, result.stdout.decode())
             self.assertNotIn(str(root), result.stdout.decode())
             return result.returncode, report
+
+    def test_real_cli_and_bash_use_canonical_owned_event_paths(self):
+        for bash_step in (False, True):
+            with self.subTest(bash_step=bash_step), tempfile.TemporaryDirectory(prefix="pr-event-alias-") as directory:
+                root = Path(directory).resolve(strict=True)
+                component = root / "alias component"
+                component.mkdir()
+                alias = str(component / "..")
+                if sys.platform == "win32":
+                    alias = alias.swapcase()
+                self.assertTrue(os.path.samefile(root, alias))
+                environments = []
+                run = subprocess.run
+
+                def observed(command, **kwargs):
+                    environments.append(kwargs["env"])
+                    return run(command, **kwargs)
+
+                with mock.patch.object(tempfile, "TemporaryDirectory",
+                                       return_value=contextlib.nullcontext(alias)), \
+                        mock.patch.object(subprocess, "run", side_effect=observed):
+                    code, report = self.run_cli(support.PRMetadata(), bash_step=bash_step)
+                self.assertEqual(0, code)
+                self.assertEqual("pass", report["result"])
+                self.assertEqual(1, len(environments))
+                self.assertEqual(str(root), environments[0]["RUNNER_TEMP"])
+                self.assertEqual(str(root / "_github_workflow" / "event.json"),
+                                 environments[0]["GITHUB_EVENT_PATH"])
 
     def test_all_nine_actual_cli_clean_controls_and_echo_omission_failures(self):
         for name in support.generator.PROFILES["repositories"]:

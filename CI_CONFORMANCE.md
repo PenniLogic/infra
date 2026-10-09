@@ -739,9 +739,9 @@ The local results on unaccepted `c9fceee` were not native acceptance.
 ([job 110158325561](https://github.com/PenniLogic/infra/actions/runs/36795639431/job/110158325561))
 failed `RealNodeFixtureTests.setUpClass` at `npm install --package-lock-only --ignore-scripts
 --no-audit --no-fund`, with `Cannot read properties of null (reading 'edgesOut')`. It reported
-227 tests, one error and 13 skips; uv had not been provisioned. Its immutable image
+227 tests, one error and 13 skips; uv had not been provisioned. Its recorded image build
 `ubuntu24/20260927.320` documents default Node `22.23.3`/npm `10.9.9`, while that native infra
-workflow had deliberately remained Python-only.
+workflow had deliberately remained Python-only. That build identifier is not an image-byte pin.
 
 A Linux reproduction downloaded checksum-verified Node distributions, recorded actual
 `node --version`/`npm --version`, and ran the same minimal Vitest `5.0.2` manifest and preparation
@@ -792,6 +792,90 @@ boundary is claimed. Synthetic cut-boundary tests cover real normal/timeout subp
 each native platform and preserve the unsafe Windows flag. End-to-end `run.main` tests exercise
 the real report redaction, self-scan and JSON/Markdown writing with opaque/shaped tokens,
 credential/path compression and unsplit controls.
+
+## Native OS qualification owner-maintenance transition
+
+This is local source preparation on accepted Infra
+`26fa29ffbaf9e2dd5ca9969c34ec5e664e884f45`, tree
+`e8a40ab1dd3af7540e924d5c40d0cfab253628ac`, not a deployed contract or acceptance.
+The coordinating owner admitted API's combined-build/Windows companion and then
+Infra's directly related standard-hosted Windows route in the same exclusive
+canonical checkout. No frozen [#72](https://github.com/PenniLogic/infra/pull/72)
+Contracts runner source, bcf/ebc branch, approval or qualification is imported.
+
+Infra's former single CI job becomes parallel `Linux qualification` and
+`Windows qualification` jobs plus the small always-running native job named `CI`.
+Only two explicit OS successes satisfy it; failure, cancellation, absence or skip
+does not. Every PowerShell native-command exit is propagated immediately. Linux
+retains all canonical commands and real-stack coverage. Windows runs the ordinary
+full governance and scripts discoveries serially, not isolated control selectors.
+The transparent Infra qualifier launches those same discoveries once with additional
+verbosity, checks full source/ID inventories and emits only safe per-test outcomes
+and version/image metadata. Missing historical objects cannot become qualifying skips.
+Details, exact applicability identities and prerequisites are in
+[governance/README.md](governance/README.md#infra-windowslinux-ordinary-qualification-owner-transition-held).
+
+The only Windows Docker concession uses the existing skip capability for the nine
+`StackLifecycleTests` methods; all nine must execute without skips on Linux at the
+same final source. The existing POSIX-flock-only Windows skip remains, as do Linux's
+exact legitimate Windows-only skips. Full ordinary discovery still includes every
+process/job/interruption/refusal/pipe/handle/unsafe-result/redaction and native-symlink
+control; no 0.8/5/2.5/4 bound or assertion changes. No new skip class, Docker Desktop,
+WSL, privilege mechanism, third-party action, storage allowance or paid runner is added.
+
+Python `3.14`, Node `24.14.0`/npm `11.9.0`, uv `0.11.33`, Git/Bash and immutable
+GitHub-owned action pins remain required. Actual versions and image build metadata
+must accompany native evidence; the standard runner labels are not image-byte pins.
+The existing ten-minute OS job limits are unchanged. Acceptance still requires
+actual complete OS job **and** whole-workflow times strictly below 600 seconds;
+the small result job, local synthetic checks and rendering cannot establish that.
+API's separate original criterion remains complete-test-suite time below 300 seconds,
+not whole-build/job time, and is unverified. Hosted jobs do not supply the separately
+scoped full supported Linux local qualification.
+
+The coordinator-confirmed read-only QA decision `fcc841df` conditionally admits
+prospective full exact-final-source Windows/Linux qualification for the Infra72
+integration prerequisite. It does **not** clear the previous receipt assertion or
+explicit fail-closed 3/4 exit-confirmation refusal: both remain failed/HOLD history,
+with unknown causes, and neither proves unsafe restoration or leakage. Recovery
+of discarded PIDs or qualification on that particular workstation is not required;
+the old workstation experiments are not repeated by this source unit.
+
+Owning `StackLifecycleTests.tearDownClass` no longer ignores reset exits or temporary
+tree errors. It attempts all four owned resets, requires readable zero-resource
+inventories and confirmed temporary removal, and fails teardown otherwise. Scoped
+reset/query failures retain the environment; partial deletion remains unconfirmed.
+This repairs success-shaped cleanup, but its receipts and PASS/VM disposal alone
+are not independent proof. Later native claims still need separately checked absence
+of the exact owned Docker resources, without credential/fixture payload publication.
+
+The **owner-maintenance contract changes explicitly**: only API and Infra receive
+their own exact-byte compound-CI checker exception; the common checker allowlists
+are not widened. Infra's CI/checker bytes and generated PR-integrity contract change.
+The currently protected checker/validator intentionally refuse their replacement;
+candidate self-approval, copied old approvals and a forged source reference cannot
+admit this transition. Root must separately obtain non-author Core/QA and applicable
+specialist review of the final source and decide the protected maintenance procedure.
+No source-authorized bypass, protection change or automatic remote control is implied.
+
+Publication remains gated on explicit Root intake authorization. Real source A must
+contain the final canonical code and owning generated outputs; later registry-only
+B must bind the changed API/Infra primary CI entries and Infra PR-integrity entry
+to actual source SHAs that reproduce their exact bytes. The source-only candidate
+deliberately leaves the old registry intact; existing historical-binding checks
+therefore refuse it until that authorized transition, rather than inventing a
+self/placeholder SHA or weakening/skipping those checks. Then both native OS legs,
+their full per-test inventories, actual cleanup absence and strict timing must qualify
+at the same final source. Only after separate review/acceptance may the existing
+Infra72 owner compose this route and obtain its own exact-current-source qualification.
+
+API adoption remains separate and atomic with its owning combined-build interface;
+the Infra extension preserves the frozen API checkpoint bytes and does not become a
+second API evidence owner. Rollback is a reviewed source reversal/regeneration and
+corresponding real registry rebinding, not an unreviewed workflow or protection edit.
+No dispatch, commit, push, remote publication or integration is performed by this
+local source unit. [#22](https://github.com/PenniLogic/infra/issues/22)'s trusted-workflow
+identity/mandatory-absence gap and all independent native acceptance holds remain open.
 
 ## Remaining for infra#24
 
