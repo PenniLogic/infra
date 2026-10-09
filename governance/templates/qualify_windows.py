@@ -41,22 +41,33 @@ def python_outcomes(data):
     for line in data.splitlines():
         summary = PYTHON_SUMMARY.fullmatch(line)
         if summary:
-            if total is not None:
+            if total is not None or pending is not None:
                 raise Refused("ambiguous-python-summary")
             total = int(summary.group(1))
+            continue
         case = PYTHON_CASE.fullmatch(line)
         if case:
-            if pending is not None or not case.group(2).endswith(b"." + case.group(1)):
+            if pending is not None or total is not None or not case.group(2).endswith(b"." + case.group(1)):
                 raise Refused("ambiguous-python-case")
             pending = case.group(2).decode("ascii")
-            status = case.group(3) or b""
+            status = case.group(3)
+            if status is None:
+                continue
         elif pending is not None:
+            # unittest's optional docstring occupies exactly the next line.
+            if b" ... " not in line:
+                raise Refused("ambiguous-python-outcome")
             status = line.rsplit(b" ... ", 1)[-1]
         else:
+            status = line.rsplit(b" ... ", 1)[-1]
+            if status in STATUSES or status.startswith(b"skipped "):
+                raise Refused("unbound-python-outcome")
+            if records and total is None and line not in (b"", b"-" * 70):
+                raise Refused("ambiguous-python-outcome")
             continue
         normalized = "skipped" if status.startswith(b"skipped ") else STATUSES.get(status)
         if normalized is None:
-            continue
+            raise Refused("ambiguous-python-outcome")
         if pending in identities:
             raise Refused("duplicate-python-case")
         identities.add(pending)

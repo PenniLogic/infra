@@ -58,11 +58,11 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
         support.assert_powershell_failure_boundaries(self, installer, 1)
         support.assert_powershell_failure_boundaries(self, windows, 4)
 
-    def test_api_only_checkpoint_outputs_remain_byte_identical(self):
+    def test_api_caller_checker_and_qualifier_match_their_exact_source_bindings(self):
         frozen = {
             ".github/workflows/ci.yml": "b402c17a8f475e69dae2e317a27d1df3530925d40592c1727a1948f1c6b47f29",
             "scripts/check_repository.py": "f8ef2c500e6c6991ae797b26f845b6d1f5093c97a2920d3c5b66c64b681ae049",
-            "scripts/qualify_windows.py": "b1a70aa44b19746ac0f46686cedff2c577eb8ba43ab8f5d12e7cec81c94134fc",
+            "scripts/qualify_windows.py": "60fc0b4a28d598317c4324b22bfc89280bdc04aa1ccc7393f0932508ba3abb1f",
         }
         for path, digest in frozen.items():
             with self.subTest(path=path):
@@ -224,13 +224,13 @@ class InfraDiscoveryTests(unittest.TestCase):
                         self.assertEqual(names, set(inventory.values()))
                         self.assertFalse(executed.exists(), "inventory must not run a test body")
                         if teardown_failure:
-                            with self.assertRaisesRegex(qualification.Refused, "setup-teardown"):
+                            with self.assertRaisesRegex(qualification.Refused, "unbound-python-outcome"):
                                 qualification.qualify(root, "governance")
                         else:
                             qualification.qualify(root, "governance")
                     self.assertTrue(executed.is_file(), "ordinary discovery must execute its test bodies")
                     rows = [json.loads(line) for line in output.getvalue().splitlines()]
-                    self.assertEqual(2, sum(row["event"] == "test_outcome" for row in rows))
+                    self.assertEqual(0 if teardown_failure else 2, sum(row["event"] == "test_outcome" for row in rows))
                     self.assertNotIn(MARKER, output.getvalue())
                     if teardown_failure:
                         self.assertNotIn('"ok": true', output.getvalue())

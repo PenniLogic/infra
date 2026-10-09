@@ -7,6 +7,7 @@ import importlib.util
 import io
 import itertools
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ from unittest import mock
 import xml.etree.ElementTree as ET
 
 import conformance_support as support
+import qualify as infra_qualification
 
 
 generator = support.generator
@@ -141,7 +143,8 @@ class WindowsOutcomeTests(unittest.TestCase):
             self.assertEqual([sys.executable, str(root / "scripts" / "quality.py"), "test"], command)
             self.assertEqual(root, options["cwd"])
             options["stdout"].write((task + "\n" + MARKER + "\n").encode() + b"\xff\n")
-            options["stderr"].write((python if python is not None else self.python_report()).encode())
+            report = python if python is not None else self.python_report()
+            options["stderr"].write(report if isinstance(report, bytes) else report.encode())
             self.write_junit(root, status, name)
             return subprocess.CompletedProcess(command, exit_code)
         output = io.StringIO()
@@ -219,6 +222,95 @@ class WindowsOutcomeTests(unittest.TestCase):
         self.assertEqual(["passed", "skipped"], [record["outcome"] for record in records])
         self.assertNotIn(MARKER, json.dumps(records))
 
+    def real_admissions(self, body, *, diagnostic=b"", description=None, decorator="",
+                        other_body=None, expected_exit=0, expected_tail=b"OK (skipped=1)", accepted=False):
+        module, class_name, method = qualification.PYTHON_TARGET.rsplit(".", 2)
+        other = f"{module}.{class_name}.test_other"
+        source = f"import sys\nimport unittest\n\nclass {class_name}(unittest.TestCase):\n"
+        if decorator:
+            source += f"    @unittest.{decorator}\n"
+        source += f"    def {method}(self):\n"
+        if description is not None:
+            source += f"        {description!r}\n"
+        source += f"        sys.stderr.buffer.write({diagnostic!r})\n        {body}\n"
+        source += "    def test_other(self):\n"
+        source += other_body or f"        self.skipTest('{MARKER}')\n"
+        with tempfile.TemporaryDirectory(prefix="qualification-real-outcomes-") as temporary:
+            root = Path(temporary)
+            tests = root / "governance" / "tests"
+            tests.mkdir(parents=True)
+            (tests / (module + ".py")).write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest", "discover", "-s", str(tests), "-v"],
+                cwd=root, env=support.defects.probe_environment(),
+                capture_output=True, check=False, timeout=15,
+            )
+            self.assertEqual(expected_exit, result.returncode)
+            self.assertEqual(expected_tail, result.stderr.splitlines()[-1])
+            with self.subTest(caller="api"):
+                if accepted:
+                    records = self.exercise(root, python=result.stderr, exit_code=result.returncode)
+                    self.assertTrue(records[-1]["ok"])
+                else:
+                    with self.assertRaises(qualification.Refused):
+                        self.exercise(root, python=result.stderr, exit_code=result.returncode)
+            output = io.StringIO()
+            with self.subTest(caller="infra"), mock.patch.dict(os.environ, {}, clear=True), \
+                    mock.patch.dict(sys.modules), mock.patch.object(sys, "path", sys.path[:]), \
+                    mock.patch.object(infra_qualification, "versions", return_value={"image_version": "synthetic"}), \
+                    mock.patch.object(infra_qualification, "source_inventory", return_value=(
+                        "a" * 40, "b" * 40, [{"path_sha256": "c" * 64, "mode": "100644", "git_blob": "d" * 40}],
+                    )), \
+                    mock.patch.object(infra_qualification, "REQUIRED", {"governance": {qualification.PYTHON_TARGET, other}}), \
+                    mock.patch.object(infra_qualification, "SKIPS", {sys.platform: {"governance": {other}}}), \
+                    contextlib.redirect_stdout(output):
+                if accepted:
+                    infra_qualification.qualify(root, "governance")
+                    records = [json.loads(line) for line in output.getvalue().splitlines()]
+                    self.assertEqual(
+                        {"event": "infra_qualification", "suite": "governance", "ok": True, "tests": 2, "skipped": 1},
+                        records[-1],
+                    )
+                else:
+                    with self.assertRaises(infra_qualification.Refused):
+                        infra_qualification.qualify(root, "governance")
+                    self.assertNotIn('"event": "infra_qualification"', output.getvalue())
+                self.assertNotIn(MARKER, output.getvalue())
+
+    def test_real_skip_and_expected_failure_cannot_be_replaced_by_diagnostic_statuses_in_either_admission(self):
+        diagnostics = (b"", b"synthetic diagnostic\nok\n", b"ok\n", b"synthetic ... ok\n",
+                       b"ok\nunterminated diagnostic ", b"\xff\nok\n")
+        for body, decorator, tail in (
+            (f"self.skipTest('{MARKER}')", "", b"OK (skipped=2)"),
+            (f"self.fail('{MARKER}')", "expectedFailure", b"OK (skipped=1, expected failures=1)"),
+        ):
+            for description, diagnostic in itertools.product((None, MARKER), diagnostics):
+                with self.subTest(decorator=decorator, docstring=description is not None, diagnostic=diagnostic):
+                    self.real_admissions(body, decorator=decorator, description=description,
+                                         diagnostic=diagnostic, expected_tail=tail)
+
+    def test_real_passing_docstrings_and_applicable_skips_pass_but_interleaving_and_failures_refuse(self):
+        for description in (None, MARKER, "ok", "description ... ok"):
+            with self.subTest(description=description):
+                self.real_admissions("self.assertTrue(True)", description=description, accepted=True)
+        for diagnostic in (b"", b"synthetic diagnostic\nok\n", b"ok\n", b"synthetic ... ok\n"):
+            with self.subTest(diagnostic=diagnostic):
+                if diagnostic:
+                    self.real_admissions("self.assertTrue(True)", diagnostic=diagnostic)
+                self.real_admissions(f"self.fail('{MARKER}')", diagnostic=diagnostic,
+                                     expected_exit=1, expected_tail=b"FAILED (failures=1, skipped=1)")
+
+    def test_real_diagnostics_cannot_swap_per_id_outcomes_even_when_terminal_counts_match(self):
+        for diagnostic in (False, True):
+            other = (f"        sys.stderr.buffer.write(b\"synthetic diagnostic\\nskipped '{MARKER}'\\ntail \")\n"
+                     if diagnostic else "")
+            other += "        self.assertTrue(True)\n"
+            with self.subTest(diagnostic=diagnostic):
+                self.real_admissions(
+                    f"self.skipTest('{MARKER}')", other_body=other,
+                    diagnostic=b"synthetic diagnostic\nok\ntail " if diagnostic else b"",
+                )
+
     def test_python_inventory_is_complete_unique_and_independent_of_diagnostic_encoding(self):
         valid = self.python_report().encode("utf-8")
         records = qualification.python_outcomes(valid.replace(MARKER.encode("utf-8"), b"\xe9\xff"))
@@ -226,6 +318,8 @@ class WindowsOutcomeTests(unittest.TestCase):
         first = valid.splitlines()[0]
         cases = (
             valid + b"Ran 2 tests in 0.001s\n",
+            valid + b"ok\n",
+            valid + b"diagnostic ... skipped 'platform'\n",
             first + b"\n" + first + b"\nRan 2 tests in 0.001s\n",
             valid.replace(b"Ran 2 tests in 0.001s", b""),
             valid.replace(b"Ran 2", b"Ran 0"),

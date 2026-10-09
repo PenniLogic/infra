@@ -107,6 +107,13 @@ printed, including non-UTF-8 child output. Raw streams stay in temporary files t
 close after collection. Missing or malformed evidence fails with static codes.
 These records are not a trusted-workflow attestation.
 
+The shared unittest parser accepts an outcome only on its case line or the
+immediately following docstring line. Interleaved diagnostics, orphaned status
+lines and incomplete records refuse the entire outcome stream; they cannot be
+searched for a later `ok` or emitted as passing evidence. This also rejects
+diagnostic attempts to swap per-ID results while preserving aggregate counts.
+Ordinary passing/docstring formatting and explicit platform skips remain supported.
+
 The sole native job named `CI` is a one-minute result aggregator with
 `needs: [ci, windows]` and `if: always()`. Only two explicit `success` results pass;
 failure, cancellation, skipped or absent results refuse. This is a normal
@@ -119,7 +126,9 @@ The exception composes with, but does not enable, optional PR-integrity adoption
 Relative to Infra `26fa29ff`, the API-only checkpoint changes API
 `.github/workflows/ci.yml` and `scripts/check_repository.py`, and adds
 `scripts/qualify_windows.py`. Its non-API outputs and API setup workflow are unchanged;
-the Infra extension below does not alter any of these three API output bytes.
+the Infra extension below originally retained all three API output bytes. The
+shared outcome-parser correction changes only the generated qualifier; the API
+caller and checker remain byte-identical.
 Adopt all three atomically with the API-owned combined-build interface, only after
 separate producer/consumer review and protected acceptance. Synthetic Infra runner,
 parser and shell controls are not execution of the two API tests. Native Windows
