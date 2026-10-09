@@ -32,7 +32,7 @@ STEP_PATTERNS = (
     (r"\bquality_gates\.py self-test\b", {"test"}),
     (r"\bquality_gates\.py build\b", {"build"}),
     (r"\bquality_gates\.py lint\b", {"lint"}),
-    (r"\Apython scripts/privacy_traffic_harness\.py self-test\Z", {"test"}),
+    (r"\Apython scripts/privacy_traffic_harness\.py self-test(?: --all-scripts)?\Z", {"test"}),
     (r"\Apython scripts/check_privacy_components\.py\Z", {"checker"}),
     (r"\bquality\.py build\b", {"build", "test", "lint"}),
     (r"\bquality\.py coverage\b", {"test"}),
@@ -57,7 +57,7 @@ STEP_PATTERNS = (
 # Consumer-owned planted-defect commands: the repository proves its own gates bite on every CI run.
 CONSUMER_SELF_TESTS = (
     r"\bquality_gates\.py self-test\b",
-    r"\Apython scripts/privacy_traffic_harness\.py self-test\Z",
+    r"\Apython scripts/privacy_traffic_harness\.py self-test(?: --all-scripts)?\Z",
     r"\bnpm run check:bundle:planted\b",
 )
 

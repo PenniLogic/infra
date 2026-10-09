@@ -153,6 +153,18 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
                     encoding="utf-8", newline="\n",
                 )
             previous = generator_module.load(root / "generate.py", name="api_windows_accepted_generator")
+            android_commands = previous.PROFILES["repositories"]["android"]["commands"]
+            self.assertEqual([
+                "python scripts/check_repository.py",
+                "python -m pip install -r scripts/privacy_traffic/requirements.txt",
+                "python scripts/quality_gates.py ci",
+                "python scripts/quality_gates.py self-test",
+                "python scripts/privacy_traffic_harness.py self-test",
+                "python scripts/check_privacy_components.py",
+                'python -m unittest discover -s scripts/tests -p "test_*.py"',
+            ], android_commands)
+            android_commands[4] = "python scripts/privacy_traffic_harness.py self-test --all-scripts"
+            android_commands.pop()
             self.assertEqual(previous.PROFILES, generator.PROFILES)
             for name in generator.PROFILES["repositories"]:
                 for setup in (False, True):
