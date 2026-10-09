@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,41 @@ class BaselineTest(unittest.TestCase):
     def test_baseline_passes(self):
         self.assertEqual(2, 1 + 1)
 '''
+
+
+def standard_workflow(renderer, name, setup=False):
+    """Exercise common single-job policy; compound API/Infra CI has exact-byte tests."""
+    document = json.loads(renderer.workflow(name, setup=setup))
+    if name in ("api", "infra") and not setup:
+        document["jobs"] = {"ci": document["jobs"]["ci"]}
+        document["jobs"]["ci"]["name"] = "CI"
+    return renderer.encoded(document)
+
+
+def assert_powershell_failure_boundaries(case, source, count):
+    powershell = shutil.which("pwsh")
+    case.assertIsNotNone(powershell, "PowerShell is required for the emitted Windows command fixture")
+    fixture = """$global:Count = 0
+function python {
+  $global:Count++
+  [Console]::Out.WriteLine($global:Count)
+  $global:LASTEXITCODE = if ($global:Count -eq [int]$env:FAIL_AT) { 37 } else { 0 }
+}
+"""
+    with tempfile.TemporaryDirectory(prefix="native-powershell-") as temporary:
+        script = Path(temporary) / "emitted.ps1"
+        script.write_text(fixture + source, encoding="utf-8")
+        for fail_at in range(count + 1):
+            environment = defects.probe_environment()
+            environment["FAIL_AT"] = str(fail_at)
+            result = subprocess.run(
+                [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)],
+                env=environment, capture_output=True, check=False, timeout=15,
+            )
+            with case.subTest(fail_at=fail_at):
+                case.assertEqual(37 if fail_at else 0, result.returncode, result.stderr)
+                case.assertEqual([str(number) for number in range(1, (fail_at or count) + 1)],
+                                 result.stdout.decode("utf-8").splitlines())
 
 
 def git(root, *args):

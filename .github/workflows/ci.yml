@@ -22,7 +22,7 @@
   },
   "jobs": {
     "ci": {
-      "name": "CI",
+      "name": "Linux qualification",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "steps": [
@@ -54,7 +54,64 @@
         },
         {
           "name": "Run checks",
-          "run": "python scripts/check_repository.py\npython governance/generate.py --repository infra --check\npython -m unittest discover -s governance/tests\ndocker compose -f docker-compose.yml config --quiet\npython -m unittest discover -s scripts/tests"
+          "run": "python scripts/check_repository.py\npython governance/generate.py --repository infra --check\npython governance/qualify.py -- python -m unittest discover -s governance/tests\ndocker compose -f docker-compose.yml config --quiet\npython governance/qualify.py -- python -m unittest discover -s scripts/tests"
+        }
+      ]
+    },
+    "windows": {
+      "name": "Windows qualification",
+      "runs-on": "windows-2025",
+      "timeout-minutes": 10,
+      "steps": [
+        {
+          "name": "Checkout",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "persist-credentials": false,
+            "fetch-depth": 0
+          }
+        },
+        {
+          "name": "Python",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Node",
+          "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+          "with": {
+            "node-version-file": ".nvmrc"
+          }
+        },
+        {
+          "name": "Install uv",
+          "run": "python -m pip install --quiet --only-binary :all: --require-hashes --no-deps \"https://files.pythonhosted.org/packages/dd/be/b90df95297cdae2cbd5a83fddf429a304b17a0e9c277ca02190d995cbe09/uv-0.11.33-py3-none-win_amd64.whl#sha256=521229afa69ad5f57127de800120cb2bea1ac729a05a0851aaf920124f8edf66\"\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+        },
+        {
+          "name": "Run Windows owning suites",
+          "run": "python scripts\\check_repository.py\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\npython governance\\generate.py --repository infra --check\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\npython governance\\qualify.py -- python -m unittest discover -s governance\\tests\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\npython governance\\qualify.py -- python -m unittest discover -s scripts\\tests\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+        }
+      ]
+    },
+    "ci-result": {
+      "name": "CI",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 1,
+      "needs": [
+        "ci",
+        "windows"
+      ],
+      "if": "always()",
+      "steps": [
+        {
+          "name": "Require both qualification results",
+          "env": {
+            "LINUX_RESULT": "${{ needs.ci.result }}",
+            "WINDOWS_RESULT": "${{ needs.windows.result }}"
+          },
+          "run": "if [ \"${LINUX_RESULT-}\" != success ] || [ \"${WINDOWS_RESULT-}\" != success ]; then\n  echo \"::error::Infra CI requires successful Linux and Windows qualification.\" >&2\n  exit 1\nfi"
         }
       ]
     }

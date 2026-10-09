@@ -179,7 +179,7 @@ class RuntimeRenderingTests(unittest.TestCase):
         for name in support.generator.PROFILES["repositories"]:
             with self.subTest(profile=name):
                 self.assertEqual(name in ("infra", "api"), ".nvmrc" in support.generator.artifacts(name))
-                self.assertEqual(24 if name == "api" else 23 if name == "infra" else 21 if name == "android" else 20,
+                self.assertEqual(25 if name == "api" else 23 if name == "infra" else 21 if name == "android" else 20,
                                  len(support.generator.artifacts(name)))
 
     def test_node_and_verified_uv_install_precede_the_authenticated_three_toolchain_run(self):
@@ -292,15 +292,25 @@ class RuntimeRenderingTests(unittest.TestCase):
                                 "with": {"node-version-file": ".nvmrc"},
                             }, native_steps.pop(2))
                             if not setup:
+                                self.assertEqual(support.generator.api_windows_job(support.generator.profile_for("api")),
+                                                 value["jobs"].pop("windows"))
+                                self.assertEqual(support.generator.ci_result_job("api"), value["jobs"].pop("ci-result"))
+                                self.assertEqual("Linux qualification", value["jobs"]["ci"]["name"])
+                                value["jobs"]["ci"]["name"] = "CI"
                                 preparation = native_steps.pop(3)
                                 self.assertEqual("Prepare API Node SDK", preparation["name"])
                                 self.assertEqual({"name", "run"}, set(preparation))
                                 flag = (' --money-client-interop-node '
                                         '"${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"')
-                                for step in native_steps:
-                                    if step["name"] in ("Run checks", "Coverage against explicit base"):
-                                        self.assertEqual(1, step["run"].count(flag))
-                                        step["run"] = step["run"].replace(flag, "")
+                                checks = next(step for step in native_steps if step["name"] == "Run checks")
+                                self.assertEqual(1, checks["run"].count(flag))
+                                checks["run"] = checks["run"].replace(flag, "")
+                                self.assertEqual(1, checks["run"].count(' --base "$BASE_SHA"'))
+                                checks["run"] = checks["run"].replace(' --base "$BASE_SHA"', "")
+                                coverage = next(step for step in json.loads(expected)["jobs"]["ci"]["steps"]
+                                                if step["name"] == "Coverage against explicit base")
+                                self.assertEqual(coverage["env"], checks.pop("env"))
+                                native_steps.append(coverage)
                             actual = old.encoded(value)
                         self.assertEqual(expected.encode("utf-8"), actual.encode("utf-8"))
                     self.assertEqual(previous_profile, support.generator.PROFILES["repositories"][name])

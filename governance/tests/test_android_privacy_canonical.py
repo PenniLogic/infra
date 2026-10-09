@@ -14,11 +14,12 @@ from pathlib import Path
 from unittest import mock
 
 import conformance_support as support
-from conformance import steps
+from conformance import registry, steps
 from test_baseline import CONTRACTS_STATE
 
 
 ACCEPTED_BASE = "1360c30a5caaff8039d76d57bfb9b060cf81a351"
+QUALIFICATION_SOURCE = "889c5c35a1677ef33899a2e63bc528d3bac802f9"
 RESTORE = "python -m pip install -r scripts/privacy_traffic/requirements.txt"
 SELF_TEST = "python scripts/privacy_traffic_harness.py self-test"
 INVENTORY = "python scripts/check_privacy_components.py"
@@ -34,8 +35,12 @@ API_PIN_AND_ADMISSION_ARTIFACTS = {
     ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml", ".nvmrc",
     "scripts/materialize_money_sources.py",
     "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
+    "scripts/check_repository.py", "scripts/qualify_windows.py",
 }
 CONTRACTS_SCOPE_ARTIFACTS = {"AGENTS.md", "README.md", "CONTRIBUTING.md"}
+INFRA_QUALIFICATION_ARTIFACTS = {
+    ".github/workflows/ci.yml", ".github/workflows/pr-workflow-integrity.yml", "scripts/check_repository.py",
+}
 
 
 def load(name, path):
@@ -75,7 +80,8 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     }
                     self.assertEqual(CHANGED_ARTIFACTS if repo == "android" else
                                      API_PIN_AND_ADMISSION_ARTIFACTS if repo == "api" else
-                                     CONTRACTS_SCOPE_ARTIFACTS if repo == "contracts" else set(), changed)
+                                     CONTRACTS_SCOPE_ARTIFACTS if repo == "contracts" else
+                                     INFRA_QUALIFICATION_ARTIFACTS if repo == "infra" else set(), changed)
                     if repo == "api":
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
                         expected["node"] = "24.14.0"
@@ -157,19 +163,53 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     self.assertEqual(old, updated)
                 else:
                     self.assertEqual(accepted, current)
+        self.assert_registry_composition(current_registry)
+
+    def assert_registry_composition(self, current):
         accepted = json.loads(subprocess.run(
             ["git", "show", f"{ACCEPTED_BASE}:governance/conformance/check-names.json"],
             cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
             capture_output=True, check=True, timeout=30,
         ).stdout)
-        current = current_registry
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
         android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
-        api = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/api")
-        api["workflow_ref"] = next(entry["workflow_ref"] for entry in current["entries"]
-                                   if entry["repo"] == "PenniLogic/api")
-        self.assertEqual(expected, current)
+        for name in ("api", "infra"):
+            entry = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/" + name)
+            entry["workflow_ref"] = QUALIFICATION_SOURCE
+            if name == "infra":
+                entry["pr_gate"]["workflow_ref"] = QUALIFICATION_SOURCE
+        self.assertEqual(expected, current, "registry composition differs from the proven references")
+        for name, workflow in (("api", registry.CI_WORKFLOW), ("infra", registry.CI_WORKFLOW),
+                               ("infra", registry.PR_GATE_WORKFLOW)):
+            with self.subTest(repo=name, workflow=workflow):
+                rendered = registry.render_workflow_at(
+                    support.GOVERNANCE.parent, QUALIFICATION_SOURCE, name, workflow_file=workflow,
+                )
+                self.assertIsNotNone(rendered, "the qualification source must exist in complete Git history")
+                self.assertEqual(support.generator.artifacts(name)[workflow].encode("utf-8"), rendered)
+
+    def test_registry_composition_rejects_other_refs_and_unrelated_field_changes(self):
+        path = support.GOVERNANCE / "conformance" / "check-names.json"
+        original = json.loads(path.read_bytes())
+        previous_source = "26fa29ffbaf9e2dd5ca9969c34ec5e664e884f45"
+        for name, field, value in (
+            ("api", "workflow_ref", previous_source),
+            ("infra", "workflow_ref", previous_source),
+            ("infra", "pr_gate", previous_source),
+            ("docs", "workflow_ref", QUALIFICATION_SOURCE),
+            ("infra", "language", "kotlin"),
+        ):
+            changed = copy.deepcopy(original)
+            entry = next(entry for entry in changed["entries"] if entry["repo"] == "PenniLogic/" + name)
+            if field == "pr_gate":
+                entry[field]["workflow_ref"] = value
+            else:
+                entry[field] = value
+
+            with self.subTest(repo=name, field=field):
+                with self.assertRaisesRegex(AssertionError, "registry composition differs"):
+                    self.assert_registry_composition(changed)
 
     def test_commands_restore_declared_requirements_and_preserve_every_old_gate(self):
         commands = support.generator.profile_for("android")["commands"]

@@ -8,8 +8,9 @@
 `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/*` (two files), `.gitattributes`,
 `.gitignore`, `scripts/setup.py` and `scripts/check_repository.py`). Consumers never hand-edit those
 files: a profile or template change lands here through a reviewed generator PR, then each consumer
-regenerates from the merged `main` in its own PR. Additionally, api alone has 24 files, including `scripts/materialize_money_sources.py`,
-`scripts/prepare_database_admission.py` and `src/main/resources/database-admission-installation.json`;
+regenerates from the merged `main` in its own PR. Additionally, api alone has 25 files, including `scripts/materialize_money_sources.py`,
+`scripts/prepare_database_admission.py`, `scripts/qualify_windows.py` and
+`src/main/resources/database-admission-installation.json`;
 infra alone has 23 files: its report
 workflow is `.github/workflows/conformance.yml`, and its additive gate is
 `.github/workflows/pr-workflow-integrity.yml`. Both API and Infra render `.nvmrc` to pin
@@ -25,13 +26,228 @@ python governance/generate.py --root <scratch>                                # 
 python -m unittest discover -s governance/tests
 ```
 
+## API combined build and coverage (consumer adoption held)
+
+Native API CI now passes the comparison base to its one normal build rather than
+starting a second Gradle coverage/Money/PIT graph afterwards:
+
+```text
+python scripts\quality.py build --base "<FULL_BASE_SHA>" --money-client-interop-node "<ABSOLUTE_NODE>"
+```
+
+**API must implement the combined `build --base` behavior before adopting these
+outputs.** Merely accepting the argument is insufficient: the existing build and
+`installDist`/`check` graph must run, followed by the existing aggregate and Money
+coverage checks against that exact base, then final mutation freshness verification.
+Standalone coverage remains available. All assertions, coverage/mutation floors,
+elapsed deadlines, unconditional interop/PIT, Node handling and cleanup stay API-owned
+and unchanged. The manual profile command remains `python scripts/quality.py build`;
+no optional gate, budget or alternate test graph is introduced.
+
+The existing step environment expression
+`${{ github.event.pull_request.base.sha || github.sha }}` moves from the removed
+coverage step to `Run checks` unchanged: pull requests compare to their base SHA;
+push and manual runs retain their reviewed `github.sha` behavior. There is no new
+dispatch input, base selector or fallback. The build always passes `--base "$BASE_SHA"`
+as one quoted operand, keeping event data out of shell source. Empty/malformed
+explicit values must fail in the API-owned validator, not select an unbased build.
+
+In this combined-build unit, Money/database preparation and Python test command order,
+actions, permissions, concurrency, timeouts and all non-API workflows/profiles are
+unchanged. Its isolated output delta from Infra `26fa29ff` is only API
+`.github/workflows/ci.yml`. The Windows extension below additionally changes the
+API-only checker and adds its qualification script. That API-only checkpoint leaves
+all eight other profiles byte-identical; the separately admitted Infra extension
+below preserves those exact API outputs and changes only Infra. Regenerate only the
+owning checkout; this source change does not roll out consumer files.
+
+Generator and shell/argv-fixture results do not establish API test parity, real
+Postgres execution or the under-five-minute requirement of
+[PenniLogic/api#3](https://github.com/PenniLogic/api/issues/3). Independent Core, QA
+and Security review, consumer adoption and full local/native qualification remain
+required; complete-suite timing under 300 seconds is unverified, and whole-build,
+job or workflow timings do not decide that test-suite criterion. Existing Windows
+execution/symlink qualification holds are not cleared.
+
+## API Windows owning-suite qualification (native execution held)
+
+API CI has two parallel ordinary jobs: `Linux qualification` retains its complete
+combined build, real Postgres, coverage/Money/PIT and Python graph, while
+`Windows qualification` runs on standard GitHub-hosted `windows-2025`. The latter
+reuses the SHA-pinned checkout/Python/Node/JDK actions and the seven existing
+Money/database preparation and verification commands, then invokes
+`python scripts\qualify_windows.py`. Each PowerShell command propagates a nonzero
+native exit immediately. There is no Windows Postgres, full Windows build,
+isolated test selector, new cache, artifact upload, credential, paid/self-hosted
+runner, permission or storage-allowance change.
+
+The generated stdlib qualifier runs the ordinary `python scripts\quality.py test`
+exactly once: complete verbose Python discovery, ordinary Gradle `test`, and the
+existing no-skip/no-failure metrics gate. It requires real passing records for:
+
+- `test_money_mutation.ProcessBudgetTest.test_budgeted_quality_admits_only_the_approved_docker_directory`
+- `com.pennilogic.migration.AdmissionInstallationTest.a symlinked launcher cannot redirect execution()`
+
+No target assertion, permission requirement or skip condition is changed. A
+missing/failed/skipped target refuses qualification. Existing ordinary JUnit results
+refuse before execution; absent, cached, up-to-date, no-source, skipped or ambiguous
+Gradle task results cannot publish Kotlin positives. A fresh failed task may publish
+its individual outcomes, but cannot qualify. The ordinary suite exit and every
+ordinary JUnit case must also pass; other genuine Python platform skips remain
+explicit outcomes, not fabricated passes.
+
+Only safe JSON events leave the qualifier. Each Python discovery ID is represented
+by its exact UTF-8 SHA-256; each JUnit ID hashes `classname`, a NUL separator, and the
+exact method display name. Both required targets additionally carry fixed literal
+`required_test` labels. Per-test statuses, not aggregate counts, provide the later
+parity input. Unique identities and complete case counts are checked, including
+JUnit failure/error/skip counters. Only the ASCII unittest protocol is decoded;
+arbitrary diagnostics, docstrings, reasons, XML payloads and fixture data are never
+printed, including non-UTF-8 child output. Raw streams stay in temporary files that
+close after collection. Missing or malformed evidence fails with static codes.
+These records are not a trusted-workflow attestation.
+
+The shared unittest parser accepts an outcome only on its case line or the
+immediately following docstring line. Interleaved diagnostics, orphaned status
+lines and incomplete records refuse the entire outcome stream; they cannot be
+searched for a later `ok` or emitted as passing evidence. This also rejects
+diagnostic attempts to swap per-ID results while preserving aggregate counts.
+Ordinary passing/docstring formatting and explicit platform skips remain supported.
+
+The sole native job named `CI` is a one-minute result aggregator with
+`needs: [ci, windows]` and `if: always()`. Only two explicit `success` results pass;
+failure, cancellation, skipped or absent results refuse. This is a normal
+GitHub-hosted job, not a CheckRun/status publisher or a success-shaped skipped
+required job. The shared checker retains its single-job Ubuntu policy and expression
+allowlist. An API-only exact-byte CI exception binds the generated compound workflow
+and requires the qualifier file; other workflows still use their existing validator.
+The exception composes with, but does not enable, optional PR-integrity adoption.
+
+Relative to Infra `26fa29ff`, the API-only checkpoint changes API
+`.github/workflows/ci.yml` and `scripts/check_repository.py`, and adds
+`scripts/qualify_windows.py`. Its non-API outputs and API setup workflow are unchanged;
+the Infra extension below originally retained all three API output bytes. The
+shared outcome-parser correction changes only the generated qualifier; the API
+caller and checker remain byte-identical.
+Adopt all three atomically with the API-owned combined-build interface, only after
+separate producer/consumer review and protected acceptance. Synthetic Infra runner,
+parser and shell controls are not execution of the two API tests. Native Windows
+qualification, complete-suite timing below 300 seconds, per-test local/CI parity,
+and supported full Linux **local** qualification remain unverified. No workflow was
+dispatched or published by this source change; the existing Windows holds and
+[Infra #22](https://github.com/PenniLogic/infra/issues/22)'s trusted-workflow
+identity/mandatory-absence gap remain open.
+
+## Infra Windows/Linux ordinary qualification (owner transition held)
+
+Infra adds the same two parallel standard-hosted qualification jobs and always-running
+native `CI` result gate, without changing its canonical manual command list. Linux
+keeps every existing command in order, including Compose configuration and all nine
+real `StackLifecycleTests`. Windows uses `windows-2025`, the same immutable
+GitHub-owned checkout/Python/Node action pins, Python `3.14`, Node `24.14.0` and bundled
+npm `11.9.0`. Its uv `0.11.33` Windows x64 wheel is hash-required, binary-only and
+dependency-free, pinned to SHA-256
+`521229afa69ad5f57127de800120cb2bea1ac729a05a0851aaf920124f8edf66`.
+Linux retains its existing uv installer. Every Windows native command has an
+immediate exit-code guard, including installation and each repository/generation check.
+
+Both OS jobs execute full governance discovery followed serially by full scripts
+discovery. Only those two commands receive the transparent
+`python governance/qualify.py -- <canonical discovery command>` wrapper; it executes
+the complete ordinary discovery once, using `-v` for per-test outcomes.
+It is not a selector, replacement test framework or optional gate.
+The child invokes stdlib `unittest.main` discovery with a `TextTestRunner` subclass
+that binds only its stream to an exclusively created report inside an owned temporary
+directory. `unittest.main` constructs the runner with its normal options, including
+the default warning policy or an explicitly selected `PYTHONWARNINGS` policy.
+Test stdout and stderr remain separate diagnostic streams, including direct descriptor
+writes; neither can impersonate per-ID runner statuses. The complete runner report
+must pass the unchanged S1 parser and end with the matching successful terminal
+summary. Nonzero exit, a missing/incomplete report or any disallowed outcome refuses.
+Cleanup receipts still come only from stdout. The helper is manually maintained Infra
+source, not an additional generated consumer file; the shared API parser is unchanged.
+
+The native helper requires a clean, non-shallow checkout matching `GITHUB_SHA`,
+records commit/tree and the entire Git file inventory (hashed paths, modes and blobs),
+enumerates every discovery ID before execution, then requires the exact same ID set
+in the child outcomes. It records actual Python/Node/npm/uv/Git/Bash versions and
+runner OS/image build identifiers. `windows-2025`/`ubuntu-24.04` are mutable labels;
+`ImageOS`/`ImageVersion` are recorded metadata, not image-byte pins or attestations.
+The exact Windows image families are `win25` and `win25-vs2026`; Linux accepts only
+`ubuntu24`. The `windows-2025` job in [#74](https://github.com/PenniLogic/infra/pull/74)
+reported `windows-2025-vs2026/20260925.250.1`. Its
+[published image builder](https://github.com/actions/runner-images/blob/1c7b9f1e082099ad9e2cfa02f257a2e352e753ee/helpers/GenerateResourcesAndImage.ps1#L30-L33)
+maps that variant to `ImageOS=win25-vs2026`; this is not an arbitrary image-prefix
+allowlist or a waiver of repository, hosted-runner, architecture or tool checks.
+Missing tools, import errors, missing historical-object skips, changed source, unknown
+skips, setup/teardown failures or nonzero commands cannot qualify.
+
+Nonzero discovery remains the primary failure even if its unittest protocol is
+ambiguous. Before refusing, the helper emits diagnostic-only hints: at most 20
+failure/error report headings matching the discovered test/class/module identities,
+and at most eight source-inventory-bound hashed file/line locations per report.
+Truncation and unrecognized headings are explicit. Raw messages, docstrings,
+subtest values, tracebacks and external paths are not printed. These untrusted
+hints never supply outcomes or authorize a pass; successful commands still use
+the unchanged strict S1 parser. The earlier D run's discarded transcript cannot
+be reconstructed. Later runs can locate their own failures with these hints,
+but cannot retroactively prove D's cause.
+
+F's zero-exit scripts runs emitted no admitted outcomes: their raw stderr was
+discarded, so their exact offending text remains unknown. A finite file-only
+bootstrap test and tiny real unittest cases reproduce mixed-stderr ambiguity.
+Separating the normal runner's report fixes that proven reporting defect without
+relaxing S1; it is not retrospective scripts, lifecycle or cleanup qualification.
+
+Canonical-composition fixtures pin the three API/Infra registry references to
+source `889c5c35a1677ef33899a2e63bc528d3bac802f9` and prove its historical renderings
+match the current workflows; they do not copy candidate references into expectations.
+The real CLI/Bash fixtures resolve their owned temporary root before constructing
+the runner event path, including Windows case aliases. This fixes the fixture's
+canonical-path precondition without relaxing the production event-path guard.
+These finite controls are not native qualification or evidence for unseen failures.
+
+The only Windows Docker allowance sets the existing `PENNILOGIC_SKIP_DOCKER_TESTS=1`
+inside the Windows scripts-qualification process, for exactly the nine existing
+`test_integration_stack.StackLifecycleTests` methods. The existing POSIX-flock-only
+method is also inapplicable on Windows. Linux must pass all nine real-stack methods
+at that same final source; only its existing exact Windows-only IDs may skip.
+Every other discovered test must pass, including native symlinks and the full Windows
+process/job/interruption/refusal/pipe/handle/unsafe-result/redaction controls. Their
+0.8/5/2.5/4-second bounds and assertions are unchanged. There is no Docker Desktop,
+WSL, privilege setup or skip for the harmless process/Docker-command fakes.
+`ProcessExitDiagnosticTests` is absent at accepted `26fa29ff`; no frozen runner files
+are imported. Later composition must inventory and execute its added methods, and
+review any new platform-applicability identities explicitly.
+
+Owning stack cleanup now requires every scoped reset to succeed, queries the four
+owned projects for remaining containers/volumes/networks, and refuses query errors,
+remaining resources or temporary-tree deletion failures. Reset/inspection failures
+retain the owned environment; failed tree deletion does not promise full retention
+or removal. Only validated resource counts/project labels and removal receipts are
+published, never assertion/fixture payloads. Full per-test evidence uses SHA-256 of
+the exact UTF-8 discovery IDs; raw child output closes with its temporary files.
+Fixture receipts are not independent resource-absence evidence, and VM disposal or
+an aggregate PASS is not verified Docker cleanup.
+
+Only Infra CI, its exact-byte checker exception and the generated PR-integrity
+workflow binding change among Infra outputs. Its setup and Conformance workflows,
+all API checkpoint outputs and the other seven profiles remain unchanged. Common
+checker allowlists stay closed; API and Infra each admit only their own exact CI
+bytes. The source/checker/validator change needs the
+[owner-maintenance transition](../CI_CONFORMANCE.md#native-os-qualification-owner-maintenance-transition),
+real source/registry bindings, separate review and exact-final-source qualification.
+The ten-minute OS job bounds remain; actual complete job **and** whole-workflow
+times must each be strictly below 600 seconds. Aggregator duration is not a proxy.
+Those timings, native qualification and independent cleanup evidence are unverified.
+
 ## API Node SDK prerequisite (consumer adoption held)
 
 The API profile now declares the already accepted Node `24.14.0` SDK with bundled
 npm `11.9.0`. Native CI and manual Copilot setup reuse the existing
 `actions/setup-node@820762786026740c76f36085b0efc47a31fe5020` action and the
 generated API `.nvmrc`; there is no new installer, cache selection or action pin.
-Only CI adds `Prepare API Node SDK`, before any repository commands. The pinned
+Only the Linux CI leg adds `Prepare API Node SDK`, before any repository commands. The pinned
 action exports no executable path, so that step binds its exact Linux x64 layout:
 `$RUNNER_TOOL_CACHE/node/24.14.0/x64/bin/node`, with npm's adjacent
 `lib/node_modules/npm/bin/npm-cli.js`. The root comes from trusted runner metadata,
@@ -54,20 +270,22 @@ Node/npm: the unchanged emitter runs the preload; the guarded emitter starts nei
 probe, and removing the setting restores normal preparation. Test-only reversal of
 the probes covers either first invocation; production probe order is unchanged.
 
-The normal build and explicit-base coverage each pass that value as one quoted
-`--money-client-interop-node` argument. A missing/empty handoff refuses rather
+The combined normal build passes that value as one quoted
+`--money-client-interop-node` argument. The shared helper retains the same handoff
+for standalone explicit-base coverage. A missing/empty handoff refuses rather
 than selecting an ambient runtime. The same rendering applies to a profile
 `gate-self-test` command, but no self-test or other gate is added by this change.
 The base expression, Money/database source preparation, task lists, budgets,
-permissions, action pins, concurrency and timeouts are unchanged. No Gradle
+permissions, action pins, concurrency and timeouts are unchanged. Combined coverage
+is the separate held companion described above. No Gradle
 startup variable, runtime allowlist, symlink or global configuration is changed.
 Manual profile commands retain the optional/default-None API behavior.
 
-**Do not adopt these generated API outputs until the API-owned parser bridge is
-composed in the same consumer change.** Its agreed interface is:
+**Do not adopt these generated API outputs until the API-owned parser bridge and
+combined coverage behavior are composed in the consumer change.** Its interface is:
 
 ```text
-python scripts\quality.py build --money-client-interop-node "<ABSOLUTE_NODE>"
+python scripts\quality.py build --base "<FULL_BASE_SHA>" --money-client-interop-node "<ABSOLUTE_NODE>"
 python scripts\quality.py coverage --base "<FULL_BASE_SHA>" --money-client-interop-node "<ABSOLUTE_NODE>"
 python scripts\quality.py gate-self-test --artifact-dir "<OWNED_PARENT>" --money-client-interop-node "<ABSOLUTE_NODE>"
 ```
@@ -83,11 +301,12 @@ python "<ACCEPTED_INFRA_CHECKOUT>\governance\generate.py" --repository api --roo
 python "<ACCEPTED_INFRA_CHECKOUT>\governance\generate.py" --repository api --root "<OWNED_API_CHECKOUT>" --check
 ```
 
-The API output delta is `.github/workflows/ci.yml`,
+The Node-prerequisite API output delta was `.github/workflows/ci.yml`,
 `.github/workflows/copilot-setup-steps.yml`, `CONTRIBUTING.md`, and new `.nvmrc`.
-All other API artifacts and all eight other profiles' outputs stay byte-identical.
-The shared checker and its allowlists are unchanged; generator `--check` binds
-the exact SDK preparation and both CLI handoffs.
+The combined-build companion additionally changes only API CI as described above.
+The shared checker and its allowlists are unchanged; the API-only Windows exception
+is described above. Generator `--check` binds
+the exact SDK preparation, base environment and combined CLI handoff.
 
 The documented Ubuntu image default Node `22.23.3`/npm `10.9.9` is unsupported
 by the immutable Contracts engines. That missing prerequisite is real, but
@@ -129,8 +348,9 @@ Money's catalog, budgets or commands. Full interface and limits are in
 interface. The API-only profile opt-in renders `templates/materialize_money_sources.py`
 as `scripts/materialize_money_sources.py`, embedding that catalog. No other profile,
 managed hook, setup workflow, checker rule, action pin, permission or protection changes.
-The API's five existing command-derived files change and the one script is added;
-the setup workflow and the other eight profiles remain byte-identical.
+The original opt-in changed five existing API command-derived files and added one
+script; it now also changes the API-only checker's exact CI digest. The setup
+workflow and the other eight profiles remain byte-identical.
 
 The catalog binds ten Contracts files at
 `aa8d90cb98cec9b6dd08c91b3a4d869e47362662` and exactly one Docs file,
@@ -162,10 +382,11 @@ python scripts\quality.py build
 python -m unittest discover -s scripts\tests
 ```
 
-The existing explicit-base coverage command still follows this sequence in native CI.
-The provider and unchanged normal build belong to the owning API candidate; that
-candidate must be adopted separately. Rendering these commands does not admit or
-release the currently unaccepted API Money source.
+In native CI, the combined-build companion supplies `--base` and the prepared Node
+executable to the normal build in this sequence; no later coverage graph is started.
+The provider and combined build belong to the owning API candidate, which must be
+adopted separately. Rendering these commands does not admit or release the currently
+unaccepted API Money source.
 
 The AA8 transition changed only the provider command's source-root pin literal,
 preserving its seven command identities and their shape/order. The later database
@@ -268,6 +489,9 @@ other content of the refused file is ever echoed, and a non-printable path is sh
 anticipated, fails closed with the one line `...: not a parseable UTF-8 JSON-syntax document`
 (never a traceback).
 
+The common rules below exclude the exact-byte API CI and opted-in PR-integrity
+exceptions. Those use separate path/profile bindings and never widen this template.
+
 The rules, in evaluation order. `validate_workflow` runs its stages one after another and each rule
 is an early `raise`, so across stages the first matching rule is the one reported: a token is named
 before a placement, a condition or unlisted action before the key allowlists, and a key outside the
@@ -325,12 +549,15 @@ contexts, other token variables, extra environments and other workflow/profile p
 refused. A malformed placement carrying a token is consequently refused by rules 5-6 before
 the later shape rule; rule 32 also catches a missing token or a static environment.
 
-Rules 13-18 accept exactly the keys the generator emits, as the union over all profiles: job-level
+Rules 13-18 accept exactly the keys the generator emits in the common layer across profiles: job-level
 and step-level `env` are emitted only by some profiles (web/admin telemetry opt-out, api coverage
 base) but accepted for every consumer; only the conformance exception uses the profile binding.
-`governance/tests/test_workflow_shape.py` derives the three allowlists from the rendered workflows of
-every profile, so adding a key to the generator fails that test until the template lists it in the
-same PR. Job-level `permissions` is deliberately not allowlisted: no profile emits it and the exact
+`governance/tests/test_workflow_shape.py` derives the three allowlists from each
+profile's standard workflow layer (API/Infra Linux layers are projected to the
+single-job shape for common-parser tests only). Full API/Infra compound-workflow
+acceptance and drift refusals use the actual rendered checker in separate controls.
+Adding a common key fails until the template lists it in the same PR.
+Job-level `permissions` is deliberately not allowlisted: no profile emits it and the exact
 workflow-level `permissions` is the rule. Step `id`, `shell`, `working-directory` and
 `timeout-minutes` are not emitted either.
 
@@ -338,7 +565,7 @@ Rules 8-9 bind each `uses` to one of five names at one commit each; `test_workfl
 derives both mappings from the rendered workflows of every profile, so a pin bump or a new action
 in `generate.py` fails until the checker carries it. Rule 12 restricts upload to infra conformance;
 its only allowlisted inputs are `name`, `path`, `retention-days` and `if-no-files-found`.
-Rules 22-33 bind each generated workflow file to its own trigger set and single job. CI/setup
+Rules 22-33 bind each generated workflow file in the common layer to its own trigger set and single job. CI/setup
 event filters (`branches`, `paths`, `types`, dispatch `inputs`) remain unbound (their strings are
 still walked by rules 5-6); conformance's dispatch and schedule values are exact. Other action
 input values, run text, step order and concurrency still rely on infra's byte-level `--check`
@@ -348,8 +575,9 @@ Beyond workflows, `check()` requires the generated file set, refuses tracked sym
 by file name, obvious token/private-key patterns (content withheld), invalid UTF-8 in text files and
 invalid JSON in `*.json` (a top-level JSON array remains valid JSON there; only a workflow must be an
 object). Passing the checker is a repository-foundation result, never product acceptance.
-The existing required-file subset is unchanged; infra's generator `--check` detects a missing
-conformance file as well as any changed generated byte.
+The common required-file subset is unchanged; the API exception adds its qualifier
+and the PR-integrity exception adds its gate. Infra's generator `--check` detects a
+missing conformance file as well as any changed generated byte.
 
 ## Opt-in PR workflow integrity bootstrap
 

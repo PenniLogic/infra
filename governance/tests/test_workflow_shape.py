@@ -12,6 +12,8 @@ import re
 import unittest
 from unittest import mock
 
+import conformance_support as support
+
 
 HERE = Path(__file__).resolve().parents[1]
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -96,7 +98,7 @@ REFUSED_TOP_KEYS = {
 
 
 def workflow(repo="web", setup=False):
-    return json.loads(generator.workflow(repo, setup=setup))
+    return json.loads(support.standard_workflow(generator, repo, setup))
 
 
 def job_of(document):
@@ -134,7 +136,7 @@ class KeyAllowlistTests(unittest.TestCase):
                         step_keys.update(step)
                 name = SETUP if setup else CI
                 with self.subTest(repo=repo, name=name):
-                    checker.validate_workflow(name, generator.workflow(repo, setup=setup).encode())
+                    checker.validate_workflow(name, support.standard_workflow(generator, repo, setup).encode())
                     checker.validate_shape(document)
         self.assertEqual(checker.WORKFLOW_KEYS, top)
         self.assertEqual(checker.JOB_KEYS, job_keys)
