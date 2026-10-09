@@ -40,11 +40,12 @@ def passing_record(**overrides):
 
 
 class EvaluationTests(unittest.TestCase):
-    def test_a_clean_record_passes_without_findings(self):
+    def test_a_legacy_clean_record_passes_with_explicit_unavailable_history(self):
         record = report.evaluate_repository(passing_record())
         self.assertEqual("pass", record["result"])
         self.assertEqual([], record["failures"])
-        self.assertEqual([], record["warnings"])
+        self.assertEqual("unavailable", record["ci_duration_trend"]["status"])
+        self.assertEqual(["CI duration trend unavailable: completed main CI history was not available"], record["warnings"])
 
     def test_each_failure_reason_fails_the_repository(self):
         cases = {

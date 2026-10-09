@@ -7,14 +7,15 @@
 For each profile the job clones (or reuses) a read-only shallow checkout of ``main`` under the
 scratch directory, asserts the repository id through the read-only API, compares the generated
 baseline byte for byte, runs the consumer's own checker, plants defects, checks the required
-check names against the rendered workflow and the branch ruleset, records the last ``main`` CI
-run, and writes ``conformance-report.json`` and ``conformance-summary.md`` with every local path
+check names against the rendered workflow and the branch ruleset, records bounded ``main`` CI
+history, and writes ``conformance-report.json`` and ``conformance-summary.md`` with every local path
 redacted. Exit status 0 means every repository passed, 1 means at least one failed, 2 means the job
 itself could not run. Nothing is ever pushed, commented or written to a repository.
 """
 
 import argparse
 import datetime
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -157,7 +158,7 @@ def inspect_repository(name, profile, generator, client, registry_document, scra
         "identity": None, "api_error": None, "clone_error": None, "reused_existing_clone": None, "main_sha": None,
         "generated_baseline": None, "repository_check": None,
         "detected_steps": steps.detect_steps(profile["commands"]),
-        "required_checks": None, "registry": None, "last_main_run": None,
+        "required_checks": None, "registry": None, "last_main_run": None, "main_run_history": None,
         "planted_defects": [], "language_coverage": {},
     }
     rendered_workflow = generator.artifacts(name)[".github/workflows/ci.yml"].encode("utf-8")
@@ -208,8 +209,9 @@ def inspect_repository(name, profile, generator, client, registry_document, scra
     if record["api_error"] is None:
         try:
             record["required_checks"] = required_checks(client, full_name, produced)
-            record["last_main_run"] = github_api.last_main_run(client, full_name, workflow_name="CI",
-                                                               budget_minutes=budget_minutes)
+            history = github_api.main_run_history(client, full_name, workflow_name="CI", budget_minutes=budget_minutes)
+            record["main_run_history"] = history
+            record["last_main_run"] = history["runs"][0] if history["runs"] else None
         except github_api.ApiError as error:
             record["api_error"] = str(error)
     return record
@@ -235,6 +237,8 @@ def parse_arguments(argv):
     parser.add_argument("--generated-at", help="ISO-8601 timestamp to record instead of the current time")
     parser.add_argument("--refresh", action="store_true", help="advance reused scratch clones to the current remote main")
     args = parser.parse_args(argv)
+    if args.budget_minutes <= 0:
+        parser.error("--budget-minutes must be positive")
     exercise = tuple(item for item in args.exercise.split(",") if item)
     unknown = sorted(set(exercise) - set(defects.TOOLCHAINS))
     if unknown:
@@ -313,6 +317,14 @@ def main(argv=None):
           f"{len(document['failures'])} failure(s); report written to {args.output.name}/conformance-report.json")
     for failure in document["failures"]:
         print(f"  FAIL {failure}")
+    for record in document["repositories"]:
+        for warning in record["warnings"]:
+            message = f"{record['repository']}: {warning}"
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                print(f"::warning::{escaped}")
+            else:
+                print(f"  warning {message}")
     return 0 if document["result"] == "pass" else 1
 
 

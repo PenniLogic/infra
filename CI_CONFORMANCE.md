@@ -37,8 +37,9 @@ Do not reintroduce reusable-workflow adoption.
    other than GitHub Actions, app id 15368);
 8. checks the check-name registry entry (`conformance/check-names.json`) and verifies that the recorded
    `workflow_ref` generator commit renders the workflow currently on the consumer's `main`;
-9. records the last completed push run of the `CI` workflow on `main`, its conclusion and wall-clock
-   (`run_started_at` to `updated_at`, queue time excluded) against the ten-minute budget;
+9. records up to ten recent completed push runs of the `CI` workflow on `main`, retaining the
+   last-run conclusion and wall-clock (`run_started_at` to `updated_at`, queue time excluded)
+   checks against the ten-minute budget, plus the bounded trend and early warnings below;
 10. writes `conformance-report.json` (schema `pennilogic.infra.conformance/1`) and
     `conformance-summary.md` with local paths, exact in-process GH/GITHUB token values and
     credential-shaped strings redacted, after a
@@ -119,8 +120,8 @@ Options: `--repository <profile>` (repeatable) limits the run; `--github-client 
 (`auto` locally uses the `gh` CLI's stored credential when it is installed and authenticated, else anonymous);
 `--exercise` names the toolchains whose planted defects run (`python` by default; `node`, `uv`, `java`,
 `android` need the matching toolchain on the machine and a network for `npm ci` / `uv sync`);
-`--command-timeout`, `--budget-minutes` (the wall-clock budget recorded per row and applied to the last
-`main` run; default 10), `--generated-at`. Exit status: 0 pass, 1 at least one repository failed, 2 the
+`--command-timeout`, `--budget-minutes` (positive wall-clock budget recorded per run and used for the
+last-run check and trend warning; default 10), `--generated-at`. Exit status: 0 pass, 1 at least one repository failed, 2 the
 job itself could not run (registry invalid, unknown profile, `gh` requested but absent, missing Actions
 step token, wrong Actions client, or the redaction
 self-scan found a surviving local marker — nothing is written in that case).
@@ -159,6 +160,7 @@ Per repository the JSON carries `identity`, `main_sha`, `generated_baseline` (`w
 `detected_steps` (`build`, `test`, `lint`, `checker`, `install`, `other`, `consumer_self_tests`),
 `required_checks` (`produced`, `required`, `missing`, `strict_up_to_date`, `branch_rules`, `rulesets` with
 bypass actors), `registry`, `last_main_run` (`wall_clock_seconds`, `within_budget`, `head_sha`),
+`main_run_history`, `ci_duration_trend`,
 `planted_defects`, `language_coverage`, then `failures`, `warnings` and `result`.
 Probe `error` details, fixture `cleanup` locations/recovery mappings and `restoration_deferred` are
 included when applicable; all strings pass the same whole-document redaction and final self-scan.
@@ -177,6 +179,60 @@ up-to-date branch; planted defects of a toolchain not exercised in this run; no 
 found; a run over ten minutes for a profile with a larger reviewed `timeout_minutes` (contracts, api,
 android run with 30); `main` moved since the last completed run; a registry `workflow_ref` that could
 not be verified in this run (no local history for the commit, or no scratch checkout to compare with).
+
+### Bounded CI wall-clock trends and early warnings
+
+The preserved Observability clause of [#22](https://github.com/PenniLogic/infra/issues/22) uses the
+existing read-only metadata/report path, without a service, paid plan, new credential or permission.
+The same runs GET now requests the **first 100 completed main/push runs**, keeps the newest **10 named
+`CI`**, and does not paginate. This is still one runs request per repository, not ten requests.
+The cap and number inspected are recorded; if the scan cap prevents filling the sample window, a
+warning says so. "Recent" means newest in GitHub's creation order, not a promised time-based coverage
+window. Existing run timestamps and the report timestamp remain the evidence of observation time.
+
+`main_run_history.runs` is newest first and retains ids, workflow ids/paths, branch/event/status, run
+numbers, attempts, commits, timestamps, conclusions, durations and budget results. **No failed,
+cancelled, skipped, over-budget or rerun sample is removed to make the history green or faster.**
+The last-run field comes from that same response, so a second read cannot race it. Existing JSON
+fields and schema `pennilogic.infra.conformance/1` remain; the history/trend fields and run source
+metadata are additive.
+
+The Markdown artifact publishes a per-repository oldest-to-newest duration sequence with run links,
+conclusions, over-budget/rerun labels, the prior median, latest change and assessment. Deterministic
+defaults, also recorded in `ci_duration_trend`, are:
+
+- Compare the latest duration with the median of the preceding samples (up to nine), requiring
+  **at least four** runs. A material regression is an increase of **both 20% and 60 seconds**.
+  It warns even below the early-warning threshold; the same thresholds describe an improvement.
+- Warn whenever the latest measured duration is **at least 80% of the budget and not already over
+  it**: 480 through 600 seconds with the default ten minutes. This warning persists even if every
+  sample is equally slow, so a rolling baseline cannot normalize a near-budget plateau.
+- A comparison requires valid durations and source metadata, distinct newest-first run numbers/ids,
+  one workflow id/path, the requested branch/event, successful conclusions and first attempts.
+  Missing or invalid data is `unavailable` / `invalid_history`; fewer than four samples is
+  `insufficient_history`; a non-success, rerun or zero prior median is `incomparable_history`.
+  These are explicit warnings, never "stable". The independently measured 80% warning still works
+  when comparison is unavailable. Rerun envelopes keep the existing timestamp metric; earlier
+  individual attempt results are not recovered or claimed.
+
+Warnings appear in JSON, Markdown and CLI output. On Actions the CLI emits escaped `::warning::`
+annotations **after** the existing whole-document redaction and self-scan, so the already installed
+weekly/manual workflow publishes the warning and uploads the trend artifact without a workflow edit.
+Investigate the linked runs' slow steps, cache misses or retries without dropping required checks.
+This is a sampled, report-only early warning, not continuous monitoring, forecasting, an external
+notification delivery guarantee or stronger workflow-identity enforcement. Three-day artifact
+retention and the existing schedule are unchanged.
+
+An earlier failed/over-budget run stays labeled and warned about even after the latest run succeeds;
+it does not rewrite the existing latest-run gate. A current failure still fails; a current overrun
+still follows the reviewed profile-timeout policy below. The existing 600-second inclusive report
+boundary is unchanged and is not a waiver of #22's separate strict under-ten-minute acceptance.
+
+Focused offline regressions (synthetic metadata, no consumer graph or hosted dispatch):
+
+```text
+python -m unittest discover -s governance/tests -p "test_conformance_trends.py"
+```
 
 Budget decision (Q5 of the QA review): the ten-minute budget of addendum item 3 fails a repository only
 when its profile runs with the default ten-minute `timeout-minutes`; for the three heavy profiles whose

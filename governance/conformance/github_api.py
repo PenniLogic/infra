@@ -1,5 +1,5 @@
 """Read-only GitHub REST access for the conformance job: repository identity, rulesets, the rules
-that apply to ``main``, and the last completed ``main`` CI run.
+that apply to ``main``, and bounded completed ``main`` CI history.
 
 Two interchangeable clients: ``AnonymousClient`` (plain ``urllib``, no credential, the public
 rate limit of 60 requests per hour per address) and ``GhClient`` (the step-scoped ephemeral token
@@ -28,6 +28,8 @@ GITHUB_ACTIONS_APP_ID = 15368
 BUDGET_MINUTES = 10
 REQUEST_TIMEOUT_SECONDS = 30
 GH_TIMEOUT_SECONDS = 60
+RUN_HISTORY_LIMIT = 10
+RUN_SCAN_LIMIT = 100
 
 
 class ApiError(RuntimeError):
@@ -216,22 +218,38 @@ def missing_required_checks(required, produced, actions_app_id=GITHUB_ACTIONS_AP
     return missing
 
 
+def main_run_history(client, full_name, workflow_name="CI", branch="main", budget_minutes=BUDGET_MINUTES):
+    """One bounded GET, newest first, with no success-only filtering or pagination."""
+    path = f"/repos/{full_name}/actions/runs?branch={branch}&event=push&status=completed&per_page={RUN_SCAN_LIMIT}"
+    data = client.get(path)
+    runs = data.get("workflow_runs") if isinstance(data, dict) else None
+    if not isinstance(runs, list) or len(runs) > RUN_SCAN_LIMIT:
+        raise ApiError(f"GET {path} returned an invalid workflow run list")
+    if any(not isinstance(run, dict) or not isinstance(run.get("name"), str) for run in runs):
+        raise ApiError(f"GET {path} returned an invalid workflow run entry")
+    selected = [run for run in runs if run["name"] == workflow_name][:RUN_HISTORY_LIMIT]
+    return {
+        "workflow_name": workflow_name, "branch": branch, "event": "push",
+        "sample_limit": RUN_HISTORY_LIMIT, "scan_limit": RUN_SCAN_LIMIT,
+        "scanned_runs": len(runs), "scan_limit_reached": len(runs) == RUN_SCAN_LIMIT,
+        "runs": [summarize_run(run, budget_minutes) for run in selected],
+    }
+
+
 def last_main_run(client, full_name, workflow_name="CI", branch="main", budget_minutes=BUDGET_MINUTES):
     """The newest completed push run of the named workflow on ``branch`` (``None`` when there is none)."""
-    data = client.get(f"/repos/{full_name}/actions/runs?branch={branch}&event=push&status=completed&per_page=10")
-    for run in data.get("workflow_runs", []):
-        if run.get("name") == workflow_name:
-            return summarize_run(run, budget_minutes)
-    return None
+    history = main_run_history(client, full_name, workflow_name, branch, budget_minutes)
+    return history["runs"][0] if history["runs"] else None
 
 
 def _timestamp(value):
     if not isinstance(value, str):
         return None
     try:
-        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        timestamp = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return timestamp if timestamp.tzinfo is not None else None
 
 
 def wall_clock_seconds(run):
@@ -248,6 +266,12 @@ def summarize_run(run, budget_minutes=BUDGET_MINUTES):
     return {
         "id": run.get("id"),
         "name": run.get("name"),
+        "workflow_id": run.get("workflow_id"),
+        "path": run.get("path"),
+        "head_branch": run.get("head_branch"),
+        "event": run.get("event"),
+        "status": run.get("status"),
+        "run_number": run.get("run_number"),
         "conclusion": run.get("conclusion"),
         "head_sha": run.get("head_sha"),
         "run_attempt": run.get("run_attempt"),
