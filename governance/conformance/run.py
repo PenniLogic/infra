@@ -30,6 +30,7 @@ from conformance import report as report_module, steps  # noqa: E402
 CLONE_TIMEOUT_SECONDS = 600
 WORKFLOW_PREFIX = ".github/workflows/"
 DISABLED_PUSH_URL = "DISABLED"
+STEP_SUMMARY_LIMIT_BYTES = 1024 * 1024
 
 
 def git(root, *args, timeout=60):
@@ -247,6 +248,27 @@ def parse_arguments(argv):
     return args
 
 
+def publish_actions_summary(markdown):
+    target = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not target:
+        print("Conformance publication failed: GITHUB_STEP_SUMMARY is unavailable; full report retained in artifacts",
+              file=sys.stderr)
+        return False
+    try:
+        with Path(target).open("ab") as summary:
+            content = (("\n" if summary.tell() else "") + markdown).encode("utf-8")
+            if summary.tell() + len(content) > STEP_SUMMARY_LIMIT_BYTES:
+                print("Conformance publication failed: job summary exceeds the runner's 1 MiB limit; "
+                      "full report retained in artifacts", file=sys.stderr)
+                return False
+            summary.write(content)
+    except (OSError, ValueError) as error:
+        print(f"Conformance publication failed: GITHUB_STEP_SUMMARY could not be written ({error.__class__.__name__}); "
+              "full report retained in artifacts", file=sys.stderr)
+        return False
+    return True
+
+
 def main(argv=None):
     args = parse_arguments(argv)
     generator = generator_module.load()
@@ -311,20 +333,25 @@ def main(argv=None):
         # Fail closed without echoing what survived: the kinds are named, the text is not written anywhere.
         print(f"Redaction incomplete ({', '.join(survivors)}); nothing written", file=sys.stderr)
         return 2
+    markdown = report_module.render_markdown(document)
     (args.output / "conformance-report.json").write_text(report_module.to_json(document), encoding="utf-8", newline="\n")
-    (args.output / "conformance-summary.md").write_text(report_module.render_markdown(document), encoding="utf-8", newline="\n")
+    (args.output / "conformance-summary.md").write_text(markdown, encoding="utf-8", newline="\n")
+    hosted = os.environ.get("GITHUB_ACTIONS") == "true"
+    if hosted and not publish_actions_summary(markdown):
+        return 2
     print(f"Conformance {document['result'].upper()}: {document['repository_count']} repositories, "
           f"{len(document['failures'])} failure(s); report written to {args.output.name}/conformance-report.json")
     for failure in document["failures"]:
         print(f"  FAIL {failure}")
-    for record in document["repositories"]:
-        for warning in record["warnings"]:
-            message = f"{record['repository']}: {warning}"
-            if os.environ.get("GITHUB_ACTIONS") == "true":
-                escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-                print(f"::warning::{escaped}")
-            else:
-                print(f"  warning {message}")
+    if hosted:
+        warning_count = sum(len(record["warnings"]) for record in document["repositories"])
+        if warning_count:
+            print(f"::warning::Conformance reported {warning_count} warning(s); "
+                  "see the job summary and conformance-report artifacts for every warning and full CI duration history.")
+    else:
+        for record in document["repositories"]:
+            for warning in record["warnings"]:
+                print(f"  warning {record['repository']}: {warning}")
     return 0 if document["result"] == "pass" else 1
 
 

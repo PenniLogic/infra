@@ -20,6 +20,7 @@ from test_baseline import CONTRACTS_STATE
 
 ACCEPTED_BASE = "1360c30a5caaff8039d76d57bfb9b060cf81a351"
 QUALIFICATION_SOURCE = "889c5c35a1677ef33899a2e63bc528d3bac802f9"
+API_WORKFLOW_SOURCE = "733c42e177d61c552e5baa9dc01d55c850e1b33f"
 RESTORE = "python -m pip install -r scripts/privacy_traffic/requirements.txt"
 SELF_TEST = "python scripts/privacy_traffic_harness.py self-test"
 INVENTORY = "python scripts/check_privacy_components.py"
@@ -134,11 +135,9 @@ class CanonicalPrivacyTests(unittest.TestCase):
 
     def test_accepted_money_inputs_flags_and_registry_survive_android_composition(self):
         current_registry = json.loads((support.GOVERNANCE / "conformance/check-names.json").read_bytes())
-        api_source = next(entry["workflow_ref"] for entry in current_registry["entries"]
-                          if entry["repo"] == "PenniLogic/api")
         for path in ("governance/api-money-sources.json", "governance/templates/materialize_money_sources.py"):
             with self.subTest(path=path):
-                source = api_source if path.endswith("materialize_money_sources.py") else ACCEPTED_BASE
+                source = API_WORKFLOW_SOURCE if path.endswith("materialize_money_sources.py") else ACCEPTED_BASE
                 accepted = subprocess.run(
                     ["git", "show", f"{source}:{path}"],
                     cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
@@ -174,20 +173,34 @@ class CanonicalPrivacyTests(unittest.TestCase):
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
         android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
-        for name in ("api", "infra"):
+        for name, source in (("api", API_WORKFLOW_SOURCE), ("infra", QUALIFICATION_SOURCE)):
             entry = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/" + name)
-            entry["workflow_ref"] = QUALIFICATION_SOURCE
+            entry["workflow_ref"] = source
             if name == "infra":
                 entry["pr_gate"]["workflow_ref"] = QUALIFICATION_SOURCE
         self.assertEqual(expected, current, "registry composition differs from the proven references")
-        for name, workflow in (("api", registry.CI_WORKFLOW), ("infra", registry.CI_WORKFLOW),
-                               ("infra", registry.PR_GATE_WORKFLOW)):
+        for name, workflow, source in (
+            ("api", registry.CI_WORKFLOW, API_WORKFLOW_SOURCE),
+            ("infra", registry.CI_WORKFLOW, QUALIFICATION_SOURCE),
+            ("infra", registry.PR_GATE_WORKFLOW, QUALIFICATION_SOURCE),
+        ):
             with self.subTest(repo=name, workflow=workflow):
                 rendered = registry.render_workflow_at(
-                    support.GOVERNANCE.parent, QUALIFICATION_SOURCE, name, workflow_file=workflow,
+                    support.GOVERNANCE.parent, source, name, workflow_file=workflow,
                 )
-                self.assertIsNotNone(rendered, "the qualification source must exist in complete Git history")
+                self.assertIsNotNone(rendered, "the pinned workflow source must exist in complete Git history")
                 self.assertEqual(support.generator.artifacts(name)[workflow].encode("utf-8"), rendered)
+
+    def test_stale_api_qualification_source_cannot_bind_the_current_workflow(self):
+        previous = registry.render_workflow_at(support.GOVERNANCE.parent, QUALIFICATION_SOURCE, "api")
+        current = registry.render_workflow_at(support.GOVERNANCE.parent, API_WORKFLOW_SOURCE, "api")
+        self.assertIsNotNone(previous, "the stale API source must exist for this regression")
+        self.assertIsNotNone(current, "the current API source must be a real Git commit")
+        self.assertEqual(support.generator.workflow("api").encode("utf-8"), current)
+        self.assertNotEqual(previous, current)
+        prepare = "python -I -S -B scripts\\money_client_interop.py prepare"
+        self.assertNotIn(prepare, json.loads(previous)["jobs"]["windows"]["steps"][-1]["run"])
+        self.assertIn(prepare, json.loads(current)["jobs"]["windows"]["steps"][-1]["run"])
 
     def test_registry_composition_rejects_other_refs_and_unrelated_field_changes(self):
         path = support.GOVERNANCE / "conformance" / "check-names.json"
@@ -195,8 +208,12 @@ class CanonicalPrivacyTests(unittest.TestCase):
         previous_source = "26fa29ffbaf9e2dd5ca9969c34ec5e664e884f45"
         for name, field, value in (
             ("api", "workflow_ref", previous_source),
+            ("api", "workflow_ref", QUALIFICATION_SOURCE),
             ("infra", "workflow_ref", previous_source),
+            ("infra", "workflow_ref", API_WORKFLOW_SOURCE),
             ("infra", "pr_gate", previous_source),
+            ("infra", "pr_gate", API_WORKFLOW_SOURCE),
+            ("android", "workflow_ref", API_WORKFLOW_SOURCE),
             ("docs", "workflow_ref", QUALIFICATION_SOURCE),
             ("infra", "language", "kotlin"),
         ):
@@ -207,7 +224,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
             else:
                 entry[field] = value
 
-            with self.subTest(repo=name, field=field):
+            with self.subTest(repo=name, field=field, value=value):
                 with self.assertRaisesRegex(AssertionError, "registry composition differs"):
                     self.assert_registry_composition(changed)
 

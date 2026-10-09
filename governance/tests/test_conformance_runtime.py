@@ -470,6 +470,8 @@ class RuntimeIsolationTests(unittest.TestCase):
     def test_raw_ephemeral_token_is_redacted_from_output_reports_and_the_public_summary(self):
         with tempfile.TemporaryDirectory() as scratch:
             output = Path(scratch) / "published"
+            summary = Path(scratch) / "job-summary.md"
+            environment = {**hostile_environment(), "GITHUB_STEP_SUMMARY": str(summary)}
             client = support.FakeClient({})
             contaminated = {
                 "repository": "PenniLogic/infra", "profile": "infra", "repository_id": 1394135059,
@@ -477,7 +479,7 @@ class RuntimeIsolationTests(unittest.TestCase):
                 "planted_defects": [], "language_coverage": {},
             }
             stdout, stderr = io.StringIO(), io.StringIO()
-            with mock.patch.object(defects.os, "environ", hostile_environment()), \
+            with mock.patch.object(defects.os, "environ", environment), \
                     mock.patch.object(run.github_api, "choose_client", return_value=client), \
                     mock.patch.object(run, "inspect_repository", return_value=contaminated), \
                     contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -486,9 +488,10 @@ class RuntimeIsolationTests(unittest.TestCase):
             self.assertEqual(1, code)
             for text in (stdout.getvalue(), stderr.getvalue(),
                          (output / "conformance-report.json").read_text(),
-                         (output / "conformance-summary.md").read_text()):
+                         (output / "conformance-summary.md").read_text(), summary.read_text()):
                 self.assertNotIn(SYNTHETIC_TOKEN, text)
             self.assertIn("[redacted]", stdout.getvalue())
+            self.assertIn("[redacted]", summary.read_text())
 
     def test_failed_credential_redaction_is_not_published_or_echoed(self):
         with tempfile.TemporaryDirectory() as scratch:

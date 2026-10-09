@@ -60,8 +60,8 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
 
     def test_api_caller_checker_and_qualifier_match_their_exact_source_bindings(self):
         frozen = {
-            ".github/workflows/ci.yml": "b402c17a8f475e69dae2e317a27d1df3530925d40592c1727a1948f1c6b47f29",
-            "scripts/check_repository.py": "f8ef2c500e6c6991ae797b26f845b6d1f5093c97a2920d3c5b66c64b681ae049",
+            ".github/workflows/ci.yml": "f6738c070157b5fdb59b84bfe854b22a6371e8be711bf308667ecf555f1bc3da",
+            "scripts/check_repository.py": "5654613c86d17b070c06c7492dbf187302e7c6b3fb6bf02d38286726415a4cbf",
             "scripts/qualify_windows.py": "60fc0b4a28d598317c4324b22bfc89280bdc04aa1ccc7393f0932508ba3abb1f",
         }
         for path, digest in frozen.items():

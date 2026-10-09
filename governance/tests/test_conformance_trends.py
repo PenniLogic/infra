@@ -365,9 +365,11 @@ class PublicationTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         environment = {name: value for name, value in os.environ.items()
                        if not name.startswith(("GH_", "GITHUB_", "ACTIONS_"))}
-        environment.update(environ or {})
+        summary_path = root / "job-summary.md"
         if hosted:
             environment["GITHUB_ACTIONS"] = "true"
+            environment["GITHUB_STEP_SUMMARY"] = str(summary_path)
+        environment.update(environ or {})
         client = support.FakeClient({})
         with mock.patch.dict(os.environ, environment, clear=True), \
                 mock.patch.object(run.github_api, "choose_client", return_value=client), \
@@ -381,6 +383,7 @@ class PublicationTests(unittest.TestCase):
                              "--github-client", "gh" if hosted else "anonymous",
                              "--generated-at", "2026-10-09T00:00:00Z"])
         self.assertEqual(0, client.requests, "publication fixtures must never acquire GitHub metadata")
+        self.job_summary = summary_path.read_text(encoding="utf-8") if summary_path.exists() else None
         if not expect_written:
             self.assertEqual([], list(output.iterdir()))
             return code, stdout.getvalue(), stderr.getvalue(), None, None
@@ -399,7 +402,7 @@ class PublicationTests(unittest.TestCase):
         self.assertNotIn("::warning::", stdout)
         self.assertNotIn("::error::", stderr)
 
-    def test_actions_annotations_escape_commands_and_are_emitted_only_after_redaction(self):
+    def test_actions_summary_is_redacted_and_annotation_cannot_inject_commands(self):
         token = "synthetic-opaque-trend-token"
         record = history_record([240, 240, 240, 480])
         record["registry"]["workflow_ref_renders_current_workflow"] = "unverifiable"
@@ -407,13 +410,15 @@ class PublicationTests(unittest.TestCase):
         record["main_run_history"]["runs"][1]["path"] = str(Path.home() / "synthetic-workflow")
         code, stdout, stderr, raw, markdown = self.invoke(record, hosted=True, environ={"GH_TOKEN": token})
         self.assertEqual(0, code)
-        for output in (stdout, stderr, raw, markdown):
+        for output in (stdout, stderr, raw, markdown, self.job_summary):
             self.assertNotIn(token, output)
             self.assertNotIn(str(Path.home()), output)
         annotations = [line for line in stdout.splitlines() if line.startswith("::warning::")]
-        self.assertEqual(len(json.loads(raw)["repositories"][0]["warnings"]), len(annotations))
-        self.assertIn("100%25%0D%0A::error::[redacted]", annotations[0])
-        self.assertTrue(any("CI duration approaching budget" in line for line in annotations))
+        self.assertEqual(1, len(annotations))
+        self.assertIn(f"{len(json.loads(raw)['repositories'][0]['warnings'])} warning(s)", annotations[0])
+        self.assertIn("100%\n::error::[redacted]", self.job_summary)
+        self.assertIn("CI duration approaching budget", self.job_summary)
+        self.assertEqual(markdown, self.job_summary)
         self.assertFalse(any(line.startswith("::error::") for line in stdout.splitlines()))
 
     def test_cli_failure_exit_is_not_replaced_by_a_trend_warning(self):
@@ -422,7 +427,96 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertEqual("fail", json.loads(raw)["result"])
         self.assertIn("  FAIL PenniLogic/example: last main CI run took 601 s", stdout)
-        self.assertIn("::warning::PenniLogic/example: CI duration regression", stdout)
+        self.assertIn("::warning::Conformance reported", stdout)
+        self.assertIn("CI duration regression", self.job_summary)
+
+    def test_actions_preserve_all_thirteen_warnings_beyond_the_native_annotation_limit(self):
+        record = history_record([625] * 9 + [642])
+        record["profile_timeout_minutes"] = 30
+        record["generated_baseline"]["stale_files"] = ["synthetic-stale-file"]
+        record["registry"]["workflow_ref_renders_current_workflow"] = "unverifiable"
+        record["registry"]["note"] = "synthetic missing history"
+        record["language_coverage"] = {"kotlin": "not_exercised"}
+        code, stdout, _, raw, markdown = self.invoke(record, hosted=True)
+        self.assertEqual(0, code)
+        warnings = json.loads(raw)["repositories"][0]["warnings"]
+        self.assertEqual(13, len(warnings))
+        self.assertEqual(markdown, self.job_summary)
+        for warning in warnings:
+            self.assertIn(warning, self.job_summary)
+        annotations = [line for line in stdout.splitlines() if line.startswith("::warning::")]
+        self.assertEqual(1, len(annotations))
+        self.assertIn("13 warning(s)", annotations[0])
+        self.assertIn("job summary", annotations[0])
+
+    def test_actions_long_warning_is_not_truncated_to_the_annotation_message_limit(self):
+        record = history_record([240, 240, 240, 480])
+        record["registry"]["workflow_ref_renders_current_workflow"] = "unverifiable"
+        record["registry"]["note"] = "long-warning-" * 400 + "retained-ending"
+        code, stdout, _, raw, markdown = self.invoke(record, hosted=True)
+        self.assertEqual(0, code)
+        self.assertEqual(markdown, self.job_summary)
+        self.assertIn(record["registry"]["note"], self.job_summary)
+        self.assertIn(record["registry"]["note"], raw)
+        annotations = [line for line in stdout.splitlines() if line.startswith("::warning::")]
+        self.assertEqual(1, len(annotations))
+        self.assertLess(len(annotations[0]), 4096)
+
+    def test_missing_actions_summary_channel_is_an_explicit_publication_error(self):
+        code, stdout, stderr, raw, markdown = self.invoke(
+            history_record([240, 240, 240, 480]), hosted=True, environ={"GITHUB_STEP_SUMMARY": ""},
+        )
+        self.assertEqual(2, code)
+        self.assertIn("GITHUB_STEP_SUMMARY", stderr)
+        self.assertNotIn("::warning::", stdout)
+        self.assertIsNone(self.job_summary)
+        self.assertIn("CI duration regression", raw)
+        self.assertIn("CI duration regression", markdown)
+
+    def test_actions_summary_write_failure_retains_artifacts_and_fails_publication(self):
+        real_open = Path.open
+
+        def refuse_summary(path, *args, **kwargs):
+            if path.name == "job-summary.md":
+                raise PermissionError("synthetic private location must not be printed")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", refuse_summary):
+            code, stdout, stderr, raw, markdown = self.invoke(history_record([240, 240, 240, 480]), hosted=True)
+        self.assertEqual(2, code)
+        self.assertIn("PermissionError", stderr)
+        self.assertNotIn("synthetic private location", stderr)
+        self.assertNotIn("::warning::", stdout)
+        self.assertIsNone(self.job_summary)
+        self.assertIn("CI duration regression", raw)
+        self.assertIn("CI duration regression", markdown)
+
+    def test_actions_summary_appends_and_enforces_the_exact_utf8_platform_limit(self):
+        with tempfile.TemporaryDirectory(prefix="conformance-summary-limit-") as temporary:
+            target = Path(temporary) / "summary.md"
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(target)}):
+                target.write_bytes(b"existing summary")
+                self.assertTrue(run.publish_actions_summary("# Conformance\n"))
+                self.assertEqual(b"existing summary\n# Conformance\n", target.read_bytes())
+                target.write_bytes(b"x" * (1024 * 1024 - 2))
+                before = target.read_bytes()
+                with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    self.assertFalse(run.publish_actions_summary("\u00e9"))
+                self.assertIn("1 MiB limit", stderr.getvalue())
+                self.assertEqual(before, target.read_bytes(), "overflow must not truncate prior content")
+                self.assertTrue(run.publish_actions_summary("y"))
+                self.assertEqual(1024 * 1024, target.stat().st_size)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertFalse(run.publish_actions_summary("z"))
+                self.assertEqual(1024 * 1024, target.stat().st_size)
+
+    def test_actions_stable_history_publishes_a_summary_without_a_warning_annotation(self):
+        code, stdout, _, raw, markdown = self.invoke(history_record([240] * 4), hosted=True)
+        self.assertEqual(0, code)
+        self.assertEqual([], json.loads(raw)["repositories"][0]["warnings"])
+        self.assertEqual(markdown, self.job_summary)
+        self.assertIn("## CI wall-clock trends", self.job_summary)
+        self.assertNotIn("::warning::", stdout)
 
     def test_failed_redaction_scan_emits_no_report_or_warning_annotation(self):
         with mock.patch.object(run.report_module, "redaction_survivors", return_value=["credential"]):

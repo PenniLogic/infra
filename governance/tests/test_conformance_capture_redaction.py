@@ -91,6 +91,31 @@ class CaptureRedactionTests(unittest.TestCase):
         self.assertNotIn(OPAQUE, report.to_json({"probe": record}))
         self.assertNotIn(OPAQUE[1:], report.to_json({"probe": record}))
 
+    def test_printed_heading_is_redacted_but_never_supplies_unittest_attribution(self):
+        heading = ("FAIL: test_planted_defect_must_fail "
+                   "(test_planted_conformance_defect_0.PlantedConformanceDefect.test_planted_defect_must_fail)")
+        payload = (heading + "\n" + "x" * defects.OUTPUT_TAIL).encode("utf-8")
+        captured = defects._captured_output(
+            payload, lambda text: report.redact_text(text, self.replacements, ("PlantedConformanceDefect",)),
+        )
+        self.assertEqual("", captured["failure_evidence"], "printed output is not a TestResult witness")
+        self.assertNotIn("PlantedConformanceDefect", json.dumps(captured))
+        self.assertEqual(defects.OUTPUT_TAIL, len(captured["output"]))
+
+    def test_real_timeout_cannot_promote_a_printed_heading_to_proof(self):
+        heading = ("FAIL: test_planted_defect_must_fail "
+                   "(test_planted_conformance_defect_0.PlantedConformanceDefect.test_planted_defect_must_fail)")
+        command = [sys.executable, "-c",
+                   f"import sys,time; print({heading!r}, flush=True); "
+                   f"print('x' * {defects.OUTPUT_TAIL}, flush=True); time.sleep(6)"]
+        result = defects.subprocess_runner(command, self.root, timeout=2)
+        self.assertTrue(result.timed_out)
+        self.assertTrue(result.restoration_safe)
+        self.assertEqual("", result.failure_evidence)
+        self.assertNotIn(heading, result.output)
+        probe = defects.Probe("synthetic timed-out capture", command, expect_text=heading, expect_exit_code=1)
+        self.assertEqual("error", defects.probe_outcome(probe, result))
+
     def controller_sink(self, token_kind, padding_kind, timed_out, split):
         marker = OPAQUE if token_kind == "opaque" else "ghp_" + "Z" * 36
         scratch = self.root / ("scratch-" + "s" * 96)

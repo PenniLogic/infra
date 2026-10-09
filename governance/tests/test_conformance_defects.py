@@ -4,12 +4,14 @@ commands refuse the planted defects, the tree is restored byte for byte, a stubb
 pass (a runner that always exits 0 is reported not_proved), an unrestored tree fails, excluded
 toolchains are recorded as not exercised, and probe processes never inherit credential variables."""
 
+import dataclasses
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -267,14 +269,22 @@ class FakeRunnerTests(support.ConsumerCase):
         self.assertTrue(records[0].get("unrestored_paths"))
 
     def test_a_restore_that_raises_is_an_error_not_a_crash(self):
-        with mock.patch.object(defects.Planter, "restore", side_effect=PermissionError("locked")):
-            record = defects.run_fixture(fixture("python-test-failing"), context_for(self),
-                                         runner=lambda command, cwd: defects.Result(1, "test_planted_defect_must_fail"))
-        self.assertEqual("error", record["outcome"])
-        self.assertIn("restore failed: PermissionError", record["reason"])
-        # The planted file is still there because the (patched) restore never ran; clean it for the case teardown.
-        self.assertTrue(record.get("unrestored_paths"))
-        (self.root / "scripts/tests/test_planted_conformance_defect.py").unlink()
+        owned = {}
+        item = fixture("python-test-failing")
+
+        def plant(context, planter):
+            owned["planter"] = planter
+            item.plant(context, planter)
+
+        try:
+            with mock.patch.object(defects.Planter, "restore", side_effect=PermissionError("locked")):
+                record = defects.run_fixture(dataclasses.replace(item, plant=plant), context_for(self),
+                                             runner=lambda command, cwd: defects.Result(1, "test_planted_defect_must_fail"))
+            self.assertEqual("error", record["outcome"])
+            self.assertIn("restore failed: PermissionError", record["reason"])
+            self.assertTrue(record.get("unrestored_paths"))
+        finally:
+            owned["planter"].restore()
 
     def test_backup_cleanup_failure_is_an_error_even_when_the_consumer_tree_is_restored(self):
         before = support.tree_digest(self.root)
@@ -409,6 +419,557 @@ class FakeRunnerTests(support.ConsumerCase):
         self.assertEqual("error", record["outcome"])
         self.assertEqual("prepare command failed", record["reason"])
         self.assertEqual("unexpected", record["probes"][0]["outcome"])
+
+
+class UnittestWitnessTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="conformance-unittest-witness-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.case_id = "test_planted_conformance_defect_0.PlantedConformanceDefect.test_planted_defect_must_fail"
+
+    def witness(self, case_id=None):
+        return defects._UnittestWitness(self.root, case_id or self.case_id)
+
+    def write_record(self, witness, **overrides):
+        document = {"nonce": witness.nonce, "test": witness.case_id, "failed": True}
+        document.update(overrides)
+        data = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("ascii")
+        witness.path.write_bytes(data)
+        return data
+
+    def assert_refused(self, witness):
+        result = witness.consume(defects.Result(1, witness.heading, failure_evidence=witness.heading), self.root)
+        self.assertIn("unittest witness refused:", result.error)
+        self.assertEqual("", result.failure_evidence)
+        self.assertEqual(1, result.exit_code)
+        return result
+
+    def test_exact_true_and_false_records_are_single_use(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                witness = self.witness()
+                witness.arm()
+                self.write_record(witness, failed=failed)
+                result = witness.consume(defects.Result(1, ""), self.root)
+                self.assertIsNone(result.error)
+                self.assertEqual(witness.heading if failed else "", result.failure_evidence)
+                self.assertLessEqual(len(result.failure_evidence), defects.RECORDED_TAIL)
+                self.assert_refused(witness)
+
+    def test_absent_malformed_duplicate_and_mismatched_records_are_refused(self):
+        for kind in ("empty", "missing", "malformed", "duplicate", "nonce", "case", "integer", "extra", "oversize"):
+            with self.subTest(kind=kind):
+                witness = self.witness()
+                witness.arm()
+                data = self.write_record(witness)
+                if kind == "missing":
+                    witness.path.unlink()
+                elif kind in ("nonce", "case", "integer", "extra"):
+                    changes = {"nonce": {"nonce": "0" * 32}, "case": {"test": self.case_id.replace("_0.", "_1.")},
+                               "integer": {"failed": 1}, "extra": {"unrelated": True}}
+                    self.write_record(witness, **changes[kind])
+                else:
+                    data = {"empty": b"", "malformed": b"{", "duplicate": data[:-1] + b',"failed":true}',
+                            "oversize": b"x" * (witness.limit + 1)}[kind]
+                    witness.path.write_bytes(data)
+                self.assert_refused(witness)
+
+    def test_replay_from_another_run_or_discovery_is_refused(self):
+        previous = self.witness()
+        previous.arm()
+        data = self.write_record(previous)
+        for case_id in (self.case_id, self.case_id.replace("_0.", "_1.")):
+            with self.subTest(case_id=case_id):
+                witness = self.witness(case_id)
+                self.assertNotEqual(previous.nonce, witness.nonce)
+                witness.arm()
+                witness.path.write_bytes(data)
+                self.assert_refused(witness)
+
+    def test_stale_unarmed_and_repeated_arming_are_refused(self):
+        witness = self.witness()
+        self.write_record(witness)
+        with self.assertRaisesRegex(ValueError, "stale"):
+            witness.arm()
+        self.assert_refused(witness)
+        witness = self.witness()
+        witness.arm()
+        with self.assertRaisesRegex(ValueError, "stale"):
+            witness.arm()
+
+    def test_replaced_and_hardlinked_witness_files_are_refused(self):
+        for kind in ("replaced", "hardlinked"):
+            with self.subTest(kind=kind):
+                witness = self.witness()
+                witness.arm()
+                data = self.write_record(witness)
+                if kind == "replaced":
+                    # Allocate before replacing so the original inode cannot be reused.
+                    replacement = self.root / "replacement.json"
+                    replacement.write_bytes(data)
+                    replacement.replace(witness.path)
+                    self.assertNotEqual(witness.file_id, witness._identity(witness.path.stat()))
+                else:
+                    os.link(witness.path, self.root / "alias.json")
+                self.assert_refused(witness)
+                self.assertEqual(data, witness.path.read_bytes(), "validation never repairs unsafe evidence")
+
+    def test_links_junctions_special_files_and_changed_directories_are_refused_before_read(self):
+        witness = self.witness()
+        witness.arm()
+        self.write_record(witness)
+        original_lstat = Path.lstat
+        for kind in ("symlink", "junction", "special", "directory"):
+            with self.subTest(kind=kind):
+                witness.consumed = False
+
+                def lstat(path, *args, **kwargs):
+                    info = original_lstat(path, *args, **kwargs)
+                    if path == (witness.directory if kind == "directory" else witness.path):
+                        values = {key: getattr(info, key) for key in
+                                  ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size")}
+                        values["st_file_attributes"] = getattr(info, "st_file_attributes", 0)
+                        if kind == "symlink":
+                            values["st_mode"] = defects.stat.S_IFLNK
+                        elif kind == "special":
+                            values["st_mode"] = defects.stat.S_IFIFO
+                        elif kind == "junction":
+                            values["st_file_attributes"] |= defects.stat.FILE_ATTRIBUTE_REPARSE_POINT
+                        else:
+                            values["st_ino"] += 1
+                        return SimpleNamespace(**values)
+                    return info
+
+                with mock.patch.object(Path, "lstat", lstat), \
+                        mock.patch.object(Path, "open", side_effect=AssertionError("unsafe path must not be read")):
+                    self.assert_refused(witness)
+
+    def test_wrong_exits_timeout_errors_and_unsafe_lifetimes_never_consume_evidence(self):
+        for original in (
+            defects.Result(0, ""), defects.Result(2, ""), defects.Result(5, ""),
+            defects.Result(None, ""), defects.Result(None, "", timed_out=True),
+            defects.Result(1, "", error="capture failed"), defects.Result(1, "", restoration_safe=False),
+        ):
+            with self.subTest(result=original):
+                witness = self.witness()
+                witness.arm()
+                self.write_record(witness)
+                original.failure_evidence = witness.heading
+                with mock.patch.object(witness, "_read", side_effect=AssertionError("must not consume")):
+                    result = witness.consume(original, self.root)
+                self.assertEqual("", result.failure_evidence)
+                self.assertEqual(original.exit_code, result.exit_code)
+                self.assertEqual(original.error, result.error)
+                self.assertEqual(original.restoration_safe, result.restoration_safe)
+
+    def test_read_errors_are_explicit_and_do_not_publish_private_error_text(self):
+        witness = self.witness()
+        witness.arm()
+        with mock.patch.object(witness, "_read", side_effect=PermissionError("private diagnostic")):
+            result = self.assert_refused(witness)
+        self.assertIn("PermissionError", result.error)
+        self.assertNotIn("private diagnostic", result.error)
+
+    def test_verified_heading_is_redacted_before_its_publication_bound(self):
+        witness = self.witness()
+        witness.arm()
+        self.write_record(witness)
+        with mock.patch.object(report, "credential_values", return_value=("PlantedConformanceDefect",)):
+            result = witness.consume(defects.Result(1, ""), self.root)
+        self.assertIsNone(result.error)
+        self.assertEqual("", result.failure_evidence)
+
+
+class RuntimeRepairTests(unittest.TestCase):
+    def consumer(self, name, extra_files=None):
+        temporary = tempfile.TemporaryDirectory(prefix="conformance-runtime-repair-")
+        self.addCleanup(temporary.cleanup)
+        root = support.make_consumer(Path(temporary.name) / name, name, extra_files)
+        context = defects.Context(name, support.generator.profile_for(name), root, support.GOVERNANCE.parent)
+        return root, context
+
+    def test_each_unittest_start_directory_survives_cross_suite_import_paths(self):
+        root, context = self.consumer("infra", {
+            "governance/tests/test_cross_suite_import.py":
+                "from pathlib import Path\nimport sys\n"
+                "sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts' / 'tests'))\n",
+        })
+        before = support.tree_digest(root)
+        record = defects.run_fixture(fixture("python-test-failing"), context)
+        self.assertEqual("proved", record["outcome"], record)
+        self.assertEqual(defects.unittest_commands(context.profile),
+                         [probe["command"] for probe in record["probes"]])
+        self.assertEqual(2, len(record["probes"]))
+        for probe in record["probes"]:
+            self.assertEqual(1, probe["exit_code"], probe)
+            self.assertNotIn("incorrectly imported", probe["output_tail"])
+            self.assertIn("test_planted_defect_must_fail", probe["failure_evidence"])
+        self.assertEqual(before, support.tree_digest(root))
+        self.assertEqual([], defects.git_status(root))
+
+    def test_planted_failure_evidence_survives_later_unrelated_failure_output(self):
+        root, context = self.consumer(".github", {
+            "scripts/tests/test_zz_later_failure.py":
+                "import unittest\n\nclass LaterFailure(unittest.TestCase):\n"
+                "    def test_later_failure(self):\n"
+                "        self.fail('unrelated later failure ' * 400)\n",
+        })
+        before = support.tree_digest(root)
+        record = defects.run_fixture(fixture("python-test-failing"), context)
+        self.assertEqual("proved", record["outcome"], record)
+        probe = record["probes"][0]
+        self.assertEqual(1, probe["exit_code"])
+        self.assertIn("FAILED (failures=2)", probe["output_tail"])
+        self.assertNotIn("test_planted_defect_must_fail", probe["output_tail"])
+        self.assertRegex(probe["failure_evidence"], r"^FAIL: test_planted_defect_must_fail \(")
+        self.assertLessEqual(len(probe["output_tail"]), defects.RECORDED_TAIL)
+        self.assertLessEqual(len(probe["failure_evidence"]), defects.RECORDED_TAIL)
+        self.assertEqual(before, support.tree_digest(root))
+
+    def test_a_passing_plant_cannot_borrow_an_unrelated_failure(self):
+        root, context = self.consumer(".github", {
+            "scripts/tests/test_zz_later_failure.py":
+                "import unittest\n\nclass LaterFailure(unittest.TestCase):\n"
+                "    def test_later_failure(self):\n"
+                "        self.fail('unrelated failure mentions test_planted_defect_must_fail')\n",
+        })
+        passing = defects.PLANTED_PYTHON_TEST.replace('self.fail("planted defect")', "self.assertTrue(True)")
+        with mock.patch.object(defects, "PLANTED_PYTHON_TEST", passing):
+            record = defects.run_fixture(fixture("python-test-failing"), context)
+        self.assertEqual("not_proved", record["outcome"], record)
+        self.assertEqual(1, record["probes"][0]["exit_code"])
+        self.assertNotIn("failure_evidence", record["probes"][0])
+        self.assertEqual([], defects.git_status(root))
+
+    def test_only_a_recorded_failure_of_the_exact_case_supplies_a_witness(self):
+        template = defects.PLANTED_PYTHON_TEST
+        variants = {
+            "caught assertion": template.replace('self.fail("planted defect")',
+                                                 'with self.assertRaises(AssertionError): self.fail("planted defect")'),
+            "skip": template.replace('self.fail("planted defect")', 'self.skipTest("synthetic skip")'),
+            "error": template.replace('self.fail("planted defect")', 'raise RuntimeError("synthetic error")'),
+            "expected failure": template.replace("    def test_planted_defect_must_fail",
+                                                 "    @unittest.expectedFailure\n    def test_planted_defect_must_fail"),
+        }
+        variants["unexpected success"] = variants["expected failure"].replace(
+            'self.fail("planted defect")', "self.assertTrue(True)",
+        )
+        for label, source in variants.items():
+            with self.subTest(outcome=label):
+                root, context = self.consumer(".github", {
+                    "scripts/tests/test_zz_unrelated.py":
+                        "import unittest\n\nclass Unrelated(unittest.TestCase):\n"
+                        "    def test_unrelated(self): self.fail('unrelated failure')\n",
+                })
+                before = support.tree_digest(root)
+                with mock.patch.object(defects, "PLANTED_PYTHON_TEST", source):
+                    record = defects.run_fixture(fixture("python-test-failing"), context)
+                self.assertEqual("not_proved", record["outcome"], record)
+                self.assertEqual(1, record["probes"][0]["exit_code"])
+                self.assertNotIn("failure_evidence", record["probes"][0])
+                self.assertEqual(before, support.tree_digest(root))
+                self.assertEqual([], defects.git_status(root))
+
+    def test_an_unexecuted_plant_cannot_borrow_a_complete_printed_report(self):
+        context = defects.Context(".github", support.generator.profile_for(".github"), None, None)
+        heading = fixture("python-test-failing").probes(context)[0].expect_text
+        message = ".F\n" + "=" * 70 + "\n" + heading + "\n" + "-" * 70 + "\nFAILED (failures=1)"
+        root, context = self.consumer(".github", {
+            "scripts/tests/test_zz_unrelated.py":
+                f"import unittest\nMESSAGE = {message!r}\n\nclass Unrelated(unittest.TestCase):\n"
+                "    def test_unrelated(self): self.fail(MESSAGE)\n",
+        })
+        before = support.tree_digest(root)
+        source = defects.PLANTED_PYTHON_TEST + "\ndef load_tests(loader, tests, pattern):\n    return unittest.TestSuite()\n"
+        with mock.patch.object(defects, "PLANTED_PYTHON_TEST", source):
+            record = defects.run_fixture(fixture("python-test-failing"), context)
+        self.assertEqual("error", record["outcome"], record)
+        self.assertIn("unittest witness refused", record["reason"])
+        self.assertNotIn("failure_evidence", record["probes"][0])
+        self.assertEqual(before, support.tree_digest(root))
+
+    def test_the_child_refuses_to_write_a_witness_that_has_gained_another_link(self):
+        root, context = self.consumer(".github")
+        before = support.tree_digest(root)
+        alias = root.parent / "witness-alias.json"
+        arm = defects._UnittestWitness.arm
+
+        def linked(witness):
+            arm(witness)
+            os.link(witness.path, alias)
+
+        with mock.patch.object(defects._UnittestWitness, "arm", linked):
+            record = defects.run_fixture(fixture("python-test-failing"), context)
+        self.assertEqual("error", record["outcome"], record)
+        self.assertEqual(1, record["probes"][0]["exit_code"])
+        self.assertIn("unittest witness ownership changed", record["probes"][0]["output_tail"])
+        self.assertEqual(b"", alias.read_bytes(), "the child must not write through an unsafe witness")
+        self.assertNotIn("failure_evidence", record["probes"][0])
+        self.assertEqual(before, support.tree_digest(root))
+
+    def test_timeout_unsafe_lifetime_and_cleanup_failure_cannot_prove_a_fixture(self):
+        original_planter = defects.Planter
+        original_rmtree = shutil.rmtree
+        for boundary in ("timeout", "unsafe", "cleanup"):
+            with self.subTest(boundary=boundary):
+                extras = ({
+                    "scripts/tests/test_zz_slow.py":
+                        "import time\nimport unittest\n\nclass Slow(unittest.TestCase):\n"
+                        "    def test_slow(self): time.sleep(6)\n",
+                } if boundary == "timeout" else {})
+                root, context = self.consumer(".github", extras)
+                before = support.tree_digest(root)
+                owned = []
+
+                def planter(root):
+                    value = original_planter(root)
+                    owned.append(value)
+                    return value
+
+                def runner(command, cwd):
+                    result = defects.subprocess_runner(command, cwd, timeout=2 if boundary == "timeout" else 20)
+                    witness, = owned[0]._unittest_witnesses.values()
+                    self.assertEqual(True, witness.responses[witness.path.read_bytes()])
+                    if boundary == "unsafe":
+                        return dataclasses.replace(result, restoration_safe=False, error="synthetic unconfirmed lifetime")
+                    return result
+
+                def cleanup(path, *args, **kwargs):
+                    if boundary == "cleanup" and owned and str(path) == owned[0]._aside:
+                        raise PermissionError("synthetic witness cleanup refusal")
+                    return original_rmtree(path, *args, **kwargs)
+
+                try:
+                    with mock.patch.object(defects, "Planter", side_effect=planter), \
+                            mock.patch.object(defects.shutil, "rmtree", cleanup):
+                        record = defects.run_fixture(fixture("python-test-failing"), context, runner=runner)
+                    self.assertEqual("error", record["outcome"], record)
+                    if boundary == "cleanup":
+                        self.assertIn("backup cleanup failed: PermissionError", record["reason"])
+                        self.assertEqual("PermissionError", record["cleanup"]["error"])
+                    else:
+                        self.assertNotIn("failure_evidence", record["probes"][0])
+                    if boundary == "unsafe":
+                        self.assertTrue(record["restoration_deferred"])
+                        self.assertTrue(Path(owned[0]._aside).is_dir())
+                        self.assertNotEqual(before, support.tree_digest(root))
+                    elif boundary == "timeout":
+                        self.assertTrue(record["probes"][0]["timed_out"])
+                        self.assertIsNone(owned[0]._aside)
+                finally:
+                    for value in owned:
+                        value.restore()
+                self.assertEqual(before, support.tree_digest(root))
+                self.assertEqual([], defects.git_status(root))
+
+    def test_a_passing_plant_cannot_borrow_quoted_failure_headings(self):
+        context = defects.Context(".github", support.generator.profile_for(".github"), None, None)
+        heading = fixture("python-test-failing").probes(context)[0].expect_text
+        messages = (
+            heading,
+            repr(heading),
+            heading + " (unrelated diagnostic)",
+            "Quoted failure:\n" + heading + "\nEnd of quote",
+            "Quoted failure:\n" + heading + " (unrelated diagnostic)\nEnd of quote",
+            "Captured earlier unittest diagnostic:\n" + "=" * 70 + "\n" + heading
+            + "\n" + "-" * 70 + "\nEnd of captured diagnostic",
+            "Saved report:\n.F\n" + "=" * 70 + "\n" + heading + "\n" + "-" * 70
+            + "\nTraceback (most recent call last):\nAssertionError: planted defect\n\n"
+            + "-" * 70 + "\nRan 2 tests in 0.001s\n\nFAILED (failures=1)\n",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                root, context = self.consumer(".github", {
+                    "scripts/tests/test_zz_unrelated.py":
+                        f"import unittest\n\nMESSAGE = {message!r}\n\nclass Unrelated(unittest.TestCase):\n"
+                        "    def test_unrelated(self):\n"
+                        "        self.fail(MESSAGE)\n",
+                })
+                before = support.tree_digest(root)
+                results = []
+
+                def runner(command, cwd):
+                    result = defects.subprocess_runner(command, cwd)
+                    results.append(result)
+                    return result
+
+                passing = defects.PLANTED_PYTHON_TEST.replace('self.fail("planted defect")', "self.assertTrue(True)")
+                with mock.patch.object(defects, "PLANTED_PYTHON_TEST", passing):
+                    record = defects.run_fixture(fixture("python-test-failing"), context, runner=runner)
+                result, = results
+                self.assertLess(len(result.output), defects.OUTPUT_TAIL, "inspect the complete tiny diagnostic")
+                self.assertIn("FAIL: test_unrelated (test_zz_unrelated.Unrelated.test_unrelated)", result.output)
+                self.assertIn("FAILED (failures=1)", result.output)
+                self.assertEqual("", result.failure_evidence)
+                self.assertEqual("not_proved", record["outcome"], record)
+                self.assertEqual(1, result.exit_code)
+                self.assertFalse(result.timed_out)
+                self.assertIsNone(result.error)
+                self.assertTrue(result.restoration_safe)
+                self.assertEqual(before, support.tree_digest(root))
+                self.assertEqual([], defects.git_status(root))
+
+    def test_capture_never_attributes_any_printed_section_or_report(self):
+        context = defects.Context("infra", support.generator.profile_for("infra"), None, None)
+        first, second = fixture("python-test-failing").probes(context)
+        traceback = ("Traceback (most recent call last):\n"
+                     "AssertionError: quoted failure\n" + first.expect_text + "\n")
+        actual = "=" * 70 + "\n" + second.expect_text + "\n" + "-" * 70 + "\n"
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=repr(newline)):
+                output = (traceback + actual + traceback + "x" * defects.OUTPUT_TAIL).replace("\n", newline)
+                captured = defects._captured_output(output.encode("utf-8"), lambda text: text)
+                self.assertEqual("", captured["failure_evidence"])
+                self.assertEqual("x" * defects.OUTPUT_TAIL, captured["output"])
+                result = defects.Result(1, **captured)
+                self.assertEqual("unexpected", defects.probe_outcome(first, result))
+                self.assertEqual("unexpected", defects.probe_outcome(second, result))
+
+    def test_capture_never_attributes_complete_or_decorated_headings(self):
+        context = defects.Context(".github", support.generator.profile_for(".github"), None, None)
+        heading = fixture("python-test-failing").probes(context)[0].expect_text
+        for altered in (heading, "AssertionError: " + heading, repr(heading), " " + heading,
+                        heading + " suffix", heading + " ", heading[:-1]):
+            for newline in ("\n", "\r\n"):
+                with self.subTest(heading=altered, newline=repr(newline)):
+                    output = ("=" * 70 + "\n" + altered + "\n" + "-" * 70 + "\n").replace("\n", newline)
+                    captured = defects._captured_output(output.encode("utf-8"), lambda text: text)
+                    self.assertEqual("", captured["failure_evidence"])
+
+    def test_each_directory_requires_its_own_failure_and_the_unittest_failure_code(self):
+        _, context = self.consumer("infra")
+        first, second = fixture("python-test-failing").probes(context)
+        for result in (
+            defects.Result(1, "", failure_evidence=second.expect_text),
+            defects.Result(1, first.expect_text),
+            defects.Result(1, first.expect_text, failure_evidence=second.expect_text),
+            defects.Result(1, "", failure_evidence=first.expect_text + " suffix"),
+            defects.Result(1, "", failure_evidence="AssertionError: " + first.expect_text),
+            defects.Result(2, "", failure_evidence=first.expect_text),
+            defects.Result(5, "", failure_evidence=first.expect_text),
+            defects.Result(0, "", failure_evidence=first.expect_text),
+        ):
+            with self.subTest(result=result):
+                self.assertEqual("unexpected", defects.probe_outcome(first, result))
+        for result in (
+            defects.Result(None, "", timed_out=True, failure_evidence=first.expect_text),
+            defects.Result(1, "", error="unconfirmed capture", failure_evidence=first.expect_text),
+            defects.Result(1, "", restoration_safe=False, failure_evidence=first.expect_text),
+        ):
+            with self.subTest(result=result):
+                self.assertEqual("error", defects.probe_outcome(first, result))
+        self.assertEqual("as_expected", defects.probe_outcome(
+            first, defects.Result(1, "", failure_evidence=first.expect_text),
+        ))
+
+    def test_contracts_uses_declared_locked_preparation_before_planting_and_fails_closed(self):
+        for failure_at in (None, 0, 1):
+            with self.subTest(failure_at=failure_at):
+                root, context = self.consumer("contracts")
+                installs = context.profile["install"]
+                self.assertEqual(["npm ci --no-audit --no-fund", "python scripts/toolchain.py install"], installs)
+                before = support.tree_digest(root)
+                calls = []
+                probe = fixture("python-test-failing").probes(context)[0]
+
+                def runner(command, cwd):
+                    calls.append(command)
+                    planted = root / "scripts/tests/test_planted_conformance_defect_0.py"
+                    if command in installs:
+                        self.assertFalse(planted.exists())
+                        code = 1 if installs.index(command) == failure_at else 0
+                        return defects.Result(code, "synthetic dependency refusal" if code else "prepared")
+                    self.assertTrue(planted.exists())
+                    self.assertEqual(probe.command, command)
+                    return defects.subprocess_runner(command, cwd)
+
+                record = defects.run_fixture(fixture("python-test-failing"), context, runner=runner)
+                if failure_at is None:
+                    self.assertEqual(installs + [probe.command], calls)
+                    self.assertEqual("proved", record["outcome"], record)
+                else:
+                    self.assertEqual(installs[:failure_at + 1], calls)
+                    self.assertEqual("error", record["outcome"])
+                    self.assertEqual("prepare command failed", record["reason"])
+                    self.assertIn("synthetic dependency refusal", record["probes"][-1]["output_tail"])
+                self.assertEqual(before, support.tree_digest(root))
+                self.assertEqual([], defects.git_status(root))
+
+    def test_unittest_preparation_does_not_expand_other_profiles_or_excluded_toolchains(self):
+        for name in support.generator.PROFILES["repositories"]:
+            context = defects.Context(name, support.generator.profile_for(name), None, None)
+            if name != "contracts":
+                self.assertEqual([], fixture("python-test-failing").prepare(context), name)
+        root, context = self.consumer("contracts")
+        runner = mock.Mock(side_effect=AssertionError("excluded fixtures must not install or execute"))
+        record = defects.run_fixture(fixture("python-test-failing"), context, runner=runner, exercise=("node", "uv"))
+        self.assertEqual("not_exercised", record["outcome"])
+        runner.assert_not_called()
+        self.assertEqual([], defects.git_status(root))
+
+    def test_current_rendered_infra_checker_refuses_only_the_planted_ci_change(self):
+        root, context = self.consumer("infra")
+        before = support.tree_digest(root)
+        baseline = defects.subprocess_runner([sys.executable, "scripts/check_repository.py"], root)
+        self.assertEqual(0, baseline.exit_code, baseline.output)
+        record = defects.run_fixture(fixture("workflow-step-continue-on-error"), context)
+        self.assertEqual("proved", record["outcome"], record)
+        drift, checker = record["probes"]
+        self.assertIn(".github/workflows/ci.yml", drift["output_tail"])
+        self.assertIn("Infra CI must match its generated qualification jobs and required result",
+                      checker["output_tail"])
+        self.assertNotIn("unreviewed workflow expression", checker["output_tail"])
+        self.assertEqual(before, support.tree_digest(root))
+        self.assertEqual([], defects.git_status(root))
+
+    def test_rendered_checker_uses_the_existing_refusal_for_every_profile(self):
+        for name in support.generator.PROFILES["repositories"]:
+            if name == "infra":
+                continue
+            with self.subTest(profile=name):
+                root, context = self.consumer(name)
+                before = support.tree_digest(root)
+                baseline = defects.subprocess_runner([sys.executable, "scripts/check_repository.py"], root)
+                self.assertEqual(0, baseline.exit_code, baseline.output)
+                record = defects.run_fixture(fixture("workflow-step-continue-on-error"), context)
+                self.assertEqual("proved", record["outcome"], record)
+                probe = record["probes"][-1]
+                self.assertEqual(1, probe["exit_code"])
+                self.assertIn(probe["expect_text"], probe["output_tail"])
+                self.assertNotIn("unreviewed workflow expression", probe["output_tail"])
+                self.assertEqual(before, support.tree_digest(root))
+                self.assertEqual([], defects.git_status(root))
+
+    def test_stale_api_binding_refusal_cannot_be_claimed_as_planted_step_evidence(self):
+        document = json.loads(support.generator.workflow("api"))
+        step = document["jobs"]["windows"]["steps"][-1]
+        commands = step["run"].splitlines()[::2]
+        self.assertEqual("python -I -S -B scripts\\money_client_interop.py prepare", commands[-2])
+        step["run"] = support.generator.powershell_commands(commands[:-2] + commands[-1:])
+        root, context = self.consumer("api", {".github/workflows/ci.yml": support.generator.encoded(document)})
+        before = support.tree_digest(root)
+        baseline = defects.subprocess_runner([sys.executable, "scripts/check_repository.py"], root)
+        self.assertEqual(1, baseline.exit_code)
+        self.assertIn("API CI must match", baseline.output)
+        record = defects.run_fixture(fixture("workflow-step-continue-on-error"), context)
+        self.assertEqual("error", record["outcome"], record)
+        self.assertIn("unmodified workflow", record["reason"])
+        self.assertEqual([], record["probes"])
+        self.assertEqual(before, support.tree_digest(root))
+        self.assertEqual([], defects.git_status(root))
+
+    def test_existing_step_key_refusal_cannot_be_claimed_as_planted_step_evidence(self):
+        document = json.loads(support.generator.workflow(".github"))
+        defects.run_checks_step(document)["continue-on-error"] = False
+        root, context = self.consumer(".github", {".github/workflows/ci.yml": support.generator.encoded(document)})
+        before = support.tree_digest(root)
+        record = defects.run_fixture(fixture("workflow-step-continue-on-error"), context)
+        self.assertEqual("error", record["outcome"], record)
+        self.assertIn("unmodified workflow", record["reason"])
+        self.assertEqual([], record["probes"])
+        self.assertEqual(before, support.tree_digest(root))
+        self.assertEqual([], defects.git_status(root))
 
 
 class PlantShapeTests(support.ConsumerCase):

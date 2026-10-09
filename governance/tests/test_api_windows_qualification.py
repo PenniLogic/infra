@@ -18,6 +18,7 @@ from unittest import mock
 import xml.etree.ElementTree as ET
 
 import conformance_support as support
+from conformance import generator as generator_module
 import qualify as infra_qualification
 
 
@@ -27,6 +28,7 @@ SPEC = importlib.util.spec_from_file_location("windows_qualification", support.G
 qualification = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(qualification)
 MARKER = "PRIVATE-FIXTURE-PAYLOAD-DO-NOT-PRINT"
+INPUT_PREPARATION = "python -I -S -B scripts\\money_client_interop.py prepare"
 
 
 def api_checker():
@@ -48,9 +50,11 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         self.assertEqual(generator.tool_steps(generator.profile_for("api")), jobs["windows"]["steps"][:4])
         windows = jobs["windows"]["steps"][-1]["run"]
         preparation = generator.profile_for("api")["commands"][:7]
-        self.assertEqual([command.replace("/", "\\") for command in preparation] + ["python scripts\\qualify_windows.py"],
+        self.assertEqual([command.replace("/", "\\") for command in preparation]
+                         + [INPUT_PREPARATION, "python scripts\\qualify_windows.py"],
                          windows.splitlines()[::2])
-        self.assertEqual(["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"] * 8, windows.splitlines()[1::2])
+        self.assertEqual(["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"] * 9, windows.splitlines()[1::2])
+        self.assertNotIn("--node", windows)
         self.assertNotIn("--tests", windows)
         self.assertNotIn("integrationTest", windows)
         self.assertEqual("CI", jobs["ci-result"]["name"])
@@ -115,7 +119,59 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
 
     def test_windows_powershell_stops_at_each_failed_native_command(self):
         source = generator.api_windows_job(generator.profile_for("api"))["steps"][-1]["run"]
-        support.assert_powershell_failure_boundaries(self, source, 8)
+        support.assert_powershell_failure_boundaries(self, source, 9)
+
+    def test_input_preparation_omission_stub_reordering_and_missing_guard_are_refused(self):
+        validate = api_checker()
+        original = json.loads(generator.workflow("api"))
+        commands = original["jobs"]["windows"]["steps"][-1]["run"].splitlines()[::2]
+        self.assertEqual(INPUT_PREPARATION, commands[-2])
+        changed_commands = (
+            commands[:-2] + commands[-1:],
+            commands[:-2] + ["python -c \"pass\"", commands[-1]],
+            commands[:-2] + [commands[-1], commands[-2]],
+            [commands[-2]] + commands[:-2] + commands[-1:],
+            commands[:-2] + [INPUT_PREPARATION + " --node ignored", commands[-1]],
+        )
+        scripts = [generator.powershell_commands(changed) for changed in changed_commands]
+        scripts.append(original["jobs"]["windows"]["steps"][-1]["run"].replace(
+            INPUT_PREPARATION + "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", INPUT_PREPARATION,
+        ))
+        for script in scripts:
+            changed = copy.deepcopy(original)
+            changed["jobs"]["windows"]["steps"][-1]["run"] = script
+            with self.subTest(script=script), self.assertRaisesRegex(ValueError, "API CI must match"):
+                validate(CI, generator.encoded(changed).encode("utf-8"))
+
+    def test_input_preparation_preserves_accepted_other_workflows_profiles_and_qualifier(self):
+        accepted = "6b1e4baf403f25e6c4c695a5676e995f1ecb259e"
+        with tempfile.TemporaryDirectory(prefix="api-windows-accepted-") as temporary:
+            root = Path(temporary)
+            for name in ("generate.py", "repository-profiles.json"):
+                (root / name).write_text(
+                    support.git(support.GOVERNANCE.parent, "show", f"{accepted}:governance/{name}"),
+                    encoding="utf-8", newline="\n",
+                )
+            previous = generator_module.load(root / "generate.py", name="api_windows_accepted_generator")
+            self.assertEqual(previous.PROFILES, generator.PROFILES)
+            for name in generator.PROFILES["repositories"]:
+                for setup in (False, True):
+                    expected = previous.workflow(name, setup=setup)
+                    if name == "api" and not setup:
+                        document = json.loads(expected)
+                        step = document["jobs"]["windows"]["steps"][-1]
+                        qualifier = "python scripts\\qualify_windows.py"
+                        self.assertEqual(1, step["run"].count(qualifier))
+                        step["run"] = step["run"].replace(
+                            qualifier, generator.powershell_commands([INPUT_PREPARATION]) + "\n" + qualifier,
+                        )
+                        expected = previous.encoded(document)
+                    with self.subTest(repository=name, setup=setup):
+                        self.assertEqual(expected, generator.workflow(name, setup=setup))
+        self.assertEqual(
+            support.git(support.GOVERNANCE.parent, "show", f"{accepted}:governance/templates/qualify_windows.py"),
+            (support.GOVERNANCE / "templates/qualify_windows.py").read_text(encoding="utf-8"),
+        )
 
 
 class WindowsOutcomeTests(unittest.TestCase):
