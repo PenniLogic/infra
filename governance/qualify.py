@@ -22,9 +22,12 @@ UNITTEST_DISCOVERY = """import sys
 import unittest
 
 with open(sys.argv[1], "x", encoding="utf-8", newline="\\n") as report:
+    class ReportRunner(unittest.TextTestRunner):
+        def __init__(self, **kwargs):
+            super().__init__(stream=report, **kwargs)
+
     sys.argv = ["unittest", "discover", "-s", sys.argv[2], "-v"]
-    unittest.main(module=None,
-                  testRunner=unittest.TextTestRunner(stream=report, verbosity=2))
+    unittest.main(module=None, testRunner=ReportRunner)
 """
 WINDOWS_GOVERNANCE = frozenset(
     "test_conformance_processes.WindowsProcessTests." + name for name in (

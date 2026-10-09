@@ -353,7 +353,8 @@ class InfraDiscoveryTests(unittest.TestCase):
                 self.exercise("linux", "governance", exit_code=9)
             parser.assert_not_called()
 
-    def reporting_fixture(self, source, *, suite="governance", system=None, allowed=()):
+    def reporting_fixture(self, source, *, suite="governance", system=None, allowed=(),
+                          warning_policy=None, ordinary_expected=None):
         system = system or sys.platform
         module = "test_reporting_fixture"
         names = {f"{module}.Example.test_first", f"{module}.Example.test_second"}
@@ -363,7 +364,8 @@ class InfraDiscoveryTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text(source, encoding="utf-8")
             output = io.StringIO()
-            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.dict(sys.modules), \
+            environment = {} if warning_policy is None else {"PYTHONWARNINGS": warning_policy}
+            with mock.patch.dict(os.environ, environment, clear=True), mock.patch.dict(sys.modules), \
                     mock.patch.object(sys, "path", sys.path[:]), mock.patch.object(sys, "platform", system), \
                     mock.patch.object(qualification, "ROOT", root), \
                     mock.patch.object(sys, "argv", ["qualify.py", "--", "python", "-m", "unittest",
@@ -373,10 +375,56 @@ class InfraDiscoveryTests(unittest.TestCase):
                     mock.patch.object(qualification, "REQUIRED", {suite: names}), \
                     mock.patch.object(qualification, "SKIPS", {system: {suite: set(allowed)}}), \
                     contextlib.redirect_stdout(output):
+                if ordinary_expected is not None:
+                    ordinary = subprocess.run(
+                        [sys.executable, "-m", "unittest", "discover", "-s", str(path.parent), "-v"],
+                        cwd=root, capture_output=True, check=False, timeout=15,
+                    )
+                    self.assertEqual(ordinary_expected, (ordinary.returncode, ordinary.stderr.splitlines()[-1]))
                 code = qualification.main()
             self.assertNotIn(MARKER, output.getvalue())
             self.assertNotIn(str(root), output.getvalue())
             return code, [json.loads(line) for line in output.getvalue().splitlines()]
+
+    def test_real_warning_policies_match_ordinary_unittest_discovery(self):
+        cases = []
+        for policy, observed in ((None, 1), ("default", 1), ("ignore", 0)):
+            for expected in (0, 1):
+                body = ("with warnings.catch_warnings(record=True) as caught:\n"
+                        f"            warnings.warn('{MARKER}', ResourceWarning)\n"
+                        f"        self.assertEqual({expected}, len(caught))")
+                cases.append((policy, body, None if observed == expected else "failures"))
+        cases.extend((
+            ("error", f"warnings.warn('{MARKER}', ResourceWarning)", "errors"),
+            ("error", "with self.assertRaises(ResourceWarning):\n"
+             f"            warnings.warn('{MARKER}', ResourceWarning)", None),
+        ))
+        for policy, body, failure in cases:
+            source = ("import unittest\nimport warnings\n\nclass Example(unittest.TestCase):\n"
+                      f"    def test_first(self):\n        {body}\n"
+                      "    def test_second(self):\n        self.assertTrue(True)\n")
+            expected_exit = int(failure is not None)
+            summary = f"FAILED ({failure}=1)".encode() if failure else b"OK"
+            with self.subTest(policy=policy, body=body):
+                code, rows = self.reporting_fixture(
+                    source, warning_policy=policy, ordinary_expected=(expected_exit, summary),
+                )
+                self.assertEqual(expected_exit, code)
+                self.assertEqual([expected_exit],
+                                 [row["exit_code"] for row in rows if row["event"] == "ordinary_discovery"])
+                if failure:
+                    self.assertFalse(any(row["event"] in ("test_outcome", "infra_qualification") for row in rows))
+                    hints = next(row for row in rows if row["event"] == "ordinary_discovery_diagnostics")
+                    self.assertEqual(["ERROR" if failure == "errors" else "FAIL"],
+                                     [report["reported_status"] for report in hints["reports"]])
+                else:
+                    self.assertEqual(["passed", "passed"],
+                                     [row["outcome"] for row in rows if row["event"] == "test_outcome"])
+                    self.assertEqual(
+                        {row["id_sha256"] for row in rows if row["event"] == "test_inventory"},
+                        {row["id_sha256"] for row in rows if row["event"] == "test_outcome"},
+                    )
+                    self.assertTrue(rows[-1]["ok"])
 
     def test_real_diagnostics_do_not_share_the_stdlib_result_stream(self):
         for phase in ("test", "setUpClass", "tearDownClass", "setUpModule", "tearDownModule"):

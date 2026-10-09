@@ -156,8 +156,10 @@ discovery. Only those two commands receive the transparent
 `python governance/qualify.py -- <canonical discovery command>` wrapper; it executes
 the complete ordinary discovery once, using `-v` for per-test outcomes.
 It is not a selector, replacement test framework or optional gate.
-The child invokes stdlib `unittest.main` discovery with an ordinary `TextTestRunner`
-whose stream is an exclusively created report inside an owned temporary directory.
+The child invokes stdlib `unittest.main` discovery with a `TextTestRunner` subclass
+that binds only its stream to an exclusively created report inside an owned temporary
+directory. `unittest.main` constructs the runner with its normal options, including
+the default warning policy or an explicitly selected `PYTHONWARNINGS` policy.
 Test stdout and stderr remain separate diagnostic streams, including direct descriptor
 writes; neither can impersonate per-ID runner statuses. The complete runner report
 must pass the unchanged S1 parser and end with the matching successful terminal
