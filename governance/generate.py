@@ -341,6 +341,7 @@ def powershell_commands(commands):
 def api_windows_job(profile):
     preparation = profile["commands"][:profile["commands"].index("python scripts/quality.py build")]
     commands = [command.replace("/", "\\") for command in preparation]
+    commands.append("python -I -S -B scripts\\money_client_interop.py prepare")
     commands.append("python scripts\\qualify_windows.py")
     return {
         "name": "Windows qualification", "runs-on": "windows-2025",

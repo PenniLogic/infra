@@ -215,9 +215,30 @@ defaults, also recorded in `ci_duration_trend`, are:
   when comparison is unavailable. Rerun envelopes keep the existing timestamp metric; earlier
   individual attempt results are not recovered or claimed.
 
-Warnings appear in JSON, Markdown and CLI output. On Actions the CLI emits escaped `::warning::`
-annotations **after** the existing whole-document redaction and self-scan, so the already installed
-weekly/manual workflow publishes the warning and uploads the trend artifact without a workflow edit.
+Warnings appear individually in JSON, Markdown and non-Actions CLI output. On Actions the CLI
+appends the complete Markdown report to `GITHUB_STEP_SUMMARY` **after** the existing whole-document
+redaction and self-scan, then emits one fixed-text `::warning::` annotation with the total warning
+count and a pointer to the job summary and artifacts. No warning text is fed into a workflow command.
+The already installed weekly/manual workflow needs no generated-workflow change or added permission.
+
+The runner used by the retained failed run, `2.337.0`, keeps only ten warnings per step and truncates
+each annotation message at 4,096 characters
+([runner implementation](https://github.com/actions/runner/blob/v2.337.0/src/Runner.Worker/ExecutionContext.cs)).
+One annotation per alert, or an unbounded concatenation into one annotation, can therefore lose
+details. The complete job summary is the detailed hosted surface; an annotation count is not an
+alert count. The runner's separate
+[1 MiB summary limit](https://github.com/actions/runner/blob/v2.337.0/src/Runner.Worker/FileCommandManager.cs)
+is checked in UTF-8 bytes, including existing summary content, before appending. A missing,
+unwritable or oversized summary channel returns exit 2 explicitly; the full JSON/Markdown artifacts
+are retained, not truncated or silently substituted for successful summary publication.
+
+Historical evidence is unchanged: [run 37935242668](https://github.com/PenniLogic/infra/actions/runs/37935242668)
+on `6b1e4baf403f25e6c4c695a5676e995f1ecb259e` failed with five findings. All thirteen document warnings
+were emitted in its genuine job log, but only the first ten became native warning annotations.
+The two Android historical overruns and Infra's 371-versus-145-second regression were absent from
+that native list. Contracts' approaching-budget and 491-versus-150-second regression warnings were
+present. Source/local publication controls do not manufacture replacement native evidence for that run.
+
 Investigate the linked runs' slow steps, cache misses or retries without dropping required checks.
 This is a sampled, report-only early warning, not continuous monitoring, forecasting, an external
 notification delivery guarantee or stronger workflow-identity enforcement. Three-day artifact
@@ -262,9 +283,9 @@ security acceptance.
 | `workflow-step-skipped-by-condition` | workflow | python | every profile | drift check; consumer checker refuses (`if` rule) |
 | `workflow-unpinned-action` | workflow | python | every profile | drift check; consumer checker refuses `actions/checkout@v4` (pinned-action rule) |
 | `workflow-reusable-workflow-job` | workflow | python | every profile | drift check; consumer checker refuses `jobs.reuse.uses` |
-| `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current infra template copied over the scratch checker refuses (step-key rule from PR E, rule 17 of the ordered table) |
+| `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current profile-rendered checker refuses with its existing exact CI-binding diagnostic for Infra/API, or the step-key rule for the other profiles |
 | `python-tests-removed` | python | python | profiles with `unittest discover` | the exact profile command exits 5, `NO TESTS RAN` |
-| `python-test-failing` | python | python | profiles with `unittest discover` | the exact profile command exits 1 naming `test_planted_defect_must_fail` |
+| `python-test-failing` | python | python | profiles with `unittest discover` | each exact profile command exits 1 and its actual `TestResult` records its own indexed planted case as a failure |
 | `python-pytest-failing` / `python-pytest-removed` | python | uv | ai-service | `uv sync --locked` then `uv run --locked pytest` exits 1 / 5 |
 | `documentation-index-link-broken` | documentation | python | docs | `check_docs.py` fails: `generated slot ADR-001 differs` |
 | `documentation-dangling-supersedes` | documentation | python | docs | `check_docs.py` fails: `supersedes ADR-099, which has no source record` |
@@ -272,6 +293,40 @@ security acceptance.
 | `typescript-test-failing` / `typescript-tests-removed` | typescript | node | web, admin | `npm ci` then `npm test` exits non-zero (`planted defect` / `No test files found`) |
 | `kotlin-test-failing` | kotlin | java | api | `python scripts/quality.py test` must fail on a planted JUnit 5 test |
 | `kotlin-android-self-test` | kotlin | android | android | consumer evidence, not a defect this job plants: the consumer-owned `quality_gates.py self-test` (a failing test, spotless and lint defects, UP-TO-DATE and FROM-CACHE results) must exit 0; recorded as `consumer_evidence`, never as `proved`; needs the Android SDK |
+
+The failing unittest fixture uses a different module basename for each start directory. This keeps
+Infra's real `governance/tests` and `scripts/tests` discoveries separate even when a governance
+module adds `scripts/tests` to `sys.path`; neither required discovery command nor any existing test
+is removed. After the planted case's normal `run` returns, it observes whether the actual
+`unittest.TestResult.failures` contains that exact test object. It writes only that boolean, its
+indexed case ID and a fresh per-discovery nonce to a private, precreated witness. Calling
+`self.fail`, printing a heading, or quoting a complete earlier unittest section/report does not
+establish that a failure was recorded.
+
+The parent requires exit 1, confirmed process completion, the same owned single-link regular
+witness file, and an exact bounded record for that invocation and case. Missing, stale, malformed,
+mismatched or unsafe records fail closed; a passing, skipped or errored plant is not a recorded
+failure. Witnesses share the planter's owned cleanup and unconfirmed-lifetime retention.
+Validated attribution is published as the existing additive `failure_evidence` heading, redacted
+before its 400-character bound. The 3,000-character capture tail, 400-character report tail and
+JSON/Markdown shapes are unchanged. Output text never supplies unittest attribution; later
+diagnostics cannot evict it, and timeout, launch or teardown errors cannot turn it into proof.
+
+Contracts' Python suite invokes the specification tools, so the failing unittest fixture first runs
+its declared locked preparation, in order: `npm ci --no-audit --no-fund` and
+`python scripts/toolchain.py install`. A failed preparation is an explicit fixture error before any
+planting; no dependency is skipped or replaced. Other profiles and the selected fixture toolchains
+are unchanged. This preparation and a targeted planted-failure proof are not a claim that the
+entire unplanted consumer baseline is green: other failures, skipped prerequisites and native
+qualification limits must still be reported as such.
+
+The continue-on-error fixture renders `checker(profile)` from the generator running the job rather
+than copying its raw template. Infra/API's compound CI workflows are guarded by exact rendered-byte
+bindings; their intended refusal is that binding diagnostic, not the generic template's step-key
+diagnostic. The mutation still changes only the planted step key, and no workflow-policy allowlist
+or binding is weakened. Before planting, that same rendered validator must accept the unmodified
+workflow; an existing binding or step-key refusal is an explicit fixture error, never evidence for
+the planted defect. Both the workflow and scratch checker are restored afterwards.
 
 Kotlin fixtures are not exercised by the expanded Python/Node/uv job; their evidence is the consumer's last `main`
 CI run (api runs `quality.py build`, android runs its own `self-test` on every run) recorded in the
@@ -961,10 +1016,11 @@ identity/mandatory-absence gap and all independent native acceptance holds remai
 - A consumer whose checker predates the current template refuses the planted workflow defects with the
   same exit code but may lack a newer rule (before PR E: no rule text and no step-level
   `continue-on-error` refusal). The harness therefore requires only the refusal line from the consumer's
-  checker, records `detail_surfaced`, and proves the newest rule by copying the current template over the
-  scratch checkout; the drift check catches every planted workflow defect regardless. In the committed
-  evidence all nine consumers run the PR E checker (rule text surfaced) and eight still carry the pre-PR F
-  `scripts/check_repository.py` — the stale-file warning is that regeneration wave.
+  checker, records `detail_surfaced`, and tests `continue-on-error` with the current profile-rendered
+  checker over the scratch checkout; the drift check catches every planted workflow defect regardless.
+  In the original committed evidence all nine consumers run the PR E checker (rule text surfaced)
+  and eight still carry the pre-PR F `scripts/check_repository.py` — the stale-file warning is that
+  regeneration wave.
 - The wall-clock figure is the run's own duration; queue time is excluded. android's last `main` runs took
   9 min 28 s and 9 min 33 s in the two live runs, inside the ten-minute budget but close; its reviewed
   profile timeout is 30 minutes, so an overrun would be a warning, not a failure, until the budget is

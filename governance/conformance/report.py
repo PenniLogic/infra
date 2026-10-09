@@ -518,6 +518,7 @@ def render_markdown(report):
                 + (", rule text surfaced" if probe.get("detail_surfaced") is True else
                    ", refused without rule text: checker predates PR E" if probe.get("detail_surfaced") is False else "")
                 + ")"
+                + (f"; failure evidence: `{_cell(probe['failure_evidence'])}`" if probe.get("failure_evidence") else "")
                 for probe in defect.get("probes", [])
             ) or (defect.get("reason") or "-")
             lines.append(f"| `{defect['id']}` | {defect['language']} | {defect['toolchain']} | {OUTCOME_MARK.get(defect['outcome'], defect['outcome'])} | {probes} |")

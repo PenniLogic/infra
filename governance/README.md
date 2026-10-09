@@ -75,11 +75,23 @@ API CI has two parallel ordinary jobs: `Linux qualification` retains its complet
 combined build, real Postgres, coverage/Money/PIT and Python graph, while
 `Windows qualification` runs on standard GitHub-hosted `windows-2025`. The latter
 reuses the SHA-pinned checkout/Python/Node/JDK actions and the seven existing
-Money/database preparation and verification commands, then invokes
-`python scripts\qualify_windows.py`. Each PowerShell command propagates a nonzero
-native exit immediately. There is no Windows Postgres, full Windows build,
+Money/database preparation and verification commands, then runs the existing
+input-only `python -I -S -B scripts\money_client_interop.py prepare` before invoking
+`python scripts\qualify_windows.py`. All nine ordered PowerShell commands propagate
+a nonzero native exit immediately; a preparation failure cannot reach the qualifier.
+There is no Windows Postgres, full Windows build,
 isolated test selector, new cache, artifact upload, credential, paid/self-hosted
 runner, permission or storage-allowance change.
+
+The independent Windows checkout cannot reuse Linux outputs. Ordinary Python
+discovery precedes Gradle `test`, and its public-input response fixtures require
+all 39 interop inputs. The existing preparer verifies the Money materializer/provider,
+reuses ten hash-bound inputs and acquires the other 29 within its existing three-REST-
+plus-one-archive bounds. It validates the complete inventory and provenance, reuses
+verified state, and refuses corrupt, orphaned or partial state. This command does not
+run Node/npm, client generation, JVM/runtime checks, Postgres or PIT; `--node` is
+rejected for `prepare` and is not passed. The seven prior commands and ordinary
+`quality.py test`/qualifier behavior are unchanged.
 
 The generated stdlib qualifier runs the ordinary `python scripts\quality.py test`
 exactly once: complete verbose Python discovery, ordinary Gradle `test`, and the
@@ -127,8 +139,12 @@ Relative to Infra `26fa29ff`, the API-only checkpoint changes API
 `.github/workflows/ci.yml` and `scripts/check_repository.py`, and adds
 `scripts/qualify_windows.py`. Its non-API outputs and API setup workflow are unchanged;
 the Infra extension below originally retained all three API output bytes. The
-shared outcome-parser correction changes only the generated qualifier; the API
-caller and checker remain byte-identical.
+shared outcome-parser correction changed only the generated qualifier. The
+input-only prerequisite correction changes API CI and its checker digest, leaving
+that qualifier, API Linux/setup/manual commands and every other profile unchanged.
+The API registry reference still needs the real reviewed source commit through the
+separate source/binding sequence; a prebinding history mismatch remains an honest
+failure, not a placeholder reference or an acceptance waiver.
 Adopt all three atomically with the API-owned combined-build interface, only after
 separate producer/consumer review and protected acceptance. Synthetic Infra runner,
 parser and shell controls are not execution of the two API tests. Native Windows

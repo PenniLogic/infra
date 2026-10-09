@@ -102,6 +102,24 @@ class EvaluationTests(unittest.TestCase):
 
 
 class DocumentTests(unittest.TestCase):
+    def test_targeted_failure_evidence_is_published_separately_from_the_output_tail(self):
+        heading = ("FAIL: test_planted_defect_must_fail "
+                   "(test_planted_conformance_defect_0.PlantedConformanceDefect.test_planted_defect_must_fail)")
+        probe = defects._probe_record(
+            defects.Probe("unchanged unittest command", "python -m unittest discover -s scripts/tests",
+                          expect_text=heading, expect_exit_code=1),
+            defects.Result(1, "FAILED (failures=2)\n", failure_evidence=heading),
+        )
+        document = report.build_report([passing_record(planted_defects=[{
+            "id": "python-test-failing", "language": "python", "toolchain": "python",
+            "outcome": "proved", "probes": [probe],
+        }])], None, "fake", ("python",))
+        persisted = json.loads(report.to_json(document))["repositories"][0]["planted_defects"][0]["probes"][0]
+        self.assertEqual(heading, persisted["failure_evidence"])
+        self.assertEqual(1, persisted["expect_exit_code"])
+        self.assertEqual("FAILED (failures=2)\n", persisted["output_tail"])
+        self.assertIn(f"failure evidence: `{heading}`", report.render_markdown(document))
+
     def test_report_aggregates_results_and_is_deterministic(self):
         records = [passing_record(), passing_record(repository="PenniLogic/other", repository_check={"exit_code": 1})]
         document = report.build_report(records, "c" * 40, "anonymous", ("python",), generated_at="2026-09-30T12:00:00+00:00",
