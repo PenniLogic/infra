@@ -549,7 +549,7 @@ class MetadataBoundaryTests(unittest.TestCase):
 class RealCLIAndStepTests(unittest.TestCase):
     def run_cli(self, fixture, bash_step=False, env_changes=None, http_case=None):
         with tempfile.TemporaryDirectory(prefix="pr-integrity-cli-") as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             program = root / "validator.py"
             program.write_text(support.generator.pr_integrity_program(fixture.name), encoding="utf-8")
             driver = root / "fixture_driver.py"
@@ -586,6 +586,34 @@ class RealCLIAndStepTests(unittest.TestCase):
             self.assertNotIn(fixture.token, result.stdout.decode())
             self.assertNotIn(str(root), result.stdout.decode())
             return result.returncode, report
+
+    def test_real_cli_and_bash_use_canonical_owned_event_paths(self):
+        for bash_step in (False, True):
+            with self.subTest(bash_step=bash_step), tempfile.TemporaryDirectory(prefix="pr-event-alias-") as directory:
+                root = Path(directory).resolve(strict=True)
+                component = root / "alias component"
+                component.mkdir()
+                alias = str(component / "..")
+                if sys.platform == "win32":
+                    alias = alias.swapcase()
+                self.assertTrue(os.path.samefile(root, alias))
+                environments = []
+                run = subprocess.run
+
+                def observed(command, **kwargs):
+                    environments.append(kwargs["env"])
+                    return run(command, **kwargs)
+
+                with mock.patch.object(tempfile, "TemporaryDirectory",
+                                       return_value=contextlib.nullcontext(alias)), \
+                        mock.patch.object(subprocess, "run", side_effect=observed):
+                    code, report = self.run_cli(support.PRMetadata(), bash_step=bash_step)
+                self.assertEqual(0, code)
+                self.assertEqual("pass", report["result"])
+                self.assertEqual(1, len(environments))
+                self.assertEqual(str(root), environments[0]["RUNNER_TEMP"])
+                self.assertEqual(str(root / "_github_workflow" / "event.json"),
+                                 environments[0]["GITHUB_EVENT_PATH"])
 
     def test_all_nine_actual_cli_clean_controls_and_echo_omission_failures(self):
         for name in support.generator.PROFILES["repositories"]:

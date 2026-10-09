@@ -181,9 +181,17 @@ and at most eight source-inventory-bound hashed file/line locations per report.
 Truncation and unrecognized headings are explicit. Raw messages, docstrings,
 subtest values, tracebacks and external paths are not printed. These untrusted
 hints never supply outcomes or authorize a pass; successful commands still use
-the unchanged strict S1 parser. The failed native run's missing transcript cannot
-be reconstructed by this change; identifying its actual test failure needs a
-separately authorized hosted run with these diagnostics.
+the unchanged strict S1 parser. The earlier D run's discarded transcript cannot
+be reconstructed. Later runs can locate their own failures with these hints,
+but cannot retroactively prove D's cause.
+
+Canonical-composition fixtures pin the three API/Infra registry references to
+source `889c5c35a1677ef33899a2e63bc528d3bac802f9` and prove its historical renderings
+match the current workflows; they do not copy candidate references into expectations.
+The real CLI/Bash fixtures resolve their owned temporary root before constructing
+the runner event path, including Windows case aliases. This fixes the fixture's
+canonical-path precondition without relaxing the production event-path guard.
+These finite controls are not native qualification or evidence for unseen failures.
 
 The only Windows Docker allowance sets the existing `PENNILOGIC_SKIP_DOCKER_TESTS=1`
 inside the Windows scripts-qualification process, for exactly the nine existing
