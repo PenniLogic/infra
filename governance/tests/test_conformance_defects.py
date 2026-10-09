@@ -505,8 +505,10 @@ class UnittestWitnessTests(unittest.TestCase):
                 witness.arm()
                 data = self.write_record(witness)
                 if kind == "replaced":
-                    witness.path.unlink()
-                    witness.path.write_bytes(data)
+                    # Allocate before replacing so the original inode cannot be reused.
+                    replacement = self.root / "replacement.json"
+                    replacement.write_bytes(data)
+                    replacement.replace(witness.path)
                     self.assertNotEqual(witness.file_id, witness._identity(witness.path.stat()))
                 else:
                     os.link(witness.path, self.root / "alias.json")
