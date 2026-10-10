@@ -180,8 +180,9 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
                         expected = previous.encoded(document)
                     with self.subTest(repository=name, setup=setup):
                         self.assertEqual(expected, generator.workflow(name, setup=setup))
+        qualifier_source = "5795155323e7ff9899fb8cf2846ab6646fb0f141"
         self.assertEqual(
-            support.git(support.GOVERNANCE.parent, "show", f"{accepted}:governance/templates/qualify_windows.py"),
+            support.git(support.GOVERNANCE.parent, "show", f"{qualifier_source}:governance/templates/qualify_windows.py"),
             (support.GOVERNANCE / "templates/qualify_windows.py").read_text(encoding="utf-8"),
         )
 
@@ -459,6 +460,214 @@ class WindowsOutcomeTests(unittest.TestCase):
             self.assertEqual(1, qualification.main())
             child.assert_not_called()
         self.assertEqual("windows-owning-suites-require-windows", json.loads(stderr.getvalue())["code"])
+
+
+class WindowsRefusalDiagnosticTests(unittest.TestCase):
+    def capture_refusal(self, root, runner, code="ambiguous-python-outcome", expected_exit=1):
+        streams, captured, open_at_publication = {}, {}, []
+
+        class PublicOutput(io.StringIO):
+            def write(self, text):
+                if '"event": "windows_qualification_diagnostic"' in text:
+                    open_at_publication.append(all(not stream.closed for stream in streams.values()))
+                return super().write(text)
+
+        def run(command, **options):
+            self.assertEqual([sys.executable, str(root / "scripts" / "quality.py"), "test"], command)
+            streams.update({name: options[name] for name in ("stdout", "stderr")})
+            result = runner(command, **options)
+            for name, stream in streams.items():
+                stream.flush()
+                stream.seek(0)
+                captured[name] = stream.read()
+            return result
+
+        output = PublicOutput()
+        with mock.patch.object(qualification.subprocess, "run", side_effect=run) as child, \
+                mock.patch.object(qualification, "junit_outcomes") as junit, \
+                contextlib.redirect_stdout(output):
+            with self.assertRaisesRegex(qualification.Refused, "^" + code + "$"):
+                qualification.qualify(root)
+            self.assertEqual(1, child.call_count)
+            junit.assert_not_called()
+        public = output.getvalue()
+        self.assertNotIn(MARKER, public)
+        self.assertNotIn("\x1b", public)
+        self.assertNotIn("\\u001b", public)
+        self.assertNotIn(str(root), public)
+        self.assertTrue(all(stream.closed for stream in streams.values()))
+        records = [json.loads(line) for line in public.splitlines() if line.startswith("{")]
+        self.assertEqual(expected_exit, records[0]["exit_code"])
+        self.assertEqual(
+            ["windows_owning_suite_command", "windows_qualification_diagnostic"],
+            [record["event"] for record in records],
+        )
+        diagnostic = records[-1]
+        self.assertEqual([True], open_at_publication)
+        self.assertIs(diagnostic["diagnostic_only"], True)
+        self.assertIs(diagnostic["inventory_complete"], False)
+        self.assertEqual(records[0]["exit_code"], diagnostic["exit_code"])
+        self.assertLess(len(json.dumps(diagnostic).encode("utf-8")), 4096)
+        self.assertEqual(code, diagnostic["parser"]["code"])
+        for name, data in captured.items():
+            self.assertEqual(
+                {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()},
+                diagnostic[name],
+            )
+        return diagnostic, captured
+
+    def real_refusal(self, body, exit_code, negative):
+        identity = "test_diagnostic.DiagnosticCases.test_a_primary"
+        real_run = subprocess.run
+        with tempfile.TemporaryDirectory(prefix="windows-real-refusal-") as temporary:
+            root = Path(temporary)
+            (root / "scripts").mkdir()
+            (root / "tests").mkdir()
+            (root / "scripts" / "quality.py").write_text(
+                "from pathlib import Path\nimport subprocess\nimport sys\n"
+                "assert sys.argv[1:] == ['test']\n"
+                "root = Path(__file__).resolve().parents[1]\n"
+                "raise SystemExit(subprocess.run([sys.executable, '-m', 'unittest', 'discover',\n"
+                "    '-s', str(root / 'tests'), '-v'], check=False).returncode)\n",
+                encoding="utf-8",
+            )
+            (root / "tests" / "test_diagnostic.py").write_text(
+                "import sys\nimport unittest\n\n"
+                f"PAYLOAD = {MARKER!r} + '\\x1b[31m'\n"
+                "class DiagnosticCases(unittest.TestCase):\n"
+                "    def test_a_primary(self):\n"
+                "        print(PAYLOAD)\n"
+                f"        {body}\n"
+                "    @unittest.skip(PAYLOAD)\n"
+                "    def test_b_skip(self):\n"
+                "        self.fail(PAYLOAD)\n",
+                encoding="utf-8",
+            )
+
+            def run(command, **options):
+                result = real_run(command, **options, env=support.defects.probe_environment(), timeout=15)
+                self.assertEqual(exit_code, result.returncode)
+                return result
+
+            diagnostic, captured = self.capture_refusal(root, run, expected_exit=exit_code)
+        self.assertEqual(exit_code, diagnostic["exit_code"])
+        self.assertIn(b"Ran 2 tests", captured["stderr"])
+        self.assertIn(MARKER.encode("utf-8"), captured["stdout"])
+        self.assertIn(MARKER.encode("utf-8"), captured["stderr"])
+        parser = diagnostic["parser"]
+        self.assertIs(parser["count_summary_seen"], False)
+        self.assertIs(parser["terminal_summary_seen"], True)
+        self.assertIs(parser["negative_prefix_truncated"], False)
+        self.assertNotIn(identity, json.dumps(diagnostic))
+        hashed = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        if negative is None:
+            self.assertEqual(b"OK (skipped=1)", captured["stderr"].splitlines()[-1])
+            self.assertEqual("case-status", parser["boundary"])
+            self.assertEqual(hashed, parser["pending_id_sha256"])
+            self.assertEqual([], parser["negative_prefix"])
+            self.assertEqual(0, parser["negative_prefix_count"])
+        else:
+            self.assertTrue(captured["stderr"].splitlines()[-1].startswith(b"FAILED ("))
+            self.assertEqual("before-count-summary", parser["boundary"])
+            self.assertIsNone(parser["pending_id_sha256"])
+            self.assertEqual([{"id_sha256": hashed, "outcome": negative}], parser["negative_prefix"])
+            self.assertEqual(1, parser["negative_prefix_count"])
+
+    def test_real_unittest_failure_retains_safe_diagnostic_before_capture_closes(self):
+        self.real_refusal("self.fail(PAYLOAD)", 1, "failed")
+
+    def test_real_unittest_error_retains_safe_diagnostic_before_capture_closes(self):
+        self.real_refusal("raise RuntimeError(PAYLOAD)", 1, "error")
+
+    def test_real_passing_stderr_retains_safe_diagnostic_without_becoming_accepted(self):
+        self.real_refusal("print(PAYLOAD, file=sys.stderr)", 0, None)
+
+    def test_negative_prefix_diagnostic_is_bounded_and_never_an_outcome_inventory(self):
+        identities = [f"test_fixture.Private.test_case_{index}" for index in range(12)]
+        data = b"".join(
+            f"{identity.rsplit('.', 1)[-1]} ({identity}) ... FAIL\n".encode("ascii")
+            for identity in identities
+        )
+        data += b"=" * 70 + b"\n" + (MARKER.encode() + b"\xff\x1b[31m\n") * 200
+        data += b"Ran 12 tests in 0.001s\n\nFAILED (failures=12)\n"
+
+        def run(command, **options):
+            options["stdout"].write((MARKER.encode() + b"\n") * 200)
+            options["stderr"].write(data)
+            return subprocess.CompletedProcess(command, 1)
+
+        with tempfile.TemporaryDirectory(prefix="windows-bounded-refusal-") as temporary:
+            diagnostic, _ = self.capture_refusal(Path(temporary), run)
+        parser = diagnostic["parser"]
+        self.assertEqual(12, parser["negative_prefix_count"])
+        self.assertEqual(8, len(parser["negative_prefix"]))
+        self.assertIs(parser["negative_prefix_truncated"], True)
+        self.assertEqual(13, parser["line"])
+        self.assertEqual(
+            [{"id_sha256": hashlib.sha256(identity.encode()).hexdigest(), "outcome": "failed"}
+             for identity in identities[:8]],
+            parser["negative_prefix"],
+        )
+        self.assertNotIn("test_fixture", json.dumps(diagnostic))
+
+    def test_every_parser_refusal_keeps_its_static_boundary_without_admitting_partial_data(self):
+        case = b"test_one (test_fixture.Private.test_one)"
+        passed = case + b" ... ok\n"
+        summary = b"Ran 1 test in 0.001s\n"
+        cases = (
+            (summary + summary, "ambiguous-python-summary", "count-summary", True),
+            (case + b"\n" + case + b"\n", "ambiguous-python-case", "case-prefix", False),
+            (case + b"\n" + MARKER.encode() + b"\n", "ambiguous-python-outcome", "pending-description", False),
+            (b"ok\n", "unbound-python-outcome", "unbound-status", False),
+            (passed + MARKER.encode() + b"\n", "ambiguous-python-outcome", "before-count-summary", False),
+            (case + b" ... " + MARKER.encode() + b"\n", "ambiguous-python-outcome", "case-status", False),
+            (passed + passed, "duplicate-python-case", "duplicate-case", False),
+            (passed, "incomplete-python-outcomes", "end-of-stream", False),
+            (summary, "incomplete-python-outcomes", "end-of-stream", True),
+            (b"", "incomplete-python-outcomes", "end-of-stream", False),
+        )
+        for data, code, boundary, summary_seen in cases:
+            def run(command, **options):
+                options["stdout"].write(MARKER.encode())
+                options["stderr"].write(data)
+                return subprocess.CompletedProcess(command, 1)
+
+            with self.subTest(code=code, boundary=boundary, data_bytes=len(data)), \
+                    tempfile.TemporaryDirectory(prefix="windows-parser-boundary-") as temporary:
+                diagnostic, _ = self.capture_refusal(Path(temporary), run, code)
+                parser = diagnostic["parser"]
+                self.assertEqual(boundary, parser["boundary"])
+                self.assertIs(summary_seen, parser["count_summary_seen"])
+                self.assertIs(parser["terminal_summary_seen"], False)
+                self.assertEqual([], parser["negative_prefix"])
+
+    def test_quoted_terminal_summary_is_observation_only_and_never_repairs_refusal(self):
+        data = (b"test_one (test_fixture.Private.test_one) ... " + MARKER.encode()
+                + b"\nRan 1 test in 0.001s\n\nOK\n")
+
+        def run(command, **options):
+            options["stderr"].write(data)
+            return subprocess.CompletedProcess(command, 0)
+
+        with tempfile.TemporaryDirectory(prefix="windows-quoted-summary-") as temporary:
+            diagnostic, _ = self.capture_refusal(Path(temporary), run, expected_exit=0)
+        self.assertIs(diagnostic["parser"]["terminal_summary_seen"], True)
+        self.assertIs(diagnostic["parser"]["count_summary_seen"], False)
+        self.assertEqual("case-status", diagnostic["parser"]["boundary"])
+
+    def test_unreadable_summary_count_retains_only_static_parser_diagnostics(self):
+        def run(command, **options):
+            options["stderr"].write(b"Ran 1 test in 0.001s\n\nOK\n")
+            return subprocess.CompletedProcess(command, 1)
+
+        with tempfile.TemporaryDirectory(prefix="windows-summary-refusal-") as temporary, \
+                mock.patch.object(qualification, "int", side_effect=ValueError(MARKER), create=True):
+            diagnostic, _ = self.capture_refusal(
+                Path(temporary), run, "invalid-python-summary-count",
+            )
+        self.assertEqual("count-summary", diagnostic["parser"]["boundary"])
+        self.assertIs(diagnostic["parser"]["count_summary_seen"], False)
+        self.assertIs(diagnostic["parser"]["terminal_summary_seen"], True)
 
 
 if __name__ == "__main__":

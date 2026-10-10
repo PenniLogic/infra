@@ -17,12 +17,23 @@ KOTLIN_METHOD = "a symlinked launcher cannot redirect execution()"
 JUNIT = Path("build/test-results/test")
 PYTHON_CASE = re.compile(rb"(test[A-Za-z0-9_]*) \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \.\.\. (.*))?")
 PYTHON_SUMMARY = re.compile(rb"Ran (\d+) tests? in [0-9.]+s")
+PYTHON_TERMINAL = re.compile(
+    rb"(?:OK|FAILED)(?: \((?:failures|errors|skipped|expected failures|unexpected successes)=[0-9]+"
+    rb"(?:, (?:failures|errors|skipped|expected failures|unexpected successes)=[0-9]+)*\))?"
+)
 STATUSES = {b"ok": "passed", b"FAIL": "failed", b"ERROR": "error",
             b"expected failure": "expected_failure", b"unexpected success": "unexpected_success"}
+DIAGNOSTIC_CASE_LIMIT = 8
 
 
 class Refused(ValueError):
     """A static qualification refusal, never a child diagnostic or fixture value."""
+
+
+class _PythonOutcomeRefused(Refused):
+    def __init__(self, code, diagnostic):
+        super().__init__(code)
+        self.diagnostic = diagnostic
 
 
 def outcome(suite, identity, status, target=None):
@@ -38,17 +49,39 @@ def outcome(suite, identity, status, target=None):
 def python_outcomes(data):
     records, identities = [], set()
     pending, total = None, None
-    for line in data.splitlines():
+    lines = data.splitlines()
+
+    def refuse(code, boundary):
+        negative = [record for record in records
+                    if record["outcome"] in ("failed", "error", "unexpected_success")]
+        raise _PythonOutcomeRefused(code, {
+            "code": code, "boundary": boundary, "line": line_number,
+            "count_summary_seen": total is not None,
+            # Observed text only: even a quoted terminal cannot establish an outcome.
+            "terminal_summary_seen": any(PYTHON_TERMINAL.fullmatch(line) for line in lines),
+            "pending_id_sha256": hashlib.sha256(pending.encode("ascii")).hexdigest() if pending else None,
+            "negative_prefix": [
+                {"id_sha256": record["id_sha256"], "outcome": record["outcome"]}
+                for record in negative[:DIAGNOSTIC_CASE_LIMIT]
+            ],
+            "negative_prefix_count": len(negative),
+            "negative_prefix_truncated": len(negative) > DIAGNOSTIC_CASE_LIMIT,
+        })
+
+    for line_number, line in enumerate(lines, 1):
         summary = PYTHON_SUMMARY.fullmatch(line)
         if summary:
             if total is not None or pending is not None:
-                raise Refused("ambiguous-python-summary")
-            total = int(summary.group(1))
+                refuse("ambiguous-python-summary", "count-summary")
+            try:
+                total = int(summary.group(1))
+            except ValueError:
+                refuse("invalid-python-summary-count", "count-summary")
             continue
         case = PYTHON_CASE.fullmatch(line)
         if case:
             if pending is not None or total is not None or not case.group(2).endswith(b"." + case.group(1)):
-                raise Refused("ambiguous-python-case")
+                refuse("ambiguous-python-case", "case-prefix")
             pending = case.group(2).decode("ascii")
             status = case.group(3)
             if status is None:
@@ -56,25 +89,26 @@ def python_outcomes(data):
         elif pending is not None:
             # unittest's optional docstring occupies exactly the next line.
             if b" ... " not in line:
-                raise Refused("ambiguous-python-outcome")
+                refuse("ambiguous-python-outcome", "pending-description")
             status = line.rsplit(b" ... ", 1)[-1]
         else:
             status = line.rsplit(b" ... ", 1)[-1]
             if status in STATUSES or status.startswith(b"skipped "):
-                raise Refused("unbound-python-outcome")
+                refuse("unbound-python-outcome", "unbound-status")
             if records and total is None and line not in (b"", b"-" * 70):
-                raise Refused("ambiguous-python-outcome")
+                refuse("ambiguous-python-outcome", "before-count-summary")
             continue
         normalized = "skipped" if status.startswith(b"skipped ") else STATUSES.get(status)
         if normalized is None:
-            raise Refused("ambiguous-python-outcome")
+            refuse("ambiguous-python-outcome", "case-status")
         if pending in identities:
-            raise Refused("duplicate-python-case")
+            refuse("duplicate-python-case", "duplicate-case")
         identities.add(pending)
         records.append(outcome("python", pending, normalized, PYTHON_TARGET if pending == PYTHON_TARGET else None))
         pending = None
+    line_number = len(lines) + 1
     if pending is not None or total is None or total == 0 or len(records) != total:
-        raise Refused("incomplete-python-outcomes")
+        refuse("incomplete-python-outcomes", "end-of-stream")
     return records
 
 
@@ -128,7 +162,18 @@ def qualify(root):
         stderr.seek(0)
         print(json.dumps({"event": "windows_owning_suite_command", "exit_code": result.returncode}, sort_keys=True))
         output = stdout.read()
-        records = python_outcomes(stderr.read())
+        errors = stderr.read()
+        try:
+            records = python_outcomes(errors)
+        except _PythonOutcomeRefused as error:
+            print(json.dumps({
+                "event": "windows_qualification_diagnostic", "diagnostic_only": True,
+                "inventory_complete": False, "exit_code": result.returncode,
+                "stdout": {"bytes": len(output), "sha256": hashlib.sha256(output).hexdigest()},
+                "stderr": {"bytes": len(errors), "sha256": hashlib.sha256(errors).hexdigest()},
+                "parser": error.diagnostic,
+            }, sort_keys=True), flush=True)
+            raise
     for record in records:
         print(json.dumps(record, sort_keys=True))
     test_tasks = [line for line in output.splitlines() if re.fullmatch(rb"> Task :test(?: .*)?", line)]
