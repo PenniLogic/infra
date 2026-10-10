@@ -70,7 +70,7 @@ class ClassificationTests(unittest.TestCase):
                 self.assertEqual(["build", "lint"], steps.missing_categories(detected, ("build", "test", "lint")))
                 self.assertEqual([
                     "python scripts/quality_gates.py self-test",
-                    "python scripts/privacy_traffic_harness.py self-test",
+                    "python scripts/privacy_traffic_harness.py self-test --all-scripts",
                 ], detected["consumer_self_tests"])
 
     def test_known_profiles_classify_as_reviewed(self):
@@ -84,7 +84,7 @@ class ClassificationTests(unittest.TestCase):
         android = steps.detect_steps(support.generator.PROFILES["repositories"]["android"]["commands"])
         self.assertEqual([
             "python scripts/quality_gates.py self-test",
-            "python scripts/privacy_traffic_harness.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test --all-scripts",
         ], android["consumer_self_tests"])
         ci = "python scripts/quality_gates.py ci"
         self.assertEqual([ci], android["build"])
@@ -92,8 +92,7 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(["python scripts/check_repository.py", "python scripts/check_privacy_components.py"],
                          android["checker"])
         self.assertEqual([ci, "python scripts/quality_gates.py self-test",
-                          "python scripts/privacy_traffic_harness.py self-test",
-                          'python -m unittest discover -s scripts/tests -p "test_*.py"'], android["test"])
+                          "python scripts/privacy_traffic_harness.py self-test --all-scripts"], android["test"])
         self.assertEqual(["python -m pip install -r scripts/privacy_traffic/requirements.txt"], android["install"])
         self.assertEqual([], android["other"])
 

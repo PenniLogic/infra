@@ -34,7 +34,7 @@
     {
       "repo": "PenniLogic/android",
       "check_name": "CI",
-      "workflow_ref": "1a540182f48a492772e5230219306632528c3967",
+      "workflow_ref": "6867bd8f302e5ca607063dcfeb1a12b382e948fa",
       "language": "kotlin"
     },
     {

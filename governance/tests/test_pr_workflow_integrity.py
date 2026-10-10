@@ -178,7 +178,7 @@ class CommandBindingTests(unittest.TestCase):
                         self.assertIn({"path": CI, "matches": False}, report["bindings"])
                         if name == "api" and command == BUILD_COMMAND:
                             api_build_cases += 1
-        self.assertEqual(49, commands)
+        self.assertEqual(48, commands)
         self.assertEqual(2, api_build_cases)
 
     def test_api_combined_handoff_mutations_fail_exact_workflow_binding(self):
@@ -219,15 +219,31 @@ class CommandBindingTests(unittest.TestCase):
             "show", "dbdf2e27144e60b11aed54ed1e576d496a928ec3:governance/repository-profiles.json",
         ).encode("utf-8")
         expected = json.loads(accepted)
+        android_commands = expected["repositories"]["android"]["commands"]
+        self.assertEqual([
+            "python scripts/check_repository.py",
+            "python -m pip install -r scripts/privacy_traffic/requirements.txt",
+            "python scripts/quality_gates.py ci",
+            "python scripts/quality_gates.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test",
+            "python scripts/check_privacy_components.py",
+            'python -m unittest discover -s scripts/tests -p "test_*.py"',
+        ], android_commands)
+        android_commands[4] = "python scripts/privacy_traffic_harness.py self-test --all-scripts"
+        android_commands.pop()
+        self.assertNotIn("node", expected["repositories"]["api"])
+        android_only = encoded(expected)
         expected["repositories"]["api"]["node"] = "24.14.0"
         self.assertEqual(expected, support.generator.PROFILES)
-        fixture = support.PRMetadata("infra")
-        fixture.base_files[gate.PROFILES] = accepted
-        fixture.snapshot(fixture.base_files, fixture.source_sha)
-        report = fixture.evaluate(gate)
-        self.assertEqual("fail", report["result"])
-        self.assertEqual(["protected-profile-binding"], report["violations"])
-        self.assertEqual(1, gate.exit_code(report))
+        for composed_android, source in ((False, accepted), (True, android_only)):
+            with self.subTest(composed_android=composed_android):
+                fixture = support.PRMetadata("infra")
+                fixture.base_files[gate.PROFILES] = source
+                fixture.snapshot(fixture.base_files, fixture.source_sha)
+                report = fixture.evaluate(gate)
+                self.assertEqual("fail", report["result"])
+                self.assertEqual(["protected-profile-binding"], report["violations"])
+                self.assertEqual(1, gate.exit_code(report))
 
     def test_whole_step_job_filters_skips_masking_and_wrong_names_all_fail(self):
         for name in support.generator.PROFILES["repositories"]:

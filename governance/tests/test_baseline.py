@@ -51,9 +51,8 @@ ANDROID_COMMANDS = [
     ANDROID_GROUPED_COMMANDS[0],
     "python -m pip install -r scripts/privacy_traffic/requirements.txt",
     *ANDROID_GROUPED_COMMANDS[1:3],
-    "python scripts/privacy_traffic_harness.py self-test",
+    "python scripts/privacy_traffic_harness.py self-test --all-scripts",
     "python scripts/check_privacy_components.py",
-    ANDROID_GROUPED_COMMANDS[3],
 ]
 
 
@@ -206,7 +205,7 @@ class BaselineTests(unittest.TestCase):
                         commands.remove(ANDROID_COMMANDS[2])
                     else:
                         commands[2] = replacement
-                    self.assertEqual(ANDROID_COMMANDS[3:], commands[-4:])
+                    self.assertEqual(ANDROID_COMMANDS[3:], commands[-3:])
                     run_checks["run"] = "\n".join(commands)
                     path.write_bytes(generator.encoded(changed).encode("utf-8"))
                     refused = invoke("--check")

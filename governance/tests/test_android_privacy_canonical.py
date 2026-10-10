@@ -5,6 +5,8 @@ import copy
 import importlib.util
 import io
 import json
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,10 +21,13 @@ from test_baseline import CONTRACTS_STATE
 
 
 ACCEPTED_BASE = "1360c30a5caaff8039d76d57bfb9b060cf81a351"
+RUNTIME_BASE = "e601c13091bf156193ba266a6f03fdbae279a69e"
 QUALIFICATION_SOURCE = "889c5c35a1677ef33899a2e63bc528d3bac802f9"
 API_WORKFLOW_SOURCE = "733c42e177d61c552e5baa9dc01d55c850e1b33f"
 RESTORE = "python -m pip install -r scripts/privacy_traffic/requirements.txt"
 SELF_TEST = "python scripts/privacy_traffic_harness.py self-test"
+COMBINED_SELF_TEST = SELF_TEST + " --all-scripts"
+SCRIPT_TESTS = 'python -m unittest discover -s scripts/tests -p "test_*.py"'
 INVENTORY = "python scripts/check_privacy_components.py"
 TASK = ":app:privacyComponentInventory"
 PREFIX = "PRIVACY_COMPONENT_INVENTORY "
@@ -172,7 +177,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
         ).stdout)
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
-        android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
+        android["workflow_ref"] = "6867bd8f302e5ca607063dcfeb1a12b382e948fa"
         for name, source in (("api", API_WORKFLOW_SOURCE), ("infra", QUALIFICATION_SOURCE)):
             entry = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/" + name)
             entry["workflow_ref"] = source
@@ -228,12 +233,41 @@ class CanonicalPrivacyTests(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, "registry composition differs"):
                     self.assert_registry_composition(changed)
 
-    def test_commands_restore_declared_requirements_and_preserve_every_old_gate(self):
+    def test_combined_discovery_changes_only_android_command_derived_artifacts(self):
+        accepted = json.loads(support.git(
+            support.GOVERNANCE.parent, "show", f"{RUNTIME_BASE}:governance/repository-profiles.json",
+        ))
+        expected = copy.deepcopy(accepted)
+        commands = expected["repositories"]["android"]["commands"]
+        self.assertEqual([SELF_TEST, INVENTORY, SCRIPT_TESTS], commands[-3:])
+        commands[-3] = COMBINED_SELF_TEST
+        commands.pop()
+        self.assertEqual(expected, support.generator.PROFILES)
+        with mock.patch.object(support.generator, "PROFILES", accepted):
+            previous = {name: support.generator.artifacts(name) for name in accepted["repositories"]}
+        changed_artifacts = {
+            "AGENTS.md", "README.md", "CONTRIBUTING.md",
+            ".github/agent-policy.json", ".github/workflows/ci.yml",
+        }
+        for name, original in previous.items():
+            with self.subTest(repo=name):
+                current = support.generator.artifacts(name)
+                changed = {
+                    path for path in original.keys() | current.keys()
+                    if original.get(path) != current.get(path)
+                }
+                self.assertEqual(changed_artifacts if name == "android" else set(), changed)
+        workflow = json.loads(previous["android"][".github/workflows/ci.yml"])
+        run = next(step for step in workflow["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+        run["run"] = "\n".join(commands)
+        self.assertEqual(workflow, json.loads(support.generator.workflow("android")))
+
+    def test_commands_restore_requirements_and_preserve_gates_without_duplicate_discovery(self):
         commands = support.generator.profile_for("android")["commands"]
         self.assertEqual([
             "python scripts/check_repository.py", RESTORE,
             "python scripts/quality_gates.py ci", "python scripts/quality_gates.py self-test",
-            SELF_TEST, INVENTORY, 'python -m unittest discover -s scripts/tests -p "test_*.py"',
+            COMBINED_SELF_TEST, INVENTORY,
         ], commands)
         self.assertNotIn("run-rc", "\n".join(commands))
         self.assertEqual([RESTORE], support.generator.profile_for("android")["install"])
@@ -255,14 +289,52 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     support.generator.workflow("android").encode("utf-8"),
                 ))
 
+    def test_emitted_commands_run_once_and_stop_at_each_failure(self):
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "Bash is required to execute the emitted Android command fixture")
+        document = json.loads(support.generator.workflow("android"))
+        checks = next(step["run"] for step in document["jobs"]["ci"]["steps"]
+                      if step["name"] == "Run checks")
+        calls = [shlex.split(command)[1:] for command in checks.splitlines()]
+        self.assertEqual([["scripts/privacy_traffic_harness.py", "self-test", "--all-scripts"]],
+                         [call for call in calls if call[0] == "scripts/privacy_traffic_harness.py"])
+        self.assertFalse(any("unittest" in call for call in calls))
+        recorder = r"""count=0
+python() {
+  count=$((count + 1))
+  printf '%s\0' "$@"
+  printf '\n'
+  if [ "$count" -eq "$FAIL_AT" ]; then return 37; fi
+}
+"""
+        with tempfile.TemporaryDirectory(prefix="android-canonical-shell-") as directory:
+            root = Path(directory)
+            script = root / "emitted.sh"
+            script.write_text(recorder + checks + "\n", encoding="utf-8", newline="\n")
+            for fail_at in range(len(calls) + 1):
+                environment = support.defects.probe_environment()
+                environment["FAIL_AT"] = str(fail_at)
+                result = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-e", "-o", "pipefail", str(script)],
+                    cwd=root, env=environment, capture_output=True, check=False, timeout=15,
+                )
+                with self.subTest(fail_at=fail_at):
+                    self.assertEqual(37 if fail_at else 0, result.returncode, result.stderr)
+                    observed = [line.decode("utf-8").split("\0")[:-1] for line in result.stdout.splitlines()]
+                    self.assertEqual(calls[:fail_at or len(calls)], observed)
+
     def test_privacy_commands_have_exact_categories_without_borrowing_native_gates(self):
-        self.assertEqual(["test"], steps.classify(SELF_TEST))
+        for command in (SELF_TEST, COMBINED_SELF_TEST):
+            self.assertEqual(["test"], steps.classify(command))
+            self.assertEqual([command], steps.detect_steps([command])["consumer_self_tests"])
         self.assertEqual(["checker"], steps.classify(INVENTORY))
-        for command in (SELF_TEST, INVENTORY):
+        for command in (SELF_TEST, COMBINED_SELF_TEST, INVENTORY):
             for altered in (
                 "echo " + command, command + " --skip", command + " || true",
                 command + "; true", command + " ", command.replace("python ", "python3 ", 1),
-                command.replace("/", "\\"), command + "\n",
+                command.replace("/", "\\"), command + "\n", command + "\r\n",
+                command + " --all-scripts=false", command + " --all-scripts --all-scripts",
+                command.replace(".py", ".py --all-scripts", 1),
             ):
                 with self.subTest(command=altered):
                     self.assertEqual(["other"], steps.classify(altered))
@@ -285,8 +357,14 @@ class CanonicalPrivacyTests(unittest.TestCase):
             subprocess.run(invocation, capture_output=True, check=True, timeout=30)
             path = root / ".github" / "workflows" / "ci.yml"
             original = path.read_bytes()
-            for command in (RESTORE, SELF_TEST, INVENTORY):
-                for replacement in (None, "echo privacy skipped"):
+            for command in (RESTORE, COMBINED_SELF_TEST, INVENTORY):
+                replacements = (None, "echo privacy skipped")
+                if command == COMBINED_SELF_TEST:
+                    replacements += (
+                        SELF_TEST, SCRIPT_TESTS, COMBINED_SELF_TEST + " || " + SELF_TEST,
+                        COMBINED_SELF_TEST + "\n" + SCRIPT_TESTS,
+                    )
+                for replacement in replacements:
                     with self.subTest(command=command, replacement=replacement):
                         document = json.loads(original)
                         run = next(step for step in document["jobs"]["ci"]["steps"]
