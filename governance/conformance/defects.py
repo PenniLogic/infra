@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -42,6 +43,7 @@ DEFAULT_EXERCISE = ("python",)
 COMMAND_TIMEOUT_SECONDS = 900
 OUTPUT_TAIL = 3000
 RECORDED_TAIL = 400
+POSIX_TEARDOWN_SECONDS = 5
 UNITTEST_COMMAND = re.compile(r"python -m unittest discover -s (\S+)")
 UNITTEST_FAILURE = re.compile(
     r"(?m)^FAIL: test_planted_defect_must_fail "
@@ -65,6 +67,7 @@ DENIED_PREFIXES = (
 CREDENTIAL_VARIABLE = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY|_KEY$", re.IGNORECASE)
 _ISOLATION = None
 _WINDOWS_HELPERS = None
+_UNCONFIRMED_PROCESS = False
 WINDOWS_GATE = """import json
 import subprocess
 import sys
@@ -143,10 +146,17 @@ class Result:
     error: str = None
     restoration_safe: bool = True
     failure_evidence: str = ""
+    elapsed_seconds: float | None = None
+    process_cleanup: dict | None = None
 
 
 class UnsafeProcessTreeError(RuntimeError):
     """The caller must retain the planted tree because process exit could not be confirmed."""
+
+    def __init__(self, message, result=None, command=None):
+        super().__init__(message)
+        self.result = result
+        self.command = command
 
 
 @dataclasses.dataclass
@@ -197,6 +207,15 @@ def denied_variable(name):
             or CREDENTIAL_VARIABLE.search(name) is not None)
 
 
+def _cleanup_isolation(directory):
+    if not _UNCONFIRMED_PROCESS:
+        try:
+            shutil.rmtree(directory)
+        except OSError as error:
+            print(f"Conformance isolated configuration cleanup failed ({error.__class__.__name__}); "
+                  "remaining configuration retained", file=sys.stderr)
+
+
 def isolation_directory():
     """A process-wide temporary directory with an empty git config file and an empty gh config dir."""
     global _ISOLATION
@@ -205,7 +224,7 @@ def isolation_directory():
         with open(os.path.join(_ISOLATION, "gitconfig"), "wb"):
             pass
         os.mkdir(os.path.join(_ISOLATION, "gh"))
-        atexit.register(shutil.rmtree, _ISOLATION, ignore_errors=True)
+        atexit.register(_cleanup_isolation, _ISOLATION)
     return _ISOLATION
 
 
@@ -419,25 +438,98 @@ def _windows_runner(command, cwd, environ, timeout, redact_output=None):
         return Result(status["exit_code"], **output)
 
 
+def _finish_posix_group(process, output=b""):
+    """Signal only the new session's unreaped leader group; this cannot contain detached descendants."""
+    deadline = time.monotonic() + POSIX_TEARDOWN_SECONDS
+    cleanup = {"process_group_signal": "not attempted",
+               "leader_exit_confirmed": False, "pipes_released": False, "descendant_exit_confirmed": False}
+    # Before reaping, our child reserves its PID/PGID. Afterwards it could belong to an unrelated
+    # process: never signal a group identifier after communicate()/wait() has reaped its leader.
+    try:
+        if process.returncode is None:
+            cleanup["process_group_signal"] = "attempted: result unconfirmed"
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+                cleanup["process_group_signal"] = "sent"
+            except OSError as error:
+                cleanup["process_group_signal"] = f"failed: {error.__class__.__name__}"
+                try:
+                    process.kill()
+                except OSError as stopped:
+                    cleanup["leader_signal_error"] = stopped.__class__.__name__
+        else:
+            cleanup["process_group_signal"] = "not sent: leader already reaped"
+        try:
+            output = process.communicate(timeout=max(0.0, deadline - time.monotonic()))[0]
+            cleanup["pipes_released"] = True
+        except subprocess.TimeoutExpired as expired:
+            output = expired.output or output
+        except OSError as error:
+            cleanup["pipe_error"] = error.__class__.__name__
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except (OSError, subprocess.TimeoutExpired) as error:
+            cleanup["leader_wait_error"] = error.__class__.__name__
+    except BaseException as error:
+        cleanup["teardown_interrupted"] = error.__class__.__name__
+    cleanup["leader_exit_confirmed"] = process.returncode is not None
+    return output, cleanup
+
+
+def _posix_runner(command, cwd, environ, timeout, redact_output):
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        detail = "POSIX ownership requires the default SIGCHLD handler; no consumer was started"
+        return Result(None, detail, error=detail)
+    process = None
+    try:
+        process = subprocess.Popen(
+            command, cwd=str(cwd), shell=isinstance(command, str), env=environ, start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        output = process.communicate(timeout=timeout)[0]
+    except BaseException as error:
+        if process is None and isinstance(error, OSError):
+            raise
+        timed_out = isinstance(error, subprocess.TimeoutExpired)
+        output = (error.output or b"") if timed_out else b""
+        cleanup = None
+        if process is not None:
+            output, cleanup = _finish_posix_group(process, output)
+        reason = "timeout" if timed_out else f"interrupted ({error.__class__.__name__})"
+        detail = f"POSIX {reason}: descendant exit is not confirmed; scratch restoration is unsafe"
+        result = Result(None, **_captured_output(output, redact_output), timed_out=timed_out, error=detail,
+                        restoration_safe=False, process_cleanup=cleanup)
+        raise UnsafeProcessTreeError(detail, result, command) from None
+    return Result(process.returncode, **_captured_output(output, redact_output))
+
+
 def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS, *, replacements=None, credentials=None):
     """Redact before the first capture tail; on Windows own the lifetime before releasing consumer code."""
+    global _UNCONFIRMED_PROCESS
+    started = time.monotonic()
     redact_output = _capture_redactor(cwd, replacements, credentials)
     try:
         if os.name == "nt":
             result = _windows_runner(command, cwd, probe_environment(), timeout, redact_output)
-            if not result.restoration_safe:
-                raise UnsafeProcessTreeError(result.error or "probe process-tree exit not confirmed")
-            return result
-        completed = subprocess.run(
-            command, cwd=str(cwd), shell=isinstance(command, str), env=probe_environment(), check=False,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout,
-        )
+        else:
+            result = _posix_runner(command, cwd, probe_environment(), timeout, redact_output)
     except subprocess.TimeoutExpired as expired:
-        return Result(None, **_captured_output(expired.output or b"", redact_output), timed_out=True)
+        detail = "probe timed out outside confirmed teardown; scratch restoration is unsafe"
+        result = Result(None, **_captured_output(expired.output or b"", redact_output), timed_out=True,
+                        error=detail, restoration_safe=False)
+    except UnsafeProcessTreeError as error:
+        result = error.result or Result(None, "", error=str(error), restoration_safe=False)
     except OSError as error:
         detail = f"{error.__class__.__name__}: command could not start"
-        return Result(None, detail, error=detail)
-    return Result(completed.returncode, **_captured_output(completed.stdout, redact_output))
+        result = Result(None, detail, error=detail)
+    except BaseException:
+        _UNCONFIRMED_PROCESS = True
+        raise
+    result = dataclasses.replace(result, elapsed_seconds=time.monotonic() - started)
+    if not result.restoration_safe:
+        _UNCONFIRMED_PROCESS = True
+        raise UnsafeProcessTreeError(result.error or "probe process-tree exit not confirmed", result, command)
+    return result
 
 
 def git_status(root, run=subprocess.run):
@@ -916,6 +1008,7 @@ def _probe_record(probe, result):
         "label": probe.label, "command": probe.command, "expect": probe.expect,
         "expect_text": probe.expect_text, "detail_text": probe.detail_text, "note": probe.note,
         "exit_code": result.exit_code, "timed_out": result.timed_out, "outcome": probe_outcome(probe, result),
+        "elapsed_seconds": result.elapsed_seconds,
         "detail_surfaced": None if probe.detail_text is None else probe.detail_text in result.output,
         "output_tail": result.output[-RECORDED_TAIL:],
     }
@@ -927,7 +1020,22 @@ def _probe_record(probe, result):
         record["failure_evidence"] = result.failure_evidence
     if not result.restoration_safe:
         record["restoration_safe"] = False
+    if result.process_cleanup is not None:
+        record["process_cleanup"] = result.process_cleanup
     return record
+
+
+def _run_probe(probe, root, runner):
+    global _UNCONFIRMED_PROCESS
+    result = None
+    try:
+        result = runner(probe.command, root)
+    except UnsafeProcessTreeError as error:
+        result = error.result or Result(None, "", error=str(error), restoration_safe=False)
+    finally:
+        if result is None or not result.restoration_safe:
+            _UNCONFIRMED_PROCESS = True
+    return result
 
 
 def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXERCISE, status=git_status):
@@ -955,8 +1063,9 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
         record["outcome"], record["reason"] = "error", "scratch checkout is not clean before planting"
         return record
     for command in (fixture.prepare(context) if fixture.prepare else []):
-        result = runner(command, context.root)
-        record["probes"].append(_probe_record(Probe(f"prepare: {command}", command, expect="pass"), result))
+        probe = Probe(f"prepare: {command}", command, expect="pass")
+        result = _run_probe(probe, context.root, runner)
+        record["probes"].append(_probe_record(probe, result))
         if result.error or not result.restoration_safe or result.exit_code != 0:
             record["outcome"], record["reason"] = "error", result.error or "prepare command failed"
             if not result.restoration_safe:
@@ -970,7 +1079,8 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
             witness = planter._unittest_witnesses.get(probe.command) if isinstance(probe.command, str) else None
             if witness is not None:
                 witness.arm()
-            result = runner(probe.command, context.root)
+            restoration_safe = False
+            result = _run_probe(probe, context.root, runner)
             restoration_safe = result.restoration_safe
             if witness is not None:
                 result = witness.consume(result, context.root)
@@ -980,7 +1090,7 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
     except UnsafeProcessTreeError as error:
         restoration_safe = False
         record["outcome"], record["reason"] = "error", str(error)
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except Exception as error:  # noqa: BLE001 - preserve fixture failures without assuming a crashed runner exited
         record["outcome"], record["reason"] = "error", f"planting failed: {error.__class__.__name__}: {error}"
     finally:
         if restoration_safe:

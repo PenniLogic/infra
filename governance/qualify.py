@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -47,6 +48,12 @@ WINDOWS_GOVERNANCE = frozenset(
     "test_conformance_defects.FakeRunnerTests.test_a_real_locked_backup_directory_cannot_be_reported_as_proved",
     "test_conformance_defects.EnvironmentTests.test_shell_probes_do_not_resolve_commands_from_the_consumer_working_directory",
 }
+LINUX_GOVERNANCE = frozenset({
+    "test_conformance_processes.LinuxProcessTests."
+    "test_timeout_stops_shell_and_argv_group_members_but_keeps_restoration_fail_closed",
+    "test_conformance_processes.LinuxProcessTests."
+    "test_an_escaped_descendant_is_not_mistaken_for_a_terminated_owned_tree",
+})
 WINDOWS_SCRIPTS = frozenset("test_bootstrap.DockerCommandTests." + name for name in (
     "test_failed_job_assignment_fails_closed_and_stops_the_command",
     "test_refused_job_creation_fails_closed_before_anything_starts",
@@ -74,10 +81,20 @@ NATIVE_LINKS = {
     "test_money_source_materialization.MaterializationTests."
     "test_symbolic_file_input_is_refused_when_native_symlinks_are_available",
 }
-REQUIRED = {"governance": WINDOWS_GOVERNANCE | NATIVE_LINKS, "scripts": WINDOWS_SCRIPTS | STACK_TESTS | {FLOCK}}
+REQUIRED = {
+    "governance": WINDOWS_GOVERNANCE | LINUX_GOVERNANCE | NATIVE_LINKS,
+    "scripts": WINDOWS_SCRIPTS | STACK_TESTS | {FLOCK},
+}
 SKIPS = {
-    "win32": {"governance": frozenset(), "scripts": STACK_TESTS | {FLOCK}},
+    "win32": {"governance": LINUX_GOVERNANCE, "scripts": STACK_TESTS | {FLOCK}},
     "linux": {"governance": WINDOWS_GOVERNANCE, "scripts": WINDOWS_SCRIPTS},
+}
+POWERSHELL_FIXTURE_PREFIX = b"PENNILOGIC_POWERSHELL_FIXTURE_V1 "
+POWERSHELL_FIXTURE_COUNTS = {
+    "test_api_windows_qualification.ApiWindowsWorkflowTests."
+    "test_windows_powershell_stops_at_each_failed_native_command": (9,),
+    "test_infra_qualification.InfraQualificationWorkflowTests."
+    "test_both_ordinary_suites_preserve_the_linux_graph_and_windows_preparation": (1, 4),
 }
 
 
@@ -182,6 +199,58 @@ def discovery_inventory(root, suite):
     return {identifier(name): name for name in names}
 
 
+def _powershell_diagnostic(data, identity, counts):
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate-diagnostic-field")
+            value[key] = item
+        return value
+
+    def integer(value, lower, upper):
+        return type(value) is int and lower <= value <= upper
+
+    malformed = {"state": "malformed"}
+    if len(data) > 2048 or not data.startswith(POWERSHELL_FIXTURE_PREFIX):
+        return malformed
+    try:
+        value = json.loads(data[len(POWERSHELL_FIXTURE_PREFIX):], object_pairs_hook=unique)
+        if (not isinstance(value, dict) or set(value) != {
+                "test_id_sha256", "count", "fail_at", "completed_cases", "elapsed_seconds", "timeout_seconds",
+                "boundary", "exception_category", "errno", "exit_code", "stdout", "stderr",
+            } or value["test_id_sha256"] != identity
+                or not integer(value["count"], 1, 9) or value["count"] not in counts
+                or not integer(value["fail_at"], 0, value["count"])
+                or type(value["completed_cases"]) is not list
+                or any(type(number) is not int for number in value["completed_cases"])
+                or value["completed_cases"] != list(range(value["fail_at"]))
+                or type(value["elapsed_seconds"]) not in (int, float)
+                or not math.isfinite(value["elapsed_seconds"]) or value["elapsed_seconds"] < 0
+                or type(value["timeout_seconds"]) is not int or value["timeout_seconds"] != 15
+                or value["boundary"] not in ("invoke", "assertions")
+                or value["exception_category"] not in (
+                    "timeout", "os-error", "assertion", "unicode-error", "subprocess-error", "other-exception")
+                or (value["errno"] is not None and not integer(value["errno"], -(2 ** 31), 2 ** 31 - 1))
+                or (value["exit_code"] is not None and not integer(value["exit_code"], -(2 ** 31), 2 ** 32 - 1))):
+            return malformed
+        for key in ("stdout", "stderr"):
+            stream = value[key]
+            if not isinstance(stream, dict) or set(stream) != {"state", "bytes", "sha256"}:
+                return malformed
+            if stream["state"] in ("unavailable", "malformed"):
+                if stream["bytes"] is not None or stream["sha256"] is not None:
+                    return malformed
+            elif (stream["state"] != ("partial" if value["boundary"] == "invoke" else "complete")
+                  or not integer(stream["bytes"], 0, 2 ** 63 - 1) or not isinstance(stream["sha256"], str)
+                  or not re.fullmatch(r"[0-9a-f]{64}", stream["sha256"])
+                  or (stream["bytes"] == 0 and stream["sha256"] != identifier(""))):
+                return malformed
+    except (ValueError, UnicodeError, OverflowError, RecursionError):
+        return malformed
+    return {"state": "available", **value}
+
+
 def discovery_diagnostics(root, suite, data, inventory, files):
     known = {("test", name): digest for digest, name in inventory.items()}
     for name in inventory.values():
@@ -194,6 +263,8 @@ def discovery_diagnostics(root, suite, data, inventory, files):
         for scope in ("setUpModule", "tearDownModule"):
             known[scope, module] = identifier(module)
     paths = {entry["path_sha256"] for entry in files}
+    fixture_counts = ({identifier(name): counts for name, counts in POWERSHELL_FIXTURE_COUNTS.items()}
+                      if suite == "governance" else {})
     prefix = os.fsencode(root).replace(b"\\", b"/").rstrip(b"/") + b"/"
     reports, current, unrecognized, truncated = [], None, 0, False
     for line in data.splitlines():
@@ -217,9 +288,18 @@ def discovery_diagnostics(root, suite, data, inventory, files):
                 continue
             current = {"reported_status": header.group(1).decode("ascii"), "scope": scope,
                        "reported_id_sha256": digest, "source_frames": []}
+            if scope == "test" and digest in fixture_counts:
+                current["powershell_fixture"] = {"state": "unavailable"}
             reports.append(current)
             continue
         if current is None:
+            continue
+        if "powershell_fixture" in current and line.startswith(b"PENNILOGIC_POWERSHELL_FIXTURE_"):
+            current["powershell_fixture"] = (
+                _powershell_diagnostic(line, current["reported_id_sha256"],
+                                       fixture_counts[current["reported_id_sha256"]])
+                if current["powershell_fixture"]["state"] == "unavailable" else {"state": "malformed"}
+            )
             continue
         frame = re.fullmatch(rb'  File "([^"\r\n]+)", line ([1-9][0-9]{0,7}), in [^\r\n]+', line)
         if frame is None:
