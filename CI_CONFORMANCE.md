@@ -1063,6 +1063,28 @@ The original refusal is re-raised; ordinary discovery and every existing success
 remain unchanged. This canonical observability correction does not recover the hidden
 testcase/cause from the original failed API Windows attempt or authorize consumer adoption.
 
+Infra's shared synthetic PowerShell fixture attaches a bounded exception note to its
+private unittest error report before the fixture directory is cleaned up. On nonzero
+ordinary discovery only, the existing diagnostic projection recognizes the two exact
+owning methods and their fixed command counts (API nine; Infra one or four). It validates
+the hashed method identity, actual `fail_at`, count and completed-call index prefix,
+static exception category, numeric errno, nullable actual exit, and each available
+stdout/stderr byte count and SHA256. Returned captures are complete; exception captures
+are partial; unavailable or malformed captures are explicit, never fabricated empty data.
+Elapsed monotonic seconds cover only that subprocess invocation through return or raise,
+excluding environment/script preparation, assertions and cleanup. The unchanged timeout
+argument is 15 seconds; observed elapsed time is not clipped to it. The at-most-nine
+completed-call indices denote prior returned invocations, not passed assertions.
+
+Only one schema-checked note of at most 2,048 bytes is projected per known failure report,
+within the existing 20-report/eight-source-frame bounds. Missing or invalid/duplicate notes
+are explicitly unavailable or malformed. No stream, message, path, environment value or
+ANSI text is published. These remain untrusted diagnostic hints, never outcome admission.
+Invocation exceptions still abort before `subTest`; returned-result assertions retain
+their exact exit 0/37 and stdout-prefix checks and existing subtest continuation. Original
+nonzero refusal and cleanup are unchanged. This observation path neither recovers nor
+fixes the unobserved cause of native run 38018962358 or the original API Windows failure.
+
 API adoption remains separate and atomic with its owning combined-build interface;
 the Infra extension preserves the frozen API checkpoint bytes and does not become a
 second API evidence owner. Rollback is a reviewed source reversal/regeneration and

@@ -99,6 +99,284 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
                     validate(".github/workflows/ci.yml", generator.encoded(changed).encode())
 
 
+class PowerShellFixtureDiagnosticTests(unittest.TestCase):
+    name = ("test_api_windows_qualification.ApiWindowsWorkflowTests."
+            "test_windows_powershell_stops_at_each_failed_native_command")
+    prefix = b"PENNILOGIC_POWERSHELL_FIXTURE_V1 "
+    private_bytes = (MARKER + "\x1b[31m").encode() + b"\xff"
+
+    def project(self, data, *, name=None, suite="governance"):
+        name = name or self.name
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), mock.patch.object(qualification, "python_outcomes") as parser:
+            qualification.discovery_diagnostics(
+                support.GOVERNANCE.parent, suite, data, {qualification.identifier(name): name}, [],
+            )
+            parser.assert_not_called()
+        for private in (MARKER, "\x1b", str(support.GOVERNANCE), self.name):
+            self.assertNotIn(private, output.getvalue())
+        return json.loads(output.getvalue())
+
+    def helper_run(self, mode, fail_at=2):
+        import test_api_windows_qualification as api_tests
+
+        attempts, scripts = [], []
+
+        def run(command, **options):
+            current = int(options["env"]["FAIL_AT"])
+            attempts.append(current)
+            script = Path(command[-1])
+            scripts.append(script)
+            self.assertTrue(script.is_file())
+            self.assertEqual(["pwsh-fixture", "-NoLogo", "-NoProfile", "-NonInteractive", "-File"],
+                             command[:-1])
+            self.assertEqual({"env", "capture_output", "check", "timeout"}, set(options))
+            self.assertEqual((True, False, 15), tuple(options[key] for key in ("capture_output", "check", "timeout")))
+            if current == fail_at:
+                if mode == "timeout":
+                    raise subprocess.TimeoutExpired(MARKER, 15, output=self.private_bytes, stderr=b"")
+                if mode == "os-error":
+                    raise OSError(13, MARKER, MARKER)
+                if mode == "other":
+                    raise ValueError(MARKER)
+                if mode == "subprocess":
+                    raise subprocess.CalledProcessError(47, MARKER, output=self.private_bytes)
+                if mode == "malformed-capture":
+                    raise subprocess.TimeoutExpired(MARKER, 15, output=MARKER)
+            stdout = "".join(f"{number}\n" for number in range(1, (current or 9) + 1)).encode()
+            code = 37 if current else 0
+            if current == fail_at and mode == "assertion":
+                code = 123
+            if current == fail_at and mode == "decode":
+                stdout = self.private_bytes
+            return subprocess.CompletedProcess(command, code, stdout, self.private_bytes)
+
+        private = io.StringIO()
+        case = api_tests.ApiWindowsWorkflowTests(self.name.rsplit(".", 1)[-1])
+        with mock.patch.object(support.shutil, "which", return_value="pwsh-fixture"), \
+                mock.patch.object(support.subprocess, "run", side_effect=run):
+            result = unittest.TextTestRunner(stream=private, verbosity=2).run(unittest.TestSuite([case]))
+        self.assertTrue(scripts)
+        self.assertTrue(all(not script.parent.exists() for script in scripts))
+        return result, attempts, self.project(private.getvalue().encode())
+
+    def test_invocation_errors_keep_actual_metadata_and_abort_the_remaining_cases(self):
+        for mode, fail_at, category, number in (
+            ("timeout", 2, "timeout", None), ("os-error", 7, "os-error", 13),
+            ("other", 0, "other-exception", None),
+        ):
+            with self.subTest(mode=mode):
+                result, attempts, row = self.helper_run(mode, fail_at)
+                self.assertEqual((1, 0, 1), (result.testsRun, len(result.failures), len(result.errors)))
+                self.assertEqual(list(range(fail_at + 1)), attempts)
+                observation = row["reports"][0]["powershell_fixture"]
+                self.assertEqual("available", observation.pop("state"))
+                self.assertEqual(qualification.identifier(self.name), observation["test_id_sha256"])
+                self.assertEqual((fail_at, 9, list(range(fail_at))),
+                                 tuple(observation[key] for key in ("fail_at", "count", "completed_cases")))
+                self.assertEqual(("invoke", category, number, None, 15),
+                                 tuple(observation[key] for key in
+                                       ("boundary", "exception_category", "errno", "exit_code", "timeout_seconds")))
+                self.assertGreaterEqual(observation["elapsed_seconds"], 0)
+                if mode == "timeout":
+                    self.assertEqual({"state": "partial", "bytes": len(self.private_bytes),
+                                      "sha256": hashlib.sha256(self.private_bytes).hexdigest()}, observation["stdout"])
+                    self.assertEqual({"state": "partial", "bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()},
+                                     observation["stderr"])
+                else:
+                    for stream in ("stdout", "stderr"):
+                        self.assertEqual({"state": "unavailable", "bytes": None, "sha256": None}, observation[stream])
+
+    def test_returned_failures_keep_actual_exit_and_full_captures_and_continue_subtests(self):
+        for mode, failures, errors, category, code in (
+            ("assertion", 1, 0, "assertion", 123), ("decode", 0, 1, "unicode-error", 37),
+        ):
+            with self.subTest(mode=mode):
+                result, attempts, row = self.helper_run(mode)
+                self.assertEqual((1, failures, errors), (result.testsRun, len(result.failures), len(result.errors)))
+                self.assertEqual(list(range(10)), attempts)
+                observation = row["reports"][0]["powershell_fixture"]
+                self.assertEqual(("available", "assertions", category, code, None),
+                                 tuple(observation[key] for key in
+                                       ("state", "boundary", "exception_category", "exit_code", "errno")))
+                self.assertEqual([0, 1], observation["completed_cases"])
+                stdout = self.private_bytes if mode == "decode" else b"1\n2\n"
+                for stream, value in (("stdout", stdout), ("stderr", self.private_bytes)):
+                    self.assertEqual({"state": "complete", "bytes": len(value),
+                                      "sha256": hashlib.sha256(value).hexdigest()}, observation[stream])
+
+    def test_successful_helper_cases_have_no_failure_diagnostic_or_relaxed_assertion(self):
+        result, attempts, row = self.helper_run("success")
+        self.assertTrue(result.wasSuccessful())
+        self.assertEqual(list(range(10)), attempts)
+        self.assertEqual([], row["reports"])
+
+    def test_exception_exit_partial_and_malformed_captures_are_not_coerced_or_printed(self):
+        for mode, category, code, state in (
+            ("subprocess", "subprocess-error", 47, "partial"),
+            ("malformed-capture", "timeout", None, "malformed"),
+        ):
+            with self.subTest(mode=mode):
+                result, attempts, row = self.helper_run(mode)
+                self.assertEqual((1, 0, 1), (result.testsRun, len(result.failures), len(result.errors)))
+                self.assertEqual([0, 1, 2], attempts)
+                value = row["reports"][0]["powershell_fixture"]
+                self.assertEqual(("available", category, code),
+                                 tuple(value[key] for key in ("state", "exception_category", "exit_code")))
+                self.assertEqual(state, value["stdout"]["state"])
+                self.assertEqual({"state": "unavailable", "bytes": None, "sha256": None}, value["stderr"])
+                if state == "malformed":
+                    self.assertEqual({"state": "malformed", "bytes": None, "sha256": None}, value["stdout"])
+                else:
+                    self.assertEqual(len(self.private_bytes), value["stdout"]["bytes"])
+                    self.assertEqual(hashlib.sha256(self.private_bytes).hexdigest(), value["stdout"]["sha256"])
+
+    def test_timing_stops_at_invocation_return_or_raise_not_assertion_or_cleanup(self):
+        for mode, calls in (("assertion", 10), ("timeout", 3)):
+            clock = [value for index in range(calls) for value in (10 + index, 10.125 + index)]
+            with self.subTest(mode=mode), \
+                    mock.patch.object(support.time, "monotonic", side_effect=clock) as monotonic:
+                _, _, row = self.helper_run(mode)
+                self.assertEqual(calls * 2, monotonic.call_count)
+                self.assertEqual(0.125, row["reports"][0]["powershell_fixture"]["elapsed_seconds"])
+                self.assertEqual(15, row["reports"][0]["powershell_fixture"]["timeout_seconds"])
+
+    def test_each_infra_owner_count_and_integer_exit_range_is_diagnostic_only(self):
+        name = ("test_infra_qualification.InfraQualificationWorkflowTests."
+                "test_both_ordinary_suites_preserve_the_linux_graph_and_windows_preparation")
+        header = f"FAIL: {name.rsplit('.', 1)[-1]} ({name})\n".encode()
+        for count in (1, 4):
+            for code in (-(2 ** 31), 2 ** 32 - 1):
+                value = {
+                    "test_id_sha256": qualification.identifier(name), "count": count, "fail_at": count,
+                    "completed_cases": list(range(count)), "elapsed_seconds": 0.25, "timeout_seconds": 15,
+                    "boundary": "assertions", "exception_category": "assertion", "errno": None, "exit_code": code,
+                    "stdout": {"state": "complete", "bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()},
+                    "stderr": {"state": "unavailable", "bytes": None, "sha256": None},
+                }
+                with self.subTest(count=count, code=code):
+                    row = self.project(header + self.prefix + json.dumps(value).encode(), name=name)
+                    self.assertEqual({"state": "available", **value}, row["reports"][0]["powershell_fixture"])
+                    self.assertTrue(row["diagnostic_only"])
+                    self.assertEqual("FAIL", row["reports"][0]["reported_status"])
+        value["count"] = 9
+        row = self.project(header + self.prefix + json.dumps(value).encode(), name=name)
+        self.assertEqual({"state": "malformed"}, row["reports"][0]["powershell_fixture"])
+
+    def test_missing_malformed_duplicate_and_wrong_owner_notes_are_explicit_not_admission(self):
+        header = f"ERROR: {self.name.rsplit('.', 1)[-1]} ({self.name})\n".encode()
+        value = {
+            "test_id_sha256": qualification.identifier(self.name), "count": 9, "fail_at": 2,
+            "completed_cases": [0, 1], "elapsed_seconds": 15.25, "timeout_seconds": 15,
+            "boundary": "invoke", "exception_category": "timeout", "errno": None, "exit_code": None,
+            "stdout": {"state": "partial", "bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()},
+            "stderr": {"state": "unavailable", "bytes": None, "sha256": None},
+        }
+        valid = self.prefix + json.dumps(value).encode() + b"\n"
+        self.assertEqual({"state": "unavailable"}, self.project(header)["reports"][0]["powershell_fixture"])
+        self.assertEqual({"state": "available", **value},
+                         self.project(header + valid)["reports"][0]["powershell_fixture"])
+        mutations = (
+            {"test_id_sha256": "a" * 64}, {"test_id_sha256": MARKER}, {"count": 1}, {"count": True},
+            {"fail_at": True}, {"fail_at": -1}, {"fail_at": 10}, {"completed_cases": [0]},
+            {"completed_cases": [1, 0]}, {"completed_cases": [False, 1]}, {"completed_cases": list(range(20))},
+            {"elapsed_seconds": -1}, {"elapsed_seconds": float("nan")}, {"elapsed_seconds": float("inf")},
+            {"elapsed_seconds": True}, {"timeout_seconds": 16}, {"timeout_seconds": True},
+            {"boundary": MARKER}, {"exception_category": MARKER}, {"errno": True}, {"errno": 2 ** 40},
+            {"exit_code": True}, {"exit_code": -(2 ** 40)}, {"exit_code": MARKER}, {"extra": MARKER},
+            {"stdout": {"state": "partial", "bytes": True, "sha256": "a" * 64}},
+            {"stdout": {"state": "partial", "bytes": -1, "sha256": "a" * 64}},
+            {"stdout": {"state": "partial", "bytes": 2 ** 64, "sha256": "a" * 64}},
+            {"stdout": {"state": "partial", "bytes": 1, "sha256": MARKER}},
+            {"stdout": {"state": "partial", "bytes": 0, "sha256": "a" * 64}},
+            {"stdout": {"state": "unavailable", "bytes": 0, "sha256": None}},
+            {"stdout": {"state": "complete", "bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()}},
+            {"stdout": {"state": "partial", "bytes": 1, "sha256": "a" * 64, "raw": MARKER}},
+            {"stdout": MARKER}, {"stderr": None},
+        )
+        invalid = [self.prefix + json.dumps({**value, **mutation}).encode() + b"\n" for mutation in mutations]
+        invalid.extend((
+            self.prefix + b"{\n", self.prefix + b"[]\n", valid + valid,
+            self.prefix + b"{\n" + valid, valid + self.prefix + b"{\n",
+            self.prefix + b"\xff\n", self.prefix + b"[" * 1000 + b"]" * 1000 + b"\n",
+            valid.replace(b"FIXTURE_V1", b"FIXTURE_V2"),
+            self.prefix + b" " * 2049 + b"\n",
+            self.prefix + json.dumps(value).replace('"count": 9', '"count": 9, "count": 9').encode() + b"\n",
+        ))
+        for index, note in enumerate(invalid):
+            with self.subTest(index=index):
+                row = self.project(header + note)
+                self.assertEqual({"state": "malformed"}, row["reports"][0]["powershell_fixture"])
+                self.assertTrue(row["diagnostic_only"])
+                self.assertEqual("ERROR", row["reports"][0]["reported_status"])
+        wrong = "test_unrelated.Example.test_other"
+        wrong_header = f"ERROR: test_other ({wrong})\n".encode()
+        self.assertNotIn("powershell_fixture", self.project(wrong_header + valid, name=wrong)["reports"][0])
+        self.assertNotIn("powershell_fixture", self.project(header + valid, suite="scripts")["reports"][0])
+
+    def test_real_private_discovery_transports_helper_errors_before_cleanup_without_outcome_admission(self):
+        for mode, fail_at, category in (("timeout", 2, "timeout"), ("os-error", 7, "os-error")):
+            code = (
+                "import subprocess\nimport sys\nimport unittest\nfrom unittest import mock\n"
+                f"sys.path.insert(0, {str(support.GOVERNANCE / 'tests')!r})\n"
+                "import conformance_support as support\n\n"
+                "class ApiWindowsWorkflowTests(unittest.TestCase):\n"
+                f"    def {self.name.rsplit('.', 1)[-1]}(self):\n"
+                "        def run(command, **options):\n"
+                "            current = int(options['env']['FAIL_AT'])\n"
+                f"            if current == {fail_at}:\n"
+                + (f"                raise subprocess.TimeoutExpired({MARKER!r}, 15, output={self.private_bytes!r})\n"
+                   if mode == "timeout" else f"                raise OSError(13, {MARKER!r}, {MARKER!r})\n") +
+                "            output = ''.join(f'{number}\\n' for number in range(1, (current or 9) + 1)).encode()\n"
+                "            return subprocess.CompletedProcess(command, 37 if current else 0, output, b'')\n"
+                "        with mock.patch.object(support.shutil, 'which', return_value='pwsh-fixture'), "
+                "mock.patch.object(support.subprocess, 'run', side_effect=run):\n"
+                "            support.assert_powershell_failure_boundaries(self, 'synthetic source', 9)\n"
+            )
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="infra-private-helper-") as temporary:
+                root = Path(temporary)
+                path = root / "governance" / "tests" / "test_api_windows_qualification.py"
+                path.parent.mkdir(parents=True)
+                path.write_text(code, encoding="utf-8")
+                reports, rows = [], []
+                original_run = subprocess.run
+
+                def run(command, **options):
+                    reports.append(Path(command[3]))
+                    return original_run(command, **options)
+
+                def emit(event, **values):
+                    if event == "ordinary_discovery_diagnostics":
+                        self.assertTrue(reports[0].is_file(), "diagnostic projection must precede capture cleanup")
+                        self.assertIn(self.prefix, reports[0].read_bytes())
+                    rows.append({"event": event, **values})
+
+                with mock.patch.dict(os.environ, support.defects.probe_environment(), clear=True), \
+                        mock.patch.object(qualification, "ROOT", root), \
+                        mock.patch.object(sys, "argv", ["qualify.py", "--", "python", "-m", "unittest",
+                                                       "discover", "-s", "governance/tests"]), \
+                        mock.patch.object(qualification, "versions", return_value={"image_version": "synthetic"}), \
+                        mock.patch.object(qualification, "source_inventory", return_value=SOURCE), \
+                        mock.patch.object(qualification, "discovery_inventory",
+                                          return_value={qualification.identifier(self.name): self.name}), \
+                        mock.patch.object(qualification.subprocess, "run", side_effect=run), \
+                        mock.patch.object(qualification, "python_outcomes") as admission, \
+                        mock.patch.object(qualification, "emit", side_effect=emit):
+                    self.assertEqual(1, qualification.main())
+                    admission.assert_not_called()
+                self.assertEqual(1, len(reports))
+                self.assertFalse(reports[0].parent.exists())
+                self.assertEqual([1], [row["exit_code"] for row in rows if row["event"] == "ordinary_discovery"])
+                diagnostic = next(row for row in rows if row["event"] == "ordinary_discovery_diagnostics")
+                observation = diagnostic["reports"][0]["powershell_fixture"]
+                self.assertEqual(("available", category, fail_at),
+                                 tuple(observation[key] for key in ("state", "exception_category", "fail_at")))
+                self.assertEqual("ordinary-discovery-or-setup-teardown-failed", rows[-1]["code"])
+                self.assertFalse(any(row["event"] in ("test_outcome", "infra_qualification") for row in rows))
+                for private in (MARKER, str(root), self.name, "\x1b"):
+                    self.assertNotIn(private, json.dumps(rows))
+
+
 class InfraDiscoveryTests(unittest.TestCase):
     def exercise(self, system, suite, *, statuses=None, missing=False, exit_code=0, cleanup=True,
                  changed_source=False, report=True, summary=None, extra_names=(), omitted=()):
