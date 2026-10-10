@@ -24,6 +24,15 @@ PYTHON_TERMINAL = re.compile(
 STATUSES = {b"ok": "passed", b"FAIL": "failed", b"ERROR": "error",
             b"expected failure": "expected_failure", b"unexpected success": "unexpected_success"}
 DIAGNOSTIC_CASE_LIMIT = 8
+DIAGNOSTIC_FRAME_LIMIT = 8
+PYTHON_ERROR_HEADER = re.compile(
+    rb"(FAIL|ERROR): (test[A-Za-z0-9_]*) \(([A-Za-z_][A-Za-z0-9_.]*)\)"
+)
+PYTHON_FRAME = re.compile(rb'  File "([^"\x00-\x1f\x7f]+)", line ([1-9][0-9]{0,7}), in [^\r\n]+')
+PYTHON_EXCEPTIONS = (
+    "OSError", "FileNotFoundError", "PermissionError", "TimeoutError", "RuntimeError", "ValueError",
+    "subprocess.SubprocessError", "subprocess.TimeoutExpired", "subprocess.CalledProcessError",
+)
 
 
 class Refused(ValueError):
@@ -112,6 +121,97 @@ def python_outcomes(data):
     return records
 
 
+def python_error_diagnostics(root, data, parser):
+    selected = {record["id_sha256"]: None for record in parser["negative_prefix"] if record["outcome"] == "error"}
+    if not selected:
+        return parser["negative_prefix"]
+    prefix = (str(root).replace("\\", "/").rstrip("/") + "/").encode("utf-8", "surrogatepass")
+    lines, seen = data.splitlines(), set()
+    separator, divider = b"=" * 70, b"-" * 70
+    traceback_header = b"Traceback (most recent call last):"
+    for index in range(parser["line"] - 1, len(lines) - 3):
+        if lines[index] != separator:
+            continue
+        header = PYTHON_ERROR_HEADER.fullmatch(lines[index + 1])
+        if header is None:
+            continue
+        digest = hashlib.sha256(header.group(3)).hexdigest()
+        if digest not in selected:
+            continue
+        if digest in seen:
+            selected[digest] = None
+            continue
+        seen.add(digest)
+        if header.group(1) != b"ERROR" or not header.group(3).endswith(b"." + header.group(2)):
+            continue
+        start = index + 2
+        if lines[start] != divider:
+            start += 1  # unittest may include one short-description line.
+        if start + 1 >= len(lines) or lines[start:start + 2] != [divider, traceback_header]:
+            continue
+        start += 2
+        end = start
+        while end < len(lines) and lines[end] not in (separator, divider):
+            end += 1
+        boundary = (
+            end + 2 < len(lines) and lines[end] == separator
+            and PYTHON_ERROR_HEADER.fullmatch(lines[end + 1]) is not None
+            and (lines[end + 2] == divider or (end + 3 < len(lines) and lines[end + 3] == divider))
+        ) or (
+            end + 3 < len(lines) and lines[end] == divider and PYTHON_SUMMARY.fullmatch(lines[end + 1]) is not None
+            and lines[end + 2] == b"" and PYTHON_TERMINAL.fullmatch(lines[end + 3]) is not None
+        )
+        frames, exception, malformed, truncated = [], None, False, False
+        for line in lines[start:end]:
+            if line in (
+                traceback_header, b"During handling of the above exception, another exception occurred:",
+                b"The above exception was the direct cause of the following exception:",
+            ):
+                malformed = True
+            if exception is not None:
+                continue
+            if line.startswith(b"  File "):
+                frame = PYTHON_FRAME.fullmatch(line)
+                if frame is None:
+                    malformed = True
+                    continue
+                path = frame.group(1).replace(b"\\", b"/")
+                if not path.startswith(prefix):
+                    continue
+                relative = path[len(prefix):]
+                if any(part in (b"", b".", b"..") for part in relative.split(b"/")):
+                    malformed = True
+                    continue
+                location = {"path_sha256": hashlib.sha256(relative).hexdigest(), "line": int(frame.group(2))}
+                if location not in frames:
+                    if len(frames) == DIAGNOSTIC_FRAME_LIMIT:
+                        truncated = True
+                    else:
+                        frames.append(location)
+            elif line and not line.startswith(b" "):
+                exception = next((name for name in PYTHON_EXCEPTIONS
+                                  if line == name.encode("ascii") or line.startswith(name.encode("ascii") + b": ")),
+                                 "unclassified")
+        if malformed:
+            frames = []
+        if malformed or not boundary or not frames or exception is None:
+            exception = "unclassified"
+        selected[digest] = {"exception": exception, "source_frames": frames,
+                            "incomplete": exception == "unclassified" or truncated, "truncated": truncated}
+    remaining, records = DIAGNOSTIC_FRAME_LIMIT, []
+    for record in parser["negative_prefix"]:
+        if record["outcome"] == "error":
+            detail = selected[record["id_sha256"]] or {
+                "exception": "unclassified", "source_frames": [], "incomplete": True, "truncated": False,
+            }
+            if len(detail["source_frames"]) > remaining:
+                detail.update(source_frames=detail["source_frames"][:remaining], incomplete=True, truncated=True)
+            remaining -= len(detail["source_frames"])
+            record = {**record, "error": detail}
+        records.append(record)
+    return records
+
+
 def junit_outcomes(root):
     directory = root / JUNIT
     if directory.is_symlink() or not directory.is_dir():
@@ -171,7 +271,8 @@ def qualify(root):
                 "inventory_complete": False, "exit_code": result.returncode,
                 "stdout": {"bytes": len(output), "sha256": hashlib.sha256(output).hexdigest()},
                 "stderr": {"bytes": len(errors), "sha256": hashlib.sha256(errors).hexdigest()},
-                "parser": error.diagnostic,
+                "parser": {**error.diagnostic,
+                           "negative_prefix": python_error_diagnostics(root, errors, error.diagnostic)},
             }, sort_keys=True), flush=True)
             raise
     for record in records:
