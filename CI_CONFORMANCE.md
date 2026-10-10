@@ -1048,6 +1048,21 @@ their full per-test inventories, actual cleanup absence and strict timing must q
 at the same final source. Only after separate review/acceptance may the existing
 Infra72 owner compose this route and obtain its own exact-current-source qualification.
 
+API's canonical Windows qualifier retains a safe `windows_qualification_diagnostic`
+record before closing captured streams when Python outcome parsing refuses. It contains
+the actual child exit, each complete stream's byte count and SHA256, a static parser
+code/boundary and line number, whether the parser reached the count summary, whether
+terminal-summary text appears anywhere in stderr, a hashed pending identity, and at
+most eight observed failed/error/unexpected-success prefix identities and statuses.
+The total negative-prefix count and truncation flag disclose omitted diagnostic entries.
+No child text, traceback, fixture value, skip reason, ANSI sequence or raw artifact is
+published. Prefix statuses and terminal text can themselves be quoted diagnostics:
+`diagnostic_only: true` and `inventory_complete: false` never establish a test inventory,
+required-case result, completeness, uniqueness, fresh JUnit result or qualification.
+The original refusal is re-raised; ordinary discovery and every existing success gate
+remain unchanged. This canonical observability correction does not recover the hidden
+testcase/cause from the original failed API Windows attempt or authorize consumer adoption.
+
 API adoption remains separate and atomic with its owning combined-build interface;
 the Infra extension preserves the frozen API checkpoint bytes and does not become a
 second API evidence owner. Rollback is a reviewed source reversal/regeneration and
