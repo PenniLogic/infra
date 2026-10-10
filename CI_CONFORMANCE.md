@@ -1149,6 +1149,27 @@ The original refusal is re-raised; ordinary discovery and every existing success
 remain unchanged. This canonical observability correction does not recover the hidden
 testcase/cause from the original failed API Windows attempt or authorize consumer adoption.
 
+Already reported ERROR-prefix IDs also receive diagnostic-only exception details from
+matching ordinary unittest error sections. Only the fixed process-related exception
+allowlist is published, with at most eight total root-relative source-path hashes and
+line numbers across the existing eight-prefix limit. No raw exception name, message,
+traceback, path or environment is emitted. External frames are excluded; missing,
+duplicate, malformed, chained or unsupported reports remain explicitly unclassified
+and incomplete. Frame limits set explicit truncation/incompleteness flags. These are
+untrusted text observations, not authenticated exception objects or verified source
+locations; quoted reports cannot establish outcomes or repair a refusal. The extension
+does not recover the original API failure or classify a previously discarded capture.
+
+The real-unittest diagnostic fixture resolves its owned root before launch, matching
+the child fixture's resolved discovery root and the qualifier's ordinary `ROOT`.
+A real Windows short-path control reproduced the four assertion boundaries reported by
+[#80's first CI attempt](https://github.com/PenniLogic/infra/actions/runs/38032452261):
+an unresolved spelling of the same directory excluded its resolved traceback frames.
+A portable owned parent-directory alias regression also retains this boundary.
+Only fixture setup changes; the parser's lexical frame boundary and refusal policy
+remain unchanged. The native path spelling and failed comparison values were not
+retained, so this reproduction does not establish the hosted cause or native acceptance.
+
 Infra's shared synthetic PowerShell fixture attaches a bounded exception note to its
 private unittest error report before the fixture directory is cleaned up. On nonzero
 ordinary discovery only, the existing diagnostic projection recognizes the two exact

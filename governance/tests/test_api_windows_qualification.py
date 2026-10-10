@@ -181,10 +181,20 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
                     with self.subTest(repository=name, setup=setup):
                         self.assertEqual(expected, generator.workflow(name, setup=setup))
         qualifier_source = "5795155323e7ff9899fb8cf2846ab6646fb0f141"
+        accepted_qualifier = "f85f50f41b31a32838e9d4326947bb437140446a"
         self.assertEqual(
             support.git(support.GOVERNANCE.parent, "show", f"{qualifier_source}:governance/templates/qualify_windows.py"),
+            support.git(support.GOVERNANCE.parent, "show", f"{accepted_qualifier}:governance/templates/qualify_windows.py"),
+        )
+        current_source = "f85d4cd7f7d5a1c14669d8040f282437ceb5ef7f"
+        current_qualifier = support.git(
+            support.GOVERNANCE.parent, "show", f"{current_source}:governance/templates/qualify_windows.py",
+        )
+        self.assertEqual(
+            current_qualifier,
             (support.GOVERNANCE / "templates/qualify_windows.py").read_text(encoding="utf-8"),
         )
+        self.assertEqual(current_qualifier, generator.artifacts("api")["scripts/qualify_windows.py"])
 
 
 class WindowsOutcomeTests(unittest.TestCase):
@@ -520,7 +530,7 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
         identity = "test_diagnostic.DiagnosticCases.test_a_primary"
         real_run = subprocess.run
         with tempfile.TemporaryDirectory(prefix="windows-real-refusal-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             (root / "scripts").mkdir()
             (root / "tests").mkdir()
             (root / "scripts" / "quality.py").write_text(
@@ -532,7 +542,7 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "tests" / "test_diagnostic.py").write_text(
-                "import sys\nimport unittest\n\n"
+                "import subprocess\nimport sys\nimport unittest\n\n"
                 f"PAYLOAD = {MARKER!r} + '\\x1b[31m'\n"
                 "class DiagnosticCases(unittest.TestCase):\n"
                 "    def test_a_primary(self):\n"
@@ -570,14 +580,231 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
             self.assertTrue(captured["stderr"].splitlines()[-1].startswith(b"FAILED ("))
             self.assertEqual("before-count-summary", parser["boundary"])
             self.assertIsNone(parser["pending_id_sha256"])
-            self.assertEqual([{"id_sha256": hashed, "outcome": negative}], parser["negative_prefix"])
+            expected = {"id_sha256": hashed, "outcome": negative}
+            if negative == "error":
+                detail = parser["negative_prefix"][0]["error"]
+                self.assertEqual({"exception", "source_frames", "incomplete", "truncated"}, set(detail))
+                expected["error"] = detail
+            self.assertEqual([expected], parser["negative_prefix"])
             self.assertEqual(1, parser["negative_prefix_count"])
+        return diagnostic, captured
+
+    def exception_report(self, root, entries, reports, terminal=True):
+        data = "".join(
+            f"{name.rsplit('.', 1)[-1]} ({name}) ... {status}\n" for name, status in entries
+        )
+        for name, body in reports:
+            data += ("=" * 70 + f"\nERROR: {name.rsplit('.', 1)[-1]} ({name})\n"
+                     + "-" * 70 + "\nTraceback (most recent call last):\n" + body + "\n")
+        if terminal:
+            data += "-" * 70 + f"\nRan {len(entries)} tests in 0.001s\n\nFAILED (errors=1)\n"
+        return data.encode("utf-8")
+
+    def report_refusal(self, root, data, exit_code=1):
+        def run(command, **options):
+            options["stderr"].write(data)
+            return subprocess.CompletedProcess(command, exit_code)
+
+        return self.capture_refusal(root, run, expected_exit=exit_code)[0]
+
+    def test_real_process_exception_reports_keep_only_allowlisted_classes_and_hashed_frames(self):
+        for body, expected in (
+            ("raise PermissionError(PAYLOAD)", "PermissionError"),
+            ("raise subprocess.TimeoutExpired(PAYLOAD, 1)", "subprocess.TimeoutExpired"),
+            ("raise subprocess.CalledProcessError(1, PAYLOAD)", "subprocess.CalledProcessError"),
+            ("raise type('PrivateFixtureException', (Exception,), {})(PAYLOAD)", "unclassified"),
+            ("raise RuntimeError(PAYLOAD) from ValueError(PAYLOAD)", "unclassified"),
+        ):
+            with self.subTest(exception=expected):
+                diagnostic, _ = self.real_refusal(body, 1, "error")
+                detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                self.assertEqual(expected, detail["exception"])
+                self.assertIs(detail["incomplete"], expected == "unclassified")
+                self.assertIs(detail["truncated"], False)
+                if expected != "unclassified":
+                    self.assertEqual([{
+                        "path_sha256": hashlib.sha256(b"tests/test_diagnostic.py").hexdigest(), "line": 9,
+                    }], detail["source_frames"])
+                self.assertNotIn("PrivateFixtureException", json.dumps(diagnostic))
+
+    def test_error_report_metadata_is_associated_by_exact_negative_error_identity(self):
+        first, second, passed, failed = [f"test_fixture.Cases.test_{name}" for name in ("a", "b", "c", "d")]
+        with tempfile.TemporaryDirectory(prefix="windows-error-association-") as temporary:
+            root = Path(temporary)
+            reports = [
+                (name, f'  File "{root / "tests" / filename}", line {line}, in private_function\n'
+                 f"    raise {exception}('{MARKER}')\n{exception}: {MARKER}\n")
+                for name, filename, line, exception in (
+                    (second, "second.py", 23, "PermissionError"),
+                    (passed, "passed.py", 31, "RuntimeError"),
+                    (failed, "failed.py", 41, "ValueError"),
+                    (first, "first.py", 17, "subprocess.TimeoutExpired"),
+                )
+            ]
+            diagnostic = self.report_refusal(root, self.exception_report(
+                root, [(first, "ERROR"), (second, "ERROR"), (passed, "ok"), (failed, "FAIL")], reports,
+            ))
+        prefix = diagnostic["parser"]["negative_prefix"]
+        self.assertEqual([hashlib.sha256(name.encode()).hexdigest() for name in (first, second, failed)],
+                         [record["id_sha256"] for record in prefix])
+        self.assertEqual(["subprocess.TimeoutExpired", "PermissionError"],
+                         [record["error"]["exception"] for record in prefix[:2]])
+        for record, filename, line in ((prefix[0], "first.py", 17), (prefix[1], "second.py", 23)):
+            self.assertEqual([{
+                "path_sha256": hashlib.sha256(f"tests/{filename}".encode()).hexdigest(), "line": line,
+            }], record["error"]["source_frames"])
+            self.assertIs(record["error"]["incomplete"], False)
+        self.assertNotIn("error", prefix[-1])
+        self.assertNotIn("private_function", json.dumps(diagnostic))
+
+    def test_unclassified_or_malformed_error_reports_cannot_borrow_later_exception_text(self):
+        name = "test_fixture.Cases.test_error"
+        other = "test_fixture.Cases.test_unreported"
+        with tempfile.TemporaryDirectory(prefix="windows-error-unknowns-") as temporary:
+            root = Path(temporary)
+            frame = f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+            good = frame + f"RuntimeError: {MARKER}\n"
+            unknown = frame + f"PrivateFixtureException: {MARKER}\nRuntimeError: quoted\n"
+            valid = self.exception_report(root, [(name, "ERROR")], [(name, good)])
+            variants = {
+                "unreported-id": self.exception_report(root, [(name, "ERROR")], [(other, good)]),
+                "duplicate-id": self.exception_report(root, [(name, "ERROR")], [(name, good), (name, good)]),
+                "unknown-before-allowlisted-quote": self.exception_report(root, [(name, "ERROR")], [(name, unknown)]),
+                "missing-traceback": valid.replace(b"Traceback (most recent call last):\n", b""),
+                "missing-terminal": self.exception_report(root, [(name, "ERROR")], [(name, good)], terminal=False),
+                "no-frames": self.exception_report(root, [(name, "ERROR")], [(name, "RuntimeError: hidden\n")]),
+                "mismatched-method": valid.replace(b"ERROR: test_error (", b"ERROR: test_wrong ("),
+                "wrong-status": valid.replace(b"ERROR: test_error (", b"FAIL: test_error ("),
+                "invalid-line": valid.replace(b", line 19,", b", line 0,"),
+                "oversized-line": valid.replace(b", line 19,", b", line 999999999,"),
+                "path-traversal": valid.replace(b"fixture.py", b"../fixture.py"),
+                "path-control": valid.replace(b"fixture.py", b"\x1b[31mfixture.py"),
+                "qualified-lookalike": valid.replace(b"RuntimeError: ", b"private.RuntimeError: "),
+                "unsupported-chain": self.exception_report(root, [(name, "ERROR")], [(name, good +
+                    "\nDuring handling of the above exception, another exception occurred:\n\n"
+                    "Traceback (most recent call last):\n" + frame + "PermissionError: private\n")]),
+            }
+            for label, data in variants.items():
+                with self.subTest(report=label):
+                    diagnostic = self.report_refusal(root, data)
+                    detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                    self.assertEqual("unclassified", detail["exception"])
+                    self.assertIs(detail["incomplete"], True)
+                    self.assertNotIn("PrivateFixtureException", json.dumps(diagnostic))
+                    self.assertNotIn(other, json.dumps(diagnostic))
+
+    def test_error_frames_ignore_external_paths_and_do_not_reparse_exception_messages(self):
+        name = "test_fixture.Cases.test_error"
+        with tempfile.TemporaryDirectory(prefix="windows-error-frames-") as temporary:
+            root = Path(temporary)
+            body = (
+                f'  File "{root.parent / "outside.py"}", line 2, in external\n'
+                f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+                f"RuntimeError: {MARKER}\n"
+                f'  File "{root / "quoted.py"}", line 77, in quoted\n'
+                "PermissionError: quoted exception text\n"
+            )
+            diagnostic = self.report_refusal(
+                root, self.exception_report(root, [(name, "ERROR")], [(name, body)]),
+            )
+        detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+        self.assertEqual("RuntimeError", detail["exception"])
+        self.assertIs(detail["incomplete"], False)
+        self.assertEqual([{
+            "path_sha256": hashlib.sha256(b"tests/fixture.py").hexdigest(), "line": 19,
+        }], detail["source_frames"])
+        self.assertNotIn("outside.py", json.dumps(diagnostic))
+        self.assertNotIn("quoted.py", json.dumps(diagnostic))
+
+    def test_allowlisted_empty_messages_and_standard_crlf_description_sections_are_supported(self):
+        classes = (
+            "OSError", "FileNotFoundError", "PermissionError", "TimeoutError", "RuntimeError", "ValueError",
+            "subprocess.SubprocessError", "subprocess.TimeoutExpired", "subprocess.CalledProcessError",
+        )
+        name, second = "test_fixture.Cases.test_error", "test_fixture.Cases.test_second"
+        with tempfile.TemporaryDirectory(prefix="windows-error-standard-sections-") as temporary:
+            root = Path(temporary)
+            frame = f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+            for exception in classes:
+                with self.subTest(exception=exception):
+                    data = self.exception_report(
+                        root, [(name, "ERROR"), (second, "ERROR")],
+                        [(name, frame + exception + "\n"), (second, frame + "RuntimeError\n")],
+                    )
+                    data = data.replace(b")\n" + b"-" * 70, b")\n" + MARKER.encode() + b"\n" + b"-" * 70)
+                    diagnostic = self.report_refusal(root, data.replace(b"\n", b"\r\n"))
+                    details = [record["error"] for record in diagnostic["parser"]["negative_prefix"]]
+                    self.assertEqual([exception, "RuntimeError"], [detail["exception"] for detail in details])
+                    self.assertTrue(all(not detail["incomplete"] and not detail["truncated"] for detail in details))
+                    self.assertTrue(all(detail["source_frames"] == [{
+                        "path_sha256": hashlib.sha256(b"tests/fixture.py").hexdigest(), "line": 19,
+                    }] for detail in details))
+
+    def test_error_details_preserve_eight_case_and_public_byte_caps_with_explicit_frame_truncation(self):
+        identities = [f"test_fixture.Cases.test_case_{index}" for index in range(12)]
+        with tempfile.TemporaryDirectory(prefix="windows-error-limits-") as temporary:
+            root = Path(temporary)
+            reports = [(name, "".join(
+                f'  File "{root / "tests" / f"fixture_{line}.py"}", line {line}, in private\n'
+                for line in range(1, 11)
+            ) + f"subprocess.CalledProcessError: {MARKER}\n") for name in reversed(identities)]
+            diagnostic = self.report_refusal(
+                root, self.exception_report(root, [(name, "ERROR") for name in identities], reports),
+            )
+        parser = diagnostic["parser"]
+        self.assertEqual(12, parser["negative_prefix_count"])
+        self.assertIs(parser["negative_prefix_truncated"], True)
+        self.assertEqual(8, len(parser["negative_prefix"]))
+        details = [record["error"] for record in parser["negative_prefix"]]
+        self.assertEqual(8, sum(len(detail["source_frames"]) for detail in details))
+        self.assertTrue(all(detail["incomplete"] and detail["truncated"] for detail in details))
+        self.assertTrue(all(detail["exception"] == "subprocess.CalledProcessError" for detail in details))
+        self.assertLess(len(json.dumps(diagnostic).encode()), 4096)
+
+    def test_classified_error_text_with_zero_exit_still_refuses_before_outcome_admission(self):
+        name = "test_fixture.Cases.test_error"
+        with tempfile.TemporaryDirectory(prefix="windows-error-zero-exit-") as temporary:
+            root = Path(temporary)
+            body = (f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+                    f"RuntimeError: {MARKER}\n")
+            diagnostic = self.report_refusal(
+                root, self.exception_report(root, [(name, "ERROR")], [(name, body)]), exit_code=0,
+            )
+        self.assertEqual("RuntimeError", diagnostic["parser"]["negative_prefix"][0]["error"]["exception"])
+        self.assertEqual(0, diagnostic["exit_code"])
+        self.assertIs(diagnostic["inventory_complete"], False)
+        self.assertIs(diagnostic["diagnostic_only"], True)
 
     def test_real_unittest_failure_retains_safe_diagnostic_before_capture_closes(self):
         self.real_refusal("self.fail(PAYLOAD)", 1, "failed")
 
     def test_real_unittest_error_retains_safe_diagnostic_before_capture_closes(self):
-        self.real_refusal("raise RuntimeError(PAYLOAD)", 1, "error")
+        diagnostic, _ = self.real_refusal("raise RuntimeError(PAYLOAD)", 1, "error")
+        self.assertEqual({
+            "exception": "RuntimeError", "incomplete": False, "truncated": False,
+            "source_frames": [{"path_sha256": hashlib.sha256(b"tests/test_diagnostic.py").hexdigest(), "line": 9}],
+        }, diagnostic["parser"]["negative_prefix"][0]["error"])
+
+    def test_real_refusal_resolves_owned_root_alias_before_attributing_frames(self):
+        original_temporary = tempfile.TemporaryDirectory
+
+        @contextlib.contextmanager
+        def aliased_temporary(*args, **kwargs):
+            with original_temporary(*args, **kwargs) as temporary:
+                root = Path(temporary).resolve()
+                (root / "alias").mkdir()
+                alias = root / "alias" / ".."
+                self.assertNotEqual(str(root), str(alias))
+                self.assertTrue(root.samefile(alias))
+                yield str(alias)
+            self.assertFalse(root.exists())
+
+        with mock.patch.object(tempfile, "TemporaryDirectory", side_effect=aliased_temporary):
+            diagnostic, _ = self.real_refusal("raise RuntimeError(PAYLOAD)", 1, "error")
+        self.assertEqual({
+            "exception": "RuntimeError", "incomplete": False, "truncated": False,
+            "source_frames": [{"path_sha256": hashlib.sha256(b"tests/test_diagnostic.py").hexdigest(), "line": 9}],
+        }, diagnostic["parser"]["negative_prefix"][0]["error"])
 
     def test_real_passing_stderr_retains_safe_diagnostic_without_becoming_accepted(self):
         self.real_refusal("print(PAYLOAD, file=sys.stderr)", 0, None)

@@ -69,7 +69,7 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
         frozen = {
             ".github/workflows/ci.yml": "f6738c070157b5fdb59b84bfe854b22a6371e8be711bf308667ecf555f1bc3da",
             "scripts/check_repository.py": "5654613c86d17b070c06c7492dbf187302e7c6b3fb6bf02d38286726415a4cbf",
-            "scripts/qualify_windows.py": "a1456297560b2b91b8773f14cfba4a3228e87e3a7a316e0d5a6b38207991d977",
+            "scripts/qualify_windows.py": "a98c825995da19e8e0499bc51b5a272b17da2bb065fb5d3593671467901e31b2",
         }
         for path, digest in frozen.items():
             with self.subTest(path=path):
