@@ -393,10 +393,6 @@ class NativeTransportTests(unittest.TestCase):
             self.assertFalse((root / module.PROVIDER).exists())
             verify(1, "--verify")
             directory = root / module.INPUTS
-            moved = directory.with_name("owned-complete-input-backup")
-            directory.rename(moved)
-            verify(1)
-            moved.rename(directory)
             receipt = directory / "materialization.json"
             original = receipt.read_bytes()
             receipt.write_bytes(b"{}")
@@ -406,6 +402,10 @@ class NativeTransportTests(unittest.TestCase):
             verify(1)
             receipt.write_bytes(original)
             verify(0)
+            moved = directory.with_name("owned-complete-input-backup")
+            directory.rename(moved)
+            verify(1)
+            self.assertFalse(directory.exists())
             self.assertEqual(17, len(transport.calls))
 
 
@@ -445,6 +445,8 @@ class NativeInstallationTests(unittest.TestCase):
         self.assertEqual(sum(len(source["files"]) + 3 for source in data["binding"]["sources"].values()), result["requests"])
         self.assertEqual(contents, preparation.verify(root, authority, helper))
         self.assertTrue(all(request.get_header("Authorization") == "Bearer " + TOKEN for request in transport.calls))
+        for payload in contents.values():
+            self.assertNotIn(TOKEN.encode(), payload)
         before = len(transport.calls)
         with mock.patch.object(helper.urllib.request, "build_opener") as opener, \
                 mock.patch.object(preparation.subprocess, "run") as child:
@@ -459,6 +461,12 @@ class NativeInstallationTests(unittest.TestCase):
             self.assertEqual(b"{}", payload.read_bytes())
             opener.assert_not_called()
             payload.write_bytes(original)
+            self.assertEqual(contents, preparation.verify(root, authority, helper))
+            with mock.patch.dict(os.environ, {key: value for key, value in native_environment().items() if key != TOKEN_NAME}, clear=True):
+                with self.assertRaisesRegex(helper.MaterializationError, "^native-source-authentication$"):
+                    preparation.prepare(root, authority, helper, fetch=True, native_fetch=True)
+            with self.assertRaisesRegex(preparation.InstallationError, "^installation-native-fetch-mode$"):
+                preparation.prepare(root, authority, helper, native_fetch=True)
             bundle = root / preparation.OUTPUT
             saved = bundle.with_name("owned-prepared-backup")
             bundle.rename(saved)
@@ -467,15 +475,7 @@ class NativeInstallationTests(unittest.TestCase):
             opener.assert_not_called()
             child.assert_not_called()
             self.assertFalse(bundle.exists())
-            saved.rename(bundle)
         self.assertEqual(before, len(transport.calls))
-        for payload in contents.values():
-            self.assertNotIn(TOKEN.encode(), payload)
-        with mock.patch.dict(os.environ, {key: value for key, value in native_environment().items() if key != TOKEN_NAME}, clear=True):
-            with self.assertRaisesRegex(helper.MaterializationError, "^native-source-authentication$"):
-                preparation.prepare(root, authority, helper, fetch=True, native_fetch=True)
-        with self.assertRaisesRegex(preparation.InstallationError, "^installation-native-fetch-mode$"):
-            preparation.prepare(root, authority, helper, native_fetch=True)
 
 
 if __name__ == "__main__":
