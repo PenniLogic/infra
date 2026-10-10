@@ -384,7 +384,7 @@ That receipt was reproduced by the unchanged producer at frozen API source
 `35267fcf20a0de02760187e8ff72421a78f722ff`; running only that producer does not
 execute, adopt or approve its separately reviewed mutation proposal.
 
-The generated API command sequence is:
+The shared API profile for manual runs and the credential-free Conformance exerciser remains:
 
 ```text
 python scripts\check_repository.py
@@ -399,7 +399,9 @@ python -m unittest discover -s scripts\tests
 ```
 
 In native CI, the combined-build companion supplies `--base` and the prepared Node
-executable to the normal build in this sequence; no later coverage graph is started.
+executable to the normal build; no later coverage graph is started. The proposed
+native-only acquisition and prepared-input arrangement below retains these owning
+gates but separates their credential-free execution from source acquisition.
 The provider and combined build belong to the owning API candidate, which must be
 adopted separately. Rendering these commands does not admit or release the currently
 unaccepted API Money source.
@@ -415,7 +417,9 @@ admission; the accepted validator, permissions, budgets and required checks are 
 
 Only named snapshots and their deterministic `materialization.json` receipt under
 `build/source-materialization` are written by the materializer. The API provider
-alone writes `build/contracts-money`. Offline `--verify` checks both complete input
+alone writes `build/contracts-money`. Offline `--verify-inputs` checks only complete
+input snapshots and their receipt, without fetching, repairing or running the provider.
+Offline `--verify` still checks both complete input
 snapshots and all fourteen provider files, including the provider receipt and both
 golden Kotlin sources. An existing provider bundle is checked before preparation
 so a changed receipt or partial/tampered output cannot be silently overwritten.
@@ -445,7 +449,9 @@ Limits are 32 requests, a ten-second checked elapsed deadline for each complete 
 per response and four MiB total. Late progress or completed responses are not admitted.
 Socket timeouts bound individual waits, not guaranteed whole-GET interruption;
 platform DNS/socket blocking still has the native job as its outer bound.
-Public CI sends no credentials; no token environment is added to its workflow.
+Default/local acquisition and shared Conformance preparation remain anonymous; they
+never infer authentication from an ambient token. The native API proposal below is
+an explicit, narrow change to the previous anonymous-only consumer CI policy.
 Local authenticated reads require explicit `--authenticated-local`, a process-local
 `GH_TOKEN`, and verified `basiltt:54134686` identity. That option refuses before
 client/provider/cache handling whenever `GITHUB_ACTIONS` is present, regardless of
@@ -460,6 +466,60 @@ Error bodies and header values are never read into diagnostics, and no HTTP fail
 triggers retries, credentials or a fallback. The historical accepted API push failure
 reported only `source-denied`, so its exact HTTP cause cannot be recovered or asserted
 as quota exhaustion; current local access is not hosted recovery evidence.
+
+### Proposed native API source-preparation exception
+
+This source proposes a reviewed policy change, not an already accepted exception,
+owner waiver or runtime activation. Only the exact generated API native CI workflow
+may give its two acquisition steps `PENNILOGIC_NATIVE_SOURCE_TOKEN: ${{ github.token }}`
+under unchanged `contents: read`. Independent Core/QA/Security review and ordinary
+protected integration remain required.
+
+After the credential-free repository check, the first step runs only
+`python -I -S -B scripts/materialize_money_sources.py --native-fetch`. The next,
+credential-free step verifies the complete Money inputs with `--verify-inputs`,
+executes the existing provider, verifies that provider and runs the existing full
+Money `--verify`. Only then may the second token-scoped step run
+`python -I -S -B scripts/prepare_database_admission.py prepare --fetch --native-fetch`
+followed by `python -I -S -B scripts/money_client_interop.py prepare --native-fetch`.
+Provider verification remains an interop acquisition prerequisite; it never runs
+with this credential. All original gates and their fail-fast order are retained.
+
+The explicit client mode consumes only that one variable, requires the exact API
+repository/organization numeric context and an ordinary native event, and validates
+the credential before a cached-input short-circuit. It does not inspect PATs,
+keyrings, `GH_TOKEN` or `GITHUB_TOKEN`, infer native mode, retry or fall back to
+anonymous/local authentication. Missing/invalid credentials or context refuse
+statically. The context is a caller restriction, not cryptographic token provenance.
+The token stays in process memory only for Authorization headers on the existing
+approved `https://api.github.com` pinned public read endpoints. It is removed from
+the process environment; no token value enters argv, URLs, output or artifacts.
+Redirects/proxies remain disabled, and the separate pinned interop archive reader
+retains its own credential-free headers. No acquisition command launches owning
+tests, builds, provider execution or tool installation.
+
+Later steps have no token environment. Database preparation omits `--fetch` and
+re-verifies its existing complete installation before the unchanged verification
+gate. Windows' input-only interop `prepare --require-prepared` and the Linux build
+or Windows qualifier's `--require-prepared` forwarding require complete existing
+interop inputs plus receipt. API's owning quality/Gradle/isolated worker chain
+repeats that requirement at actual use: even disappearance of both artifacts must
+refuse, never reacquire. The flag carries no secret. Default/manual/Conformance
+commands omit it and preserve their existing behavior.
+
+Request counts remain 17 for Money, 28 for database authority and three interop
+metadata GETs plus its one credential-free archive GET. There is no new identity
+cache, request reduction, origin, permission, deadline or cap. The ephemeral-token
+mode addresses the anonymous-quota availability class, not all rate limits or
+cross-repository access failures; the same upstream quota refusal remains valid.
+The Actions `GITHUB_TOKEN` limit is 1,000 requests/hour/repository, not the generic
+installation-token limit; preparation does not own that entire shared allowance.
+First-party [setup-node](https://github.com/actions/setup-node/blob/main/action.yml)
+and [pinned tool-cache code](https://github.com/actions/toolkit/blob/fa980c4100e53128102670562e9e293518900112/packages/tool-cache/src/tool-cache.ts#L588)
+provide precedent for authenticated public cross-repository tree/blob reads, not
+proof that this exact endpoint set or available quota has passed.
+Synthetic transport/negative controls are not actual native quota availability.
+That requires a later authorized changed-source native run after review/integration.
 
 The check-name registry binds the API workflow to an actual source commit in a
 subsequent registry-only commit, not a guessed/self-referential SHA. Local source
@@ -481,7 +541,7 @@ shapes, bounded timeouts).
 ## `templates/check_repository.py`
 
 The template is copied into every consumer as `scripts/check_repository.py` and runs from the
-managed pre-commit hook (`--staged`) and as the first CI command. One block is rendered during the
+managed pre-commit hook (`--staged`) and as the first owning profile check. One block is rendered during the
 copy: `generate.py` replaces the `WORKFLOW_ACTION_PINS` mapping with the `actions` pins of
 `repository-profiles.json` (validated as lowercase 40-hex commits, sorted by action name), so the
 same source that pins `actions/checkout`, `actions/setup-python`, `actions/setup-node` and

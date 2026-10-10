@@ -20,6 +20,7 @@ from unittest import mock
 import conformance_support as support
 from conformance import defects, github_api, registry, report, run
 from test_baseline import CONTRACTS_STATE
+from test_api_native_source_fetch import remove_native_steps
 
 
 BASE = "e96eb757beeb02b0a802e7545ca781669e85deb8"
@@ -283,6 +284,8 @@ class RuntimeRenderingTests(unittest.TestCase):
                             run_checks["run"] = "\n".join(previous_profile["commands"])
                             expected = json.dumps(value, indent=2) + "\n"
                         actual = support.generator.workflow(name, setup=setup)
+                        if name == "api" and not setup:
+                            actual = remove_native_steps(self, actual, jobs=("ci",))
                         if name == "api":
                             value = json.loads(actual)
                             native_steps = next(iter(value["jobs"].values()))["steps"]

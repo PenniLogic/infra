@@ -945,12 +945,14 @@ without it.
 ## Bounded runtime expansion after accepted PR 58
 
 The hosted quota failure makes dependable authenticated read-only metadata necessary. The canonical
-generator now emits one intentional exception: only the infra profile's exact
+generator introduced one intentional exception: only the infra profile's exact
 `.github/workflows/conformance.yml`, sole `conformance` job and unique plain `Run conformance` step
 may receive `env` exactly `{"GH_TOKEN": "${{ github.token }}"}`. The expression is not added to
 the global allowlist. Keys and every other string still pass the expression and secret tripwires;
 whole/computed/bracket contexts, renamed/duplicate/action harnesses, other token variables, extra
-environments, consumer CI/setup workflows and reusable/default-input action channels remain refused.
+environments, consumer CI/setup workflows and reusable/default-input action channels remain refused
+by that exception. The later, separately proposed API-native exception below does not
+widen its scope or the global expression allowlist.
 The source-bound ordered refusal table and generated artifact-count/shape assertions are updated
 with it (`governance/README.md`, 33 rules, 22 infra files versus 20 per consumer).
 
@@ -988,6 +990,64 @@ request a reviewed decision; do not add personal credentials, permissions or sil
 Rollback is a reviewed revert/regeneration to accepted `e96eb757` (remove the new generated
 `.nvmrc` explicitly), restoring the anonymous/Python-only workflow and its known quota limit.
 The original failure artifact remains evidence either way.
+
+### Proposed API-native pinned-source acquisition policy
+
+The [PenniLogic/api#106](https://github.com/PenniLogic/api/pull/106) failure at
+published `4d0957a3e310f86528d822663622cecaf0144810`
+included a proven `source-rate-exhausted` refusal: HTTP 403 with the singleton
+`X-RateLimit-Remaining: 0`, not exhaustion of the preparer's local 32-request cap.
+The database authority requires 28 GETs. This proposal uses the platform's existing
+ephemeral read-only job token for all three API public REST preparation phases,
+rather than promising that a one-request identity optimization fixes upstream quota.
+It is a review-required change to the prior anonymous-only consumer policy.
+Protected source remains authoritative until separate Core/QA/Security review and
+ordinary integration; no token acquisition, new grant, extra spending, protection
+change, native dispatch or owner waiver is authorized by these source changes.
+
+Only exact generated API CI bytes admit two step-local environments, each exactly
+`{"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}`, with unchanged minimum
+`contents: read`. The first follows the repository check and performs only Money
+source fetch. Credential-free Money input verification, existing provider execution,
+provider verification and full Money verification follow. The second acquisition
+step performs database fetch then interop fetch, retaining the verified-provider
+prerequisite. Every original owning gate and PowerShell fail-fast boundary remains.
+The common checker expression allowlist, other workflows/profiles and real
+credential-free Conformance exerciser are unchanged.
+
+Only explicit `--native-fetch` / `ReadOnlyClient(..., native_fetch=True)` selects
+this mode. The client consumes `PENNILOGIC_NATIVE_SOURCE_TOKEN`, checks exact API
+numeric/native context and token syntax even for cached preparation, and refuses
+missing/invalid values. It never discovers or reuses ambient PAT/keyring/local
+credentials, enables local-auth-in-Actions, retries, or falls back. That context is
+not cryptographic provenance: the reviewed workflow supplies the intended ephemeral
+credential. Authorization goes only to the already approved first-party GitHub API
+pinned public GET endpoints. No token goes in URLs, arguments, logs or artifacts,
+or into archive redirects, clones, provider execution, tests, builds or child tools.
+The independent archive reader remains credential-free; all redirects/proxies and
+unapproved endpoints remain refused.
+
+Later native commands are credential-free and cannot silently reacquire: Money
+`--verify-inputs` validates complete inputs/receipt without claiming provider output;
+full `--verify` retains its original provider check. Database preparation omits
+`--fetch` and re-verifies complete pinned payloads. Interop input verification uses
+`prepare --require-prepared`; native `quality.py build --require-prepared` and
+`qualify_windows.py --require-prepared` (forwarded to `quality.py test`) retain that
+strict requirement through API's owning Gradle/isolated worker chain at actual use.
+Missing, partial, stale or both-disappeared inputs/receipt refuse instead of fetching.
+Default/manual/shared Conformance commands do not acquire a new mandatory token or
+prepared-only flag.
+
+Public numeric identity, immutable commit/tree/blob/path/size checks, admission and
+publication-before-completeness rules, response/request/byte/time bounds and existing
+failure codes are unchanged. Counts stay 17 Money GETs, 28 database GETs, and three
+interop metadata GETs plus one credential-free archive GET. Synthetic fixtures cover
+exact header scope, redirect/error closure, ambient-token refusal, complete offline
+revalidation and downstream noninheritance; they do not establish actual token quota
+availability or cross-repository access. The Actions `GITHUB_TOKEN` limit is 1,000
+requests/hour/repository, not the generic installation-token limit, and other job
+requests share that allowance. Upstream exhaustion/outage still refuses,
+and changed-source native qualification remains a later Root-controlled operation.
 
 ### Native PR CI failure and required runtime repair
 
@@ -1159,6 +1219,29 @@ and incomplete. Frame limits set explicit truncation/incompleteness flags. These
 untrusted text observations, not authenticated exception objects or verified source
 locations; quoted reports cannot establish outcomes or repair a refusal. The extension
 does not recover the original API failure or classify a previously discarded capture.
+
+The same correlated ERROR section may carry one exact ASCII
+`process_budget_state=` exception note using `pennilogic.process-budget-state/1`.
+Only the producer's nine observed fields, or its exact two-field unavailable object,
+are transported. The note is at most 384 bytes, canonical sorted compact JSON, and
+must follow the exception and end that report. Duplicate/unknown keys, multiple notes,
+booleans in integer fields, malformed/nonfinite values, inconsistent running/return-code
+state, counts, time sums or bounds yield unavailable/incomplete metadata. Uncorrelated,
+duplicate or structurally invalid error sections cannot lend another test their state.
+An absent note preserves the prior diagnostic shape. Custom `BudgetExceeded` still stays
+unclassified under the unchanged nine-name allowlist.
+
+Observed process state distinguishes the owned Windows bootstrap (the direct owned
+command on POSIX), its nullable return code and at most two capture-reader threads.
+Elapsed/setup/wait values are bounded integer milliseconds, not new deadlines or proof
+of why the budget expired. Source-frame and prefix limits remain eight each. The
+existing public diagnostic bound remains below 4096 bytes: crowded notes become
+unavailable, then are omitted only if necessary, with explicit incomplete/truncated
+flags; existing identities and frames are not removed to make room. All observations
+remain untrusted, incomplete hints, never outcome/admission or freshness evidence.
+Successful qualification stays silent about failure state. This transport does not
+recover the discarded hosted cause or establish
+[PenniLogic/api#106](https://github.com/PenniLogic/api/pull/106) acceptance.
 
 The real-unittest diagnostic fixture resolves its owned root before launch, matching
 the child fixture's resolved discovery root and the qualifier's ordinary `ROOT`.

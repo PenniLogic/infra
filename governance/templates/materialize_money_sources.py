@@ -33,6 +33,7 @@ MAX_TOTAL_BYTES = 4 * 1024 * 1024
 MAX_REQUESTS = 32
 REQUEST_SECONDS = 10
 DEADLINE_SECONDS = 180
+NATIVE_TOKEN_ENV = "PENNILOGIC_NATIVE_SOURCE_TOKEN"
 
 
 class MaterializationError(ValueError):
@@ -243,19 +244,29 @@ def http_refusal(error):
 class ReadOnlyClient:
     """Use the accepted PR-validator's bounded Git-object GET pattern, without its gate policy."""
 
-    def __init__(self, catalog, authenticated_local=False, budget=None, opener=None, environ=None):
+    def __init__(self, catalog, authenticated_local=False, budget=None, opener=None, environ=None, native_fetch=False):
         env = os.environ if environ is None else environ
+        require(not (authenticated_local and native_fetch), "source-authentication-mode")
         if authenticated_local:
             local_mode(env)
         self.budget = budget or Budget()
         self.authenticated_local = authenticated_local
+        self.native_fetch = native_fetch
         self.headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
                         "User-Agent": "PenniLogic-API-Money-source-materialization"}
-        if authenticated_local:
+        if native_fetch:
+            token = env.pop(NATIVE_TOKEN_ENV, None)
+            require(env.get("GITHUB_ACTIONS") == "true" and env.get("GITHUB_REPOSITORY") == "PenniLogic/api"
+                    and env.get("GITHUB_REPOSITORY_ID") == "1394134582"
+                    and env.get("GITHUB_REPOSITORY_OWNER_ID") == "335295566"
+                    and env.get("GITHUB_EVENT_NAME") in ("push", "pull_request", "workflow_dispatch"),
+                    "native-source-context")
+        elif authenticated_local:
             token = env.get("GH_TOKEN")
+        if authenticated_local or native_fetch:
             require(isinstance(token, str) and 20 <= len(token) <= 4096
                     and all(33 <= ord(char) <= 126 for char in token),
-                    "local-authentication")
+                    "native-source-authentication" if native_fetch else "local-authentication")
             self.headers["Authorization"] = "Bearer " + token
         self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         allowed = []
@@ -520,11 +531,12 @@ def publish_inputs(root, catalog, contents, budget):
         raise
 
 
-def materialize(root=ROOT, client=None, authenticated_local=False):
+def materialize(root=ROOT, client=None, authenticated_local=False, native_fetch=False):
     if authenticated_local or (client is not None and client.authenticated_local):
         local_mode(os.environ)
     catalog = validate_catalog(CATALOG)
-    client = client or ReadOnlyClient(catalog, authenticated_local=authenticated_local)
+    client = client or ReadOnlyClient(catalog, authenticated_local=authenticated_local, native_fetch=native_fetch)
+    require(client.native_fetch == native_fetch, "source-authentication-mode")
     target = owned_path(root, INPUTS)
     provider = owned_path(root, PROVIDER)
     if provider.exists():
@@ -553,17 +565,24 @@ def materialize(root=ROOT, client=None, authenticated_local=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--verify", action="store_true", help="Verify all inputs AND native provider outputs, offline")
-    parser.add_argument("--authenticated-local", action="store_true", help="Explicit process-local personal GH_TOKEN; never CI")
+    verification = parser.add_mutually_exclusive_group()
+    verification.add_argument("--verify", action="store_true", help="Verify all inputs AND native provider outputs, offline")
+    verification.add_argument("--verify-inputs", action="store_true", help="Verify complete prepared inputs only, without fetching")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--authenticated-local", action="store_true", help="Explicit process-local personal GH_TOKEN; never CI")
+    modes.add_argument("--native-fetch", action="store_true", help="Explicit API Actions source-step credential; never ambient auth")
     args = parser.parse_args()
     try:
-        if args.verify:
-            require(not args.authenticated_local, "verification-mode")
+        if args.verify or args.verify_inputs:
+            require(not args.authenticated_local and not args.native_fetch, "verification-mode")
             verify_inputs()
-            verify_provider()
-            result = {"event": "money_sources", "status": "verified", "inputs": 11, "provider_files": 14}
+            if args.verify:
+                verify_provider()
+                result = {"event": "money_sources", "status": "verified", "inputs": 11, "provider_files": 14}
+            else:
+                result = {"event": "money_sources", "status": "verified_inputs", "inputs": 11}
         else:
-            result = materialize(authenticated_local=args.authenticated_local)
+            result = materialize(authenticated_local=args.authenticated_local, native_fetch=args.native_fetch)
         print(json.dumps(result, sort_keys=True))
         return 0
     except MaterializationError as error:
