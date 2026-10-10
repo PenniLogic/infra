@@ -168,8 +168,9 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
                         expected = previous.encoded(document)
                     with self.subTest(repository=name, setup=setup):
                         self.assertEqual(expected, generator.workflow(name, setup=setup))
+        qualifier_source = "5795155323e7ff9899fb8cf2846ab6646fb0f141"
         self.assertEqual(
-            support.git(support.GOVERNANCE.parent, "show", f"{accepted}:governance/templates/qualify_windows.py"),
+            support.git(support.GOVERNANCE.parent, "show", f"{qualifier_source}:governance/templates/qualify_windows.py"),
             (support.GOVERNANCE / "templates/qualify_windows.py").read_text(encoding="utf-8"),
         )
 
