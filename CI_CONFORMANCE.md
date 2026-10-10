@@ -1246,12 +1246,39 @@ duplicate or structurally invalid error sections cannot lend another test their 
 An absent note preserves the prior diagnostic shape. Custom `BudgetExceeded` still stays
 unclassified under the unchanged nine-name allowlist.
 
+An optional, distinct `process_budget_job_state=` note may immediately precede that
+unchanged final v1 note, after the same owning exception. Its
+`pennilogic.process-budget-job-state/1` envelope has exactly `schema`, `accounting`
+and `members`, encoded as recursively sorted compact ASCII JSON within 512 bytes
+including the prefix. Observed accounting carries non-boolean uint32
+`total_assigned` and `active`, with `active <= total_assigned`; unavailable or
+unsupported accounting carries only its status. Observed or partial membership
+carries `listed`, `bootstrap`, `system_approved_shell`, `other` and `unclassified`:
+non-boolean integers from zero through 16, with at most one bootstrap and a role
+sum equal to `listed`. Observed membership cannot contain unclassified entries.
+Unavailable, unsupported or oversized membership carries only its status.
+
+The two samples are not atomic. Cumulative assignments are not active membership,
+and a retained handle is not proof of a live process or shell execution. A valid
+membership/accounting active-count disagreement becomes partial, preserving the
+counts; unavailable accounting is never substituted with zero. Invalid arithmetic
+or an observed unclassified member refuses the new envelope. Every partial or
+unavailable/unsupported/oversized component marks the diagnostic incomplete.
+Malformed, duplicate or misplaced new notes yield the exact same-schema envelope
+with unavailable accounting and members, never raw payloads or fabricated counts.
+An absent new note adds no field. Exact ERROR identity, report framing, source-frame
+and ordered-note association remain required. Independently valid final v1 metadata
+survives a refused new note; a note placed after v1 does not repair v1's lost final
+position. This additive transport does not classify `BudgetExceeded`, change outcome
+admission, observe the host, or diagnose the underlying API Windows failure.
+
 Observed process state distinguishes the owned Windows bootstrap (the direct owned
 command on POSIX), its nullable return code and at most two capture-reader threads.
 Elapsed/setup/wait values are bounded integer milliseconds, not new deadlines or proof
 of why the budget expired. Source-frame and prefix limits remain eight each. The
-existing public diagnostic bound remains below 4096 bytes: crowded notes become
-unavailable, then are omitted only if necessary, with explicit incomplete/truncated
+existing public diagnostic bound remains below 4096 bytes: new Job-state metadata
+across all retained records is reduced to unavailable, then omitted as needed before
+the existing v1 shedding runs. Crowded metadata has explicit incomplete/truncated
 flags; existing identities and frames are not removed to make room. All observations
 remain untrusted, incomplete hints, never outcome/admission or freshness evidence.
 Successful qualification stays silent about failure state. This transport does not

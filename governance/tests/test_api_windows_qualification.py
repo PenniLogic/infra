@@ -199,7 +199,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             support.git(support.GOVERNANCE.parent, "show", f"{historical_source}:governance/templates/qualify_windows.py"),
             support.git(support.GOVERNANCE.parent, "show", f"{historical_accepted}:governance/templates/qualify_windows.py"),
         )
-        current_digest = "57aa442d992444d50092c7133d73bc24550faebbc44a1d8f37dcd30c3192f768"
+        current_digest = "7dd5d6fb0acf39825a360c7fa6d0f48e1bb7dd1a8927c9004d3c988f52029346"
         current_template = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
         current_generated = generator.artifacts("api")["scripts/qualify_windows.py"].encode("utf-8")
         self.assertEqual(current_digest, hashlib.sha256(current_template).hexdigest())
@@ -551,7 +551,7 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
             )
         return diagnostic, captured
 
-    def real_refusal(self, body, exit_code, negative, process_state=None):
+    def real_refusal(self, body, exit_code, negative, process_state=None, job_state=None):
         identity = "test_diagnostic.DiagnosticCases.test_a_primary"
         real_run = subprocess.run
         with tempfile.TemporaryDirectory(prefix="windows-real-refusal-") as temporary:
@@ -612,6 +612,9 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
                 if process_state is not None:
                     fields.add("process_budget_state")
                     self.assertEqual(process_state, detail.get("process_budget_state"))
+                if job_state is not None:
+                    fields.add("process_budget_job_state")
+                    self.assertEqual(job_state, detail.get("process_budget_job_state"))
                 self.assertEqual(fields, set(detail))
                 expected["error"] = detail
             self.assertEqual([expected], parser["negative_prefix"])
@@ -646,6 +649,279 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
 
     def budget_note(self, state):
         return "process_budget_state=" + json.dumps(state, sort_keys=True, separators=(",", ":"))
+
+    def job_state(self, accounting=None, members=None):
+        return {
+            "schema": "pennilogic.process-budget-job-state/1",
+            "accounting": {"status": "observed", "total_assigned": 2, "active": 2}
+            if accounting is None else accounting,
+            "members": {"status": "observed", "listed": 2, "bootstrap": 1,
+                        "system_approved_shell": 1, "other": 0, "unclassified": 0}
+            if members is None else members,
+        }
+
+    def job_note(self, state):
+        return "process_budget_job_state=" + json.dumps(state, sort_keys=True, separators=(",", ":"))
+
+    def test_real_job_note_pair_retains_v1_and_unclassified_budget_refusal(self):
+        legacy = self.budget_state()
+        partial = self.job_state()
+        partial["members"].update(status="partial", system_approved_shell=0, unclassified=1)
+        states = (
+            self.job_state(), partial,
+            self.job_state(accounting={"status": "unavailable"}, members={"status": "unavailable"}),
+            self.job_state(accounting={"status": "unsupported"}, members={"status": "unsupported"}),
+            self.job_state(members={"status": "oversized"}),
+        )
+        for state in states:
+            note, final = self.job_note(state), self.budget_note(legacy)
+            with self.subTest(state=state):
+                self.assertLessEqual(len(note.encode("ascii")), 512)
+                diagnostic, captured = self.real_refusal(
+                    "error = type('BudgetExceeded', (TimeoutError,), {})(PAYLOAD); "
+                    f"error.add_note({note!r}); error.add_note({final!r}); raise error",
+                    1, "error", process_state=legacy, job_state=state,
+                )
+                lines = captured["stderr"].splitlines()
+                self.assertEqual(1, lines.count(note.encode("ascii")))
+                self.assertEqual(1, lines.count(final.encode("ascii")))
+                self.assertEqual(final.encode("ascii"), lines[lines.index(note.encode("ascii")) + 1])
+                detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                self.assertEqual("unclassified", detail["exception"])
+                self.assertIs(detail["incomplete"], True)
+                self.assertIs(detail["truncated"], False)
+                self.assertNotIn("BudgetExceeded", json.dumps(diagnostic))
+
+    def test_job_counts_normalize_only_observed_non_atomic_active_disagreement(self):
+        name, legacy = "test_fixture.Cases.test_error", self.budget_state()
+        empty = self.job_state(accounting={"status": "observed", "total_assigned": 0, "active": 0},
+                               members={"status": "observed", "listed": 0, "bootstrap": 0,
+                                        "system_approved_shell": 0, "other": 0, "unclassified": 0})
+        maximum = self.job_state(
+            accounting={"status": "observed", "total_assigned": 4294967295, "active": 16},
+            members={"status": "observed", "listed": 16, "bootstrap": 1,
+                     "system_approved_shell": 1, "other": 14, "unclassified": 0},
+        )
+        partial = self.job_state()
+        partial["members"]["status"] = "partial"
+        cases = [(empty, "observed", False), (maximum, "observed", False), (partial, "partial", True)]
+        for active in (1, 2, 3, 4294967295):
+            cases.append((self.job_state(accounting={
+                "status": "observed", "total_assigned": 4294967295, "active": active,
+            }), "observed" if active == 2 else "partial", active != 2))
+        for status in ("unavailable", "unsupported"):
+            cases.append((self.job_state(accounting={"status": status}), "observed", True))
+        for status in ("unavailable", "unsupported", "oversized"):
+            cases.append((self.job_state(members={"status": status}), status, True))
+        with tempfile.TemporaryDirectory(prefix="windows-job-state-counts-") as temporary:
+            root = Path(temporary)
+            for state, status, incomplete in cases:
+                with self.subTest(state=state):
+                    original = copy.deepcopy(state)
+                    body = (f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+                            f"RuntimeError: {MARKER}\n{self.job_note(state)}\n{self.budget_note(legacy)}\n")
+                    diagnostic = self.report_refusal(
+                        root, self.exception_report(root, [(name, "ERROR")], [(name, body)]), exit_code=0,
+                    )
+                    expected = copy.deepcopy(state)
+                    expected["members"]["status"] = status
+                    detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                    self.assertEqual(expected, detail["process_budget_job_state"])
+                    self.assertEqual(legacy, detail["process_budget_state"])
+                    self.assertEqual(original, state)
+                    self.assertEqual("RuntimeError", detail["exception"])
+                    self.assertIs(detail["incomplete"], incomplete)
+                    self.assertIs(detail["truncated"], False)
+
+    def test_malformed_job_notes_are_unavailable_without_invalidating_final_v1(self):
+        state, legacy = self.job_state(), self.budget_state()
+        unavailable = self.job_state(accounting={"status": "unavailable"}, members={"status": "unavailable"})
+        invalid = [{key: value for key, value in state.items() if key != missing} for missing in state]
+        invalid.extend(({**state, "extra": MARKER}, {**state, "schema": "pennilogic.process-budget-job-state/2"}))
+        for part in ("accounting", "members"):
+            invalid.extend({**state, part: value} for value in (None, [], True, 1, MARKER))
+            invalid.extend({**state, part: {key: value for key, value in state[part].items() if key != missing}}
+                           for missing in state[part])
+            invalid.append({**state, part: {**state[part], "extra": MARKER}})
+            invalid.extend({**state, part: {**state[part], "status": value}}
+                           for value in (None, True, [], {}, MARKER, "unavailable", "unsupported", "oversized"))
+            for key in set(state[part]) - {"status"}:
+                limit = 4294967295 if part == "accounting" else 16
+                invalid.extend({**state, part: {**state[part], key: value}}
+                               for value in (True, False, -1, limit + 1, 1.0, None, [], {}, "1"))
+        invalid.extend((
+            self.job_state(accounting={"status": "observed", "total_assigned": 1, "active": 2}),
+            self.job_state(accounting={"status": "oversized"}),
+            self.job_state(members={**state["members"], "status": "partial", "listed": 3}),
+            self.job_state(members={**state["members"], "listed": 3, "bootstrap": 2}),
+            self.job_state(members={**state["members"], "system_approved_shell": 0, "unclassified": 1}),
+            self.job_state(members={"status": "partial"}),
+        ))
+        note = self.job_note(state)
+        notes = [self.job_note(value) for value in invalid]
+        notes.extend((
+            note.replace('"active":2', '"active":2,"active":2'),
+            note.replace('"listed":2', '"listed":2,"listed":2'),
+            note.replace('{"accounting":', '{"schema":"' + state["schema"] + '","accounting":', 1),
+            note.replace('"active":2', '"active":NaN'),
+            note.replace('"listed":2', '"listed":Infinity'),
+            note.replace('"active":2', '"active":1e1000'),
+            note.replace('"active":2', '"active": 2'),
+            "process_budget_job_state=" + json.dumps(state, separators=(",", ":")),
+            'process_budget_job_state={"schema":"' + MARKER + '\u00e9"}',
+            self.job_note({**state, "schema": MARKER + "\u00e9"}),
+            "process_budget_job_state=[]", "process_budget_job_state=null", "process_budget_job_state={",
+            note + " " * 512,
+        ))
+        name = "test_fixture.Cases.test_error"
+        with tempfile.TemporaryDirectory(prefix="windows-job-state-invalid-") as temporary:
+            root = Path(temporary)
+            for index, candidate in enumerate(notes):
+                with self.subTest(candidate=index):
+                    body = (f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+                            f"RuntimeError: {MARKER}\n{candidate}\n{self.budget_note(legacy)}\n")
+                    diagnostic = self.report_refusal(
+                        root, self.exception_report(root, [(name, "ERROR")], [(name, body)]),
+                    )
+                    detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                    self.assertEqual(unavailable, detail["process_budget_job_state"])
+                    self.assertEqual(legacy, detail["process_budget_state"])
+                    self.assertIs(detail["incomplete"], True)
+                    self.assertIs(detail["truncated"], False)
+
+    def test_job_note_byte_bound_includes_prefix_and_precedes_json_decoding(self):
+        note = self.job_note(self.job_state()).encode("ascii")
+        unavailable = self.job_state(accounting={"status": "unavailable"}, members={"status": "unavailable"})
+        for length, calls in ((512, 1), (513, 0)):
+            candidate = note + b" " * (length - len(note))
+            with self.subTest(bytes=length), mock.patch.object(qualification.json, "loads", wraps=json.loads) as loads:
+                self.assertEqual(unavailable, qualification.process_budget_job_note(candidate))
+                self.assertEqual(calls, loads.call_count)
+        for candidate in (b"", b"wrong_prefix={}", note + b"\xff"):
+            with self.subTest(candidate=candidate), mock.patch.object(qualification.json, "loads") as loads:
+                self.assertEqual(unavailable, qualification.process_budget_job_note(candidate))
+                loads.assert_not_called()
+
+    def test_job_note_order_duplicates_and_absence_preserve_independent_legacy_rules(self):
+        state, legacy = self.job_state(), self.budget_state()
+        unavailable = self.job_state(accounting={"status": "unavailable"}, members={"status": "unavailable"})
+        legacy_unavailable = {"schema": "pennilogic.process-budget-state/1", "status": "unavailable"}
+        note, final = self.job_note(state), self.budget_note(legacy)
+        name = "test_fixture.Cases.test_error"
+        with tempfile.TemporaryDirectory(prefix="windows-job-state-order-") as temporary:
+            root = Path(temporary)
+            frame = f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+            variants = (
+                ("duplicate-job", f"RuntimeError\n{note}\n{note}\n{final}\n", legacy),
+                ("before-exception", f"{note}\nRuntimeError\n{final}\n", legacy),
+                ("blank-between", f"RuntimeError\n{note}\n\n{final}\n", legacy),
+                ("content-between", f"RuntimeError\n{note}\n{MARKER}\n{final}\n", legacy),
+                ("after-v1", f"RuntimeError\n{final}\n{note}\n", legacy_unavailable),
+                ("duplicate-v1", f"RuntimeError\n{final}\n{note}\n{final}\n", legacy_unavailable),
+                ("missing-v1", f"RuntimeError\n{note}\n", None),
+            )
+            for label, body, expected_legacy in variants:
+                with self.subTest(report=label):
+                    diagnostic = self.report_refusal(
+                        root, self.exception_report(root, [(name, "ERROR")], [(name, frame + body)]),
+                    )
+                    detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                    self.assertEqual(unavailable, detail["process_budget_job_state"])
+                    self.assertEqual(expected_legacy, detail.get("process_budget_state"))
+                    self.assertIs(detail["incomplete"], True)
+            body = frame + f"RuntimeError\n{note}\nprocess_budget_state={{}}\n"
+            detail = self.report_refusal(
+                root, self.exception_report(root, [(name, "ERROR")], [(name, body)]),
+            )["parser"]["negative_prefix"][0]["error"]
+            self.assertEqual(state, detail["process_budget_job_state"])
+            self.assertEqual(legacy_unavailable, detail["process_budget_state"])
+            self.assertIs(detail["incomplete"], True)
+            for suffix in ("", note + "\n"):
+                report = self.exception_report(
+                    root, [(name, "ERROR")], [(name, frame + f"RuntimeError\n{final}\n")],
+                )
+                detail = self.report_refusal(root, report + suffix.encode("ascii"))["parser"]["negative_prefix"][0]["error"]
+                self.assertNotIn("process_budget_job_state", detail)
+                self.assertEqual(legacy, detail["process_budget_state"])
+                self.assertIs(detail["incomplete"], False)
+
+    def test_job_notes_cannot_cross_error_identities_or_invalid_report_envelopes(self):
+        first, second, passed, failed = [f"test_fixture.Cases.test_{name}" for name in ("a", "b", "c", "d")]
+        state, legacy = self.job_state(), self.budget_state()
+        note, final = self.job_note(state), self.budget_note(legacy)
+        with tempfile.TemporaryDirectory(prefix="windows-job-state-identity-") as temporary:
+            root = Path(temporary)
+            frame = f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+            body = frame + f"RuntimeError\n{note}\n{final}\n"
+            data = self.exception_report(
+                root, [(first, "ERROR"), (second, "ERROR"), (passed, "ok"), (failed, "FAIL")],
+                [(passed, body), (second, body), (failed, body), (first, frame + f"RuntimeError\n{final}\n")],
+            )
+            prefix = self.report_refusal(root, data)["parser"]["negative_prefix"]
+            self.assertNotIn("process_budget_job_state", prefix[0]["error"])
+            self.assertEqual(state, prefix[1]["error"]["process_budget_job_state"])
+            self.assertNotIn("error", prefix[2])
+            good = self.exception_report(root, [(first, "ERROR")], [(first, body)])
+            for label, report in (
+                ("duplicate-error", self.exception_report(root, [(first, "ERROR")], [(first, body), (first, body)])),
+                ("unclosed", self.exception_report(root, [(first, "ERROR")], [(first, body)], terminal=False)),
+                ("missing-traceback", good.replace(b"Traceback (most recent call last):\n", b"")),
+                ("missing-frames", good.replace(frame.encode(), b"")),
+                ("mismatched-method", good.replace(b"ERROR: test_a (", b"ERROR: test_wrong (")),
+                ("wrong-status", good.replace(b"ERROR: test_a (", b"FAIL: test_a (")),
+                ("chain", good.replace(body.encode(), (body + "During handling of the above exception, "
+                    "another exception occurred:\nTraceback (most recent call last):\n" + frame + "ValueError\n").encode())),
+            ):
+                with self.subTest(report=label):
+                    detail = self.report_refusal(root, report)["parser"]["negative_prefix"][0]["error"]
+                    self.assertNotEqual(state, detail.get("process_budget_job_state"))
+                    self.assertIs(detail["incomplete"], True)
+            detail = self.report_refusal(root, good.replace(b"\n", b"\r\n"))["parser"]["negative_prefix"][0]["error"]
+            self.assertEqual(state, detail["process_budget_job_state"])
+            self.assertEqual(legacy, detail["process_budget_state"])
+
+    def test_job_notes_shed_before_v1_without_removing_identities_or_frames(self):
+        state = self.job_state(accounting={"status": "observed", "total_assigned": 4294967295, "active": 16},
+                               members={"status": "observed", "listed": 16, "bootstrap": 1,
+                                        "system_approved_shell": 1, "other": 14, "unclassified": 0})
+        legacy = self.budget_state(process_running=False, returncode=4294967295, capture_readers=2,
+                                   capture_readers_alive=2, elapsed_ms=86400000, setup_ms=43200000, wait_ms=43200000)
+        with tempfile.TemporaryDirectory(prefix="windows-job-state-size-") as temporary:
+            root = Path(temporary)
+            for count, frames in ((5, 1), (12, 10)):
+                with self.subTest(cases=count):
+                    names = [f"test_fixture.Cases.test_case_{index}" for index in range(count)]
+                    entries = [(name, "ERROR") for name in names]
+                    diagnostics = []
+                    for include_job in (False, True):
+                        reports = [(name, "".join(
+                            f'  File "{root / "tests" / f"fixture_{line}.py"}", line {line}, in private\n'
+                            for line in range(1, frames + 1)
+                        ) + f"subprocess.CalledProcessError: {MARKER}\n"
+                            + (self.job_note(state) + "\n" if include_job else "")
+                            + self.budget_note(legacy) + "\n") for name in reversed(names)]
+                        diagnostics.append(self.report_refusal(root, self.exception_report(root, entries, reports)))
+                    previous, current = [item["parser"]["negative_prefix"] for item in diagnostics]
+                    self.assertEqual([item["id_sha256"] for item in previous],
+                                     [item["id_sha256"] for item in current])
+                    self.assertEqual([item["error"]["source_frames"] for item in previous],
+                                     [item["error"]["source_frames"] for item in current])
+                    self.assertEqual([item["error"].get("process_budget_state") for item in previous],
+                                     [item["error"].get("process_budget_state") for item in current])
+                    details = [item["error"] for item in current]
+                    self.assertTrue(any(item.get("process_budget_job_state") != state for item in details))
+                    self.assertTrue(all(item["incomplete"] and item["truncated"]
+                                        for item in details if item.get("process_budget_job_state") != state))
+                    self.assertLess(len(json.dumps(diagnostics[-1]).encode("utf-8")), 4096)
+                    self.assertEqual(count, diagnostics[-1]["parser"]["negative_prefix_count"])
+                    if count == 5:
+                        self.assertTrue(all(item["process_budget_state"] == legacy for item in details))
+                    else:
+                        self.assertEqual(8, len(current))
+                        self.assertEqual(8, sum(len(item["source_frames"]) for item in details))
+                        self.assertIs(diagnostics[-1]["parser"]["negative_prefix_truncated"], True)
+                        self.assertTrue(any(item.get("process_budget_state") != legacy for item in details))
+                        self.assertTrue(all("process_budget_job_state" not in item for item in details))
 
     def test_real_exception_notes_transport_observed_and_unavailable_without_classifying_budget_error(self):
         unavailable = {"schema": "pennilogic.process-budget-state/1", "status": "unavailable"}
