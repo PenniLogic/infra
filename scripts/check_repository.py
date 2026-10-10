@@ -314,16 +314,30 @@ import hashlib
 
 
 PR_GATE_FILE = ".github/workflows/pr-workflow-integrity.yml"
-PR_GATE_SHA256 = "6fc63acc21e26d23ac08bf5a52b37cb9950f04b5fe4a868e2d2ab9361dd60981"
+PR_GATE_SHA256 = "f70aa2eb7e5bd5a54f7acc323b82e4832591ffa31671e2e57c3a99975904a30a"
 REQUIRED += (PR_GATE_FILE,)
 
 
-def validate_workflow(name, data):
+def validate_non_infra_ci_workflow(name, data):
     if name == PR_GATE_FILE:
         if hashlib.sha256(data).hexdigest() != PR_GATE_SHA256:
             raise Refused("PR workflow integrity must match its generated data-only workflow")
     else:
         validate_standard_workflow(name, data)
+
+
+import hashlib
+
+
+INFRA_CI_SHA256 = "bbf3b9e2ad3eeb8e504cee308190d03b738b89196f588570284abbce53c5f8ff"
+
+
+def validate_workflow(name, data):
+    if name == ".github/workflows/ci.yml":
+        if hashlib.sha256(data).hexdigest() != INFRA_CI_SHA256:
+            raise Refused("Infra CI must match its generated qualification jobs and required result")
+    else:
+        validate_non_infra_ci_workflow(name, data)
 
 
 def check(files):

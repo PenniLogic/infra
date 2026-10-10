@@ -37,8 +37,9 @@ Do not reintroduce reusable-workflow adoption.
    other than GitHub Actions, app id 15368);
 8. checks the check-name registry entry (`conformance/check-names.json`) and verifies that the recorded
    `workflow_ref` generator commit renders the workflow currently on the consumer's `main`;
-9. records the last completed push run of the `CI` workflow on `main`, its conclusion and wall-clock
-   (`run_started_at` to `updated_at`, queue time excluded) against the ten-minute budget;
+9. records up to ten recent completed push runs of the `CI` workflow on `main`, retaining the
+   last-run conclusion and wall-clock (`run_started_at` to `updated_at`, queue time excluded)
+   checks against the ten-minute budget, plus the bounded trend and early warnings below;
 10. writes `conformance-report.json` (schema `pennilogic.infra.conformance/1`) and
     `conformance-summary.md` with local paths, exact in-process GH/GITHUB token values and
     credential-shaped strings redacted, after a
@@ -72,8 +73,30 @@ discarding that scratch checkout. Unconfirmed Windows teardown diagnostics retai
 pin/wait observations from the original calls, not additional process queries or exit evidence.
 The finite-worker fixture's receipt-count failure also retains receipt names, elapsed time and the
 runner's already bounded/redacted `Result`, distinguishing a timeout from an early worker failure.
-Neither diagnostic changes the assertions, deadlines or fail-closed decisions. POSIX keeps the
-existing `subprocess.run` behavior and makes no Windows process-tree ownership claim.
+Neither diagnostic changes the assertions, deadlines or fail-closed decisions.
+
+POSIX probes now start in a new session/process group. On timeout or an interrupted capture, the
+parent sends `SIGKILL` only while its unreaped child still reserves that group's identifier, then
+shares one five-second deadline between captured-pipe release and waiting for that child. It never
+signals a group after reaping the leader, when the identifier could have been reused. A non-default
+`SIGCHLD` handler, which could reap that child independently, refuses launch. Signal refusal,
+interrupted teardown, leader exit and pipe release are separate `process_cleanup` facts. The
+original timeout, captured output and elapsed time survive in the probe record.
+
+**A process group is not complete descendant containment.** A command can detach a descendant into
+another session, including one with redirected output. Even successful group termination therefore
+does not establish safe restoration after a POSIX timeout: `restoration_safe` is false, backups and
+the planted tree are retained, and further repository execution stops. Normal successful POSIX
+commands retain the existing serial behavior; no Windows-equivalent ownership guarantee is claimed.
+Linux-native group/escape controls are authored in `test_conformance_processes.py`; running the
+Windows controls or mocked POSIX controls is not Linux execution evidence.
+
+Repository inspection remains **serial**, on every platform. This patch neither introduces a
+Windows-only scheduler nor claims a runtime speed fix. Safe Linux overlap still requires descendant
+containment that covers detachment, plus demonstrated compatibility or isolation of shared npm/uv
+caches, HOME/temp/toolchain stores and Docker/port resources. Process-group signaling and separate
+Git roots do not supply those guarantees. No cgroup privileges, service, larger runner or replacement
+supervisor are provisioned here.
 
 Every probe, and every git command on a scratch checkout, runs with `probe_environment()`
 (`governance/conformance/defects.py`): an explicit deny-list of variable names and prefixes is removed
@@ -108,7 +131,15 @@ or locally only against the organization's own repositories. The fixtures prove 
 (a removed, stubbed or skipped test step, an empty suite, a failing test that is really executed); a
 consumer whose maintainers deliberately rewrite their own test runner to fake those outputs is a review
 finding, not something a probe can prove from outside. Do not share one scratch directory between
-concurrent runs.
+concurrent runs. The invocation exclusively creates `.conformance-owner` directories in its scratch
+and output locations; a pre-existing or changed marker is a failure, not permission to take over.
+Duplicate/overlapping requested roots, linked checkout roots, shared Git directories and report output
+overlapping a checkout are refused. Successful and ordinary failed runs release their markers after
+publication. An unconfirmed process lifetime retains the scratch marker and isolated git/gh
+configuration, preventing an automatic retry into a possibly live tree. An abrupt invocation failure
+or unexpected command-runner exception also retains scratch ownership rather than assuming cleanup
+was safe. Before manual recovery, confirm all prior processes have exited and recover retained
+backups; never merely delete the marker.
 
 ### Running it
 
@@ -123,8 +154,8 @@ Options: `--repository <profile>` (repeatable) limits the run; `--github-client 
 (`auto` locally uses the `gh` CLI's stored credential when it is installed and authenticated, else anonymous);
 `--exercise` names the toolchains whose planted defects run (`python` by default; `node`, `uv`, `java`,
 `android` need the matching toolchain on the machine and a network for `npm ci` / `uv sync`);
-`--command-timeout`, `--budget-minutes` (the wall-clock budget recorded per row and applied to the last
-`main` run; default 10), `--generated-at`. Exit status: 0 pass, 1 at least one repository failed, 2 the
+`--command-timeout`, `--budget-minutes` (positive wall-clock budget recorded per run and used for the
+last-run check and trend warning; default 10), `--generated-at`. Exit status: 0 pass, 1 at least one repository failed, 2 the
 job itself could not run (registry invalid, unknown profile, `gh` requested but absent, missing Actions
 step token, wrong Actions client, or the redaction
 self-scan found a surviving local marker — nothing is written in that case).
@@ -152,9 +183,9 @@ Quota exhaustion is observed there; a future authenticated 403 is not automatica
 as quota exhaustion. Inaccessible metadata still fails explicitly, with no grant escalation.
 
 A run that is killed while a defect is planted cannot restore the tree (the process never reaches its
-restore step); the next run refuses to plant into that clone (`scratch checkout is not clean`) and fails
-that repository. Delete the scratch directory, or the clone, and run again. The scheduled job always
-starts from an empty scratch directory.
+restore step); the next run refuses the retained ownership marker, or an unclean clone when no marker
+exists. Confirm process exit before recovering backups or discarding only that owned scratch tree.
+The scheduled job always starts from an empty scratch directory.
 
 ### Reading the report
 
@@ -163,9 +194,40 @@ Per repository the JSON carries `identity`, `main_sha`, `generated_baseline` (`w
 `detected_steps` (`build`, `test`, `lint`, `checker`, `install`, `other`, `consumer_self_tests`),
 `required_checks` (`produced`, `required`, `missing`, `strict_up_to_date`, `branch_rules`, `rulesets` with
 bypass actors), `registry`, `last_main_run` (`wall_clock_seconds`, `within_budget`, `head_sha`),
+`main_run_history`, `ci_duration_trend`,
 `planted_defects`, `language_coverage`, then `failures`, `warnings` and `result`.
 Probe `error` details, fixture `cleanup` locations/recovery mappings and `restoration_deferred` are
 included when applicable; all strings pass the same whole-document redaction and final self-scan.
+An unsafe top-level checker or generator command is retained as `interrupted_probe`; a scratch Git
+timeout is retained as `interrupted_checkout`, without discarding identity or other facts already
+collected for the repository. Its stdout and stderr tails are separately redacted and capped at
+400 characters. Affected and subsequently unexecuted rows fail explicitly.
+
+### Current-execution timing, not historical CI
+
+The following optional fields are additive to schema `pennilogic.infra.conformance/1`, measured with
+`time.monotonic()` rather than wall-clock timestamps:
+
+| Field | Exact measured interval |
+| --- | --- |
+| `execution.elapsed_seconds` | Entry to exit of this invocation's serial repository loop, including failure handling; excludes argument/registry/client setup, source-head lookup and report publication |
+| `repositories[].timings.elapsed_seconds` | This repository inspection, including artifact comparison, identity and metadata reads, checkout, preparation, probes and restoration |
+| `repositories[].timings.checkout_seconds` | The complete `prepare_checkout` call, including reuse validation, clone/fetch, push-URL disabling, clean-tree check and head lookup; also recorded when it fails or raises |
+| Probe, `generated_baseline` and `repository_check` `elapsed_seconds` | Entry to the command runner through environment/capture setup, process launch, execution, bounded teardown and capture redaction; preparation commands use their existing `prepare:` probe records |
+
+Checkout and command intervals are **nested parts** of the inclusive repository interval, not extra
+phase totals to add to it. The generator-command timing excludes its preceding in-process artifact
+comparison. Missing/unexecuted measurements are JSON `null` (or absent in older artifacts), never a
+fabricated zero. JSON keeps the measured value; Markdown displays three decimal places or
+`unavailable`. `last_main_run` and `ci_duration_trend` remain historical metadata, not measurements of
+this invocation. No timing field substitutes for the required changed-source native job **and**
+whole-workflow duration strictly below 600 seconds.
+
+Probe labels and fallback reasons pass through the existing HTML/table-cell escaping helper, with
+Markdown punctuation encoded as literal text. This keeps `<profile>`, `<scratch>`, ampersands, pipes,
+backticks, backslashes, emphasis and link-like text visible without changing labels in JSON or
+reinterpreting any probe verdict. Escaping happens after redaction; capture caps and the 1 MiB
+summary-publication limit are unchanged.
 
 Failures (any one fails the repository and the job): repository id mismatch or unreadable API; scratch
 checkout unavailable; a generated workflow file that differs from the generator; the consumer's own
@@ -173,7 +235,7 @@ checker failing; no test step detected; no required status check on `main`; a re
 producing workflow job; no registry entry, a registry check name the workflow does not produce, or a
 `workflow_ref` that does not render the workflow on `main`; a planted defect `not_proved` or `error`; a
 red last `main` CI run; a run over the ten-minute budget for a profile whose reviewed timeout is the
-default ten minutes. Failed backup cleanup and unconfirmed Windows probe teardown fail the row too;
+default ten minutes. Failed backup cleanup and unconfirmed probe teardown fail the row too;
 a restored consumer tree alone is not enough to prove cleanup succeeded.
 
 Warnings (recorded, not failing): stale non-workflow generated files; a ruleset that does not require an
@@ -181,6 +243,81 @@ up-to-date branch; planted defects of a toolchain not exercised in this run; no 
 found; a run over ten minutes for a profile with a larger reviewed `timeout_minutes` (contracts, api,
 android run with 30); `main` moved since the last completed run; a registry `workflow_ref` that could
 not be verified in this run (no local history for the commit, or no scratch checkout to compare with).
+
+### Bounded CI wall-clock trends and early warnings
+
+The preserved Observability clause of [#22](https://github.com/PenniLogic/infra/issues/22) uses the
+existing read-only metadata/report path, without a service, paid plan, new credential or permission.
+The same runs GET now requests the **first 100 completed main/push runs**, keeps the newest **10 named
+`CI`**, and does not paginate. This is still one runs request per repository, not ten requests.
+The cap and number inspected are recorded; if the scan cap prevents filling the sample window, a
+warning says so. "Recent" means newest in GitHub's creation order, not a promised time-based coverage
+window. Existing run timestamps and the report timestamp remain the evidence of observation time.
+
+`main_run_history.runs` is newest first and retains ids, workflow ids/paths, branch/event/status, run
+numbers, attempts, commits, timestamps, conclusions, durations and budget results. **No failed,
+cancelled, skipped, over-budget or rerun sample is removed to make the history green or faster.**
+The last-run field comes from that same response, so a second read cannot race it. Existing JSON
+fields and schema `pennilogic.infra.conformance/1` remain; the history/trend fields and run source
+metadata are additive.
+
+The Markdown artifact publishes a per-repository oldest-to-newest duration sequence with run links,
+conclusions, over-budget/rerun labels, the prior median, latest change and assessment. Deterministic
+defaults, also recorded in `ci_duration_trend`, are:
+
+- Compare the latest duration with the median of the preceding samples (up to nine), requiring
+  **at least four** runs. A material regression is an increase of **both 20% and 60 seconds**.
+  It warns even below the early-warning threshold; the same thresholds describe an improvement.
+- Warn whenever the latest measured duration is **at least 80% of the budget and not already over
+  it**: 480 through 600 seconds with the default ten minutes. This warning persists even if every
+  sample is equally slow, so a rolling baseline cannot normalize a near-budget plateau.
+- A comparison requires valid durations and source metadata, distinct newest-first run numbers/ids,
+  one workflow id/path, the requested branch/event, successful conclusions and first attempts.
+  Missing or invalid data is `unavailable` / `invalid_history`; fewer than four samples is
+  `insufficient_history`; a non-success, rerun or zero prior median is `incomparable_history`.
+  These are explicit warnings, never "stable". The independently measured 80% warning still works
+  when comparison is unavailable. Rerun envelopes keep the existing timestamp metric; earlier
+  individual attempt results are not recovered or claimed.
+
+Warnings appear individually in JSON, Markdown and non-Actions CLI output. On Actions the CLI
+appends the complete Markdown report to `GITHUB_STEP_SUMMARY` **after** the existing whole-document
+redaction and self-scan, then emits one fixed-text `::warning::` annotation with the total warning
+count and a pointer to the job summary and artifacts. No warning text is fed into a workflow command.
+The already installed weekly/manual workflow needs no generated-workflow change or added permission.
+
+The runner used by the retained failed run, `2.337.0`, keeps only ten warnings per step and truncates
+each annotation message at 4,096 characters
+([runner implementation](https://github.com/actions/runner/blob/v2.337.0/src/Runner.Worker/ExecutionContext.cs)).
+One annotation per alert, or an unbounded concatenation into one annotation, can therefore lose
+details. The complete job summary is the detailed hosted surface; an annotation count is not an
+alert count. The runner's separate
+[1 MiB summary limit](https://github.com/actions/runner/blob/v2.337.0/src/Runner.Worker/FileCommandManager.cs)
+is checked in UTF-8 bytes, including existing summary content, before appending. A missing,
+unwritable or oversized summary channel returns exit 2 explicitly; the full JSON/Markdown artifacts
+are retained, not truncated or silently substituted for successful summary publication.
+
+Historical evidence is unchanged: [run 37935242668](https://github.com/PenniLogic/infra/actions/runs/37935242668)
+on `6b1e4baf403f25e6c4c695a5676e995f1ecb259e` failed with five findings. All thirteen document warnings
+were emitted in its genuine job log, but only the first ten became native warning annotations.
+The two Android historical overruns and Infra's 371-versus-145-second regression were absent from
+that native list. Contracts' approaching-budget and 491-versus-150-second regression warnings were
+present. Source/local publication controls do not manufacture replacement native evidence for that run.
+
+Investigate the linked runs' slow steps, cache misses or retries without dropping required checks.
+This is a sampled, report-only early warning, not continuous monitoring, forecasting, an external
+notification delivery guarantee or stronger workflow-identity enforcement. Three-day artifact
+retention and the existing schedule are unchanged.
+
+An earlier failed/over-budget run stays labeled and warned about even after the latest run succeeds;
+it does not rewrite the existing latest-run gate. A current failure still fails; a current overrun
+still follows the reviewed profile-timeout policy below. The existing 600-second inclusive report
+boundary is unchanged and is not a waiver of #22's separate strict under-ten-minute acceptance.
+
+Focused offline regressions (synthetic metadata, no consumer graph or hosted dispatch):
+
+```text
+python -m unittest discover -s governance/tests -p "test_conformance_trends.py"
+```
 
 Budget decision (Q5 of the QA review): the ten-minute budget of addendum item 3 fails a repository only
 when its profile runs with the default ten-minute `timeout-minutes`; for the three heavy profiles whose
@@ -210,9 +347,9 @@ security acceptance.
 | `workflow-step-skipped-by-condition` | workflow | python | every profile | drift check; consumer checker refuses (`if` rule) |
 | `workflow-unpinned-action` | workflow | python | every profile | drift check; consumer checker refuses `actions/checkout@v4` (pinned-action rule) |
 | `workflow-reusable-workflow-job` | workflow | python | every profile | drift check; consumer checker refuses `jobs.reuse.uses` |
-| `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current infra template copied over the scratch checker refuses (step-key rule from PR E, rule 17 of the ordered table) |
-| `python-tests-removed` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | the exact profile command fails with `NO TESTS RAN` |
-| `python-test-failing` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | the exact profile command fails naming `test_planted_defect_must_fail` |
+| `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current profile-rendered checker refuses with its existing exact CI-binding diagnostic for Infra/API, or the step-key rule for the other profiles |
+| `python-tests-removed` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | the exact profile command exits 5, `NO TESTS RAN` |
+| `python-test-failing` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | each exact profile command exits 1 and its actual `TestResult` records its own indexed planted case as a failure |
 | `python-pytest-failing` / `python-pytest-removed` | python | uv | ai-service | `uv sync --locked` then `uv run --locked pytest` exits 1 / 5 |
 | `documentation-index-link-broken` | documentation | python | docs | `check_docs.py` fails: `generated slot ADR-001 differs` |
 | `documentation-dangling-supersedes` | documentation | python | docs | `check_docs.py` fails: `supersedes ADR-099, which has no source record` |
@@ -220,6 +357,40 @@ security acceptance.
 | `typescript-test-failing` / `typescript-tests-removed` | typescript | node | web, admin | `npm ci` then `npm test` exits non-zero (`planted defect` / `No test files found`) |
 | `kotlin-test-failing` | kotlin | java | api | `python scripts/quality.py test` must fail on a planted JUnit 5 test |
 | `kotlin-android-self-test` | kotlin | android | android | consumer evidence, not a defect this job plants: the consumer-owned `quality_gates.py self-test` (a failing test, spotless and lint defects, UP-TO-DATE and FROM-CACHE results) must exit 0; recorded as `consumer_evidence`, never as `proved`; needs the Android SDK |
+
+The failing unittest fixture uses a different module basename for each start directory. This keeps
+Infra's real `governance/tests` and `scripts/tests` discoveries separate even when a governance
+module adds `scripts/tests` to `sys.path`; neither required discovery command nor any existing test
+is removed. After the planted case's normal `run` returns, it observes whether the actual
+`unittest.TestResult.failures` contains that exact test object. It writes only that boolean, its
+indexed case ID and a fresh per-discovery nonce to a private, precreated witness. Calling
+`self.fail`, printing a heading, or quoting a complete earlier unittest section/report does not
+establish that a failure was recorded.
+
+The parent requires exit 1, confirmed process completion, the same owned single-link regular
+witness file, and an exact bounded record for that invocation and case. Missing, stale, malformed,
+mismatched or unsafe records fail closed; a passing, skipped or errored plant is not a recorded
+failure. Witnesses share the planter's owned cleanup and unconfirmed-lifetime retention.
+Validated attribution is published as the existing additive `failure_evidence` heading, redacted
+before its 400-character bound. The 3,000-character capture tail, 400-character report tail and
+JSON/Markdown shapes are unchanged. Output text never supplies unittest attribution; later
+diagnostics cannot evict it, and timeout, launch or teardown errors cannot turn it into proof.
+
+Contracts' Python suite invokes the specification tools, so the failing unittest fixture first runs
+its declared locked preparation, in order: `npm ci --no-audit --no-fund` and
+`python scripts/toolchain.py install`. A failed preparation is an explicit fixture error before any
+planting; no dependency is skipped or replaced. Other profiles and the selected fixture toolchains
+are unchanged. This preparation and a targeted planted-failure proof are not a claim that the
+entire unplanted consumer baseline is green: other failures, skipped prerequisites and native
+qualification limits must still be reported as such.
+
+The continue-on-error fixture renders `checker(profile)` from the generator running the job rather
+than copying its raw template. Infra/API's compound CI workflows are guarded by exact rendered-byte
+bindings; their intended refusal is that binding diagnostic, not the generic template's step-key
+diagnostic. The mutation still changes only the planted step key, and no workflow-policy allowlist
+or binding is weakened. Before planting, that same rendered validator must accept the unmodified
+workflow; an existing binding or step-key refusal is an explicit fixture error, never evidence for
+the planted defect. Both the workflow and scratch checker are restored afterwards.
 
 Kotlin fixtures are not exercised by the expanded Python/Node/uv job; their evidence is the consumer's last `main`
 CI run (api runs `quality.py build`, android runs its own `self-test` on every run) recorded in the
@@ -413,6 +584,92 @@ contract nor protections are changed, and the API unit's exact maintenance admis
 not admit this composed privacy unit. The fresh corrected complete hosted job and workflow
 must still each be strictly below 600 seconds. All real RC, signer, proxy runner, journey,
 producer and original-ticket acceptance holds remain.
+
+### Android combined script discovery: source preparation, not adoption
+
+This bounded runtime correction for [#22](https://github.com/PenniLogic/infra/issues/22)
+was first prepared on Infra `919cb46bc261977884975e9f058f702c07fa5af7`, after the
+privacy canonical [#66](https://github.com/PenniLogic/infra/pull/66) was merged.
+Its current-base continuation fast-forwards normally to accepted
+`e601c13091bf156193ba266a6f03fdbae279a69e` from [#76](https://github.com/PenniLogic/infra/pull/76).
+The prior candidate and failure evidence remain sealed history. The accepted API
+source `733c42e177d61c552e5baa9dc01d55c850e1b33f`, Infra source
+`889c5c35a1677ef33899a2e63bc528d3bac802f9` and their generator/history repairs are
+preserved. The current Free/public/no-extra-spend scope does not reinstate excluded
+stronger trusted-producer or absence-enforcement guarantees.
+
+Android's additive provider interface must support the following canonical sequence:
+
+```text
+python scripts/check_repository.py
+python -m pip install -r scripts/privacy_traffic/requirements.txt
+python scripts/quality_gates.py ci
+python scripts/quality_gates.py self-test
+python scripts/privacy_traffic_harness.py self-test --all-scripts
+python scripts/check_privacy_components.py
+```
+
+The combined command replaces the overlapping focused privacy discovery and later
+full script discovery with one complete script suite. Android owns retaining every
+original test and new regression, fresh sanitized privacy observations and a nonzero
+exit for failure in either the privacy or nonprivacy subset. The standalone focused
+`self-test` remains available and exactly recognized during migration; canonical CI
+does not fall back to it on failure or execute it a second time. No marker or cache
+can skip tests. The checker, declared requirements, grouped native CI, native negative
+self-test and separate fresh component inventory remain; neither privacy command
+counts as a replacement build or lint gate.
+
+Discovery-only evidence at Android `ead5986e98fd8b8c15d466b7abec4406486abba8` identifies
+74 unique privacy tests (49 traffic, 16 boundary, 9 snapshot) inside the complete
+224-test suite, including the real 20-second CONNECT and 5-second lock controls.
+Its [native run](https://github.com/PenniLogic/android/actions/runs/37921421045)
+succeeded but took 615 seconds for the job and 617 seconds for the workflow:
+it did not qualify. The first privacy suite's 38.033 seconds is not an isolated
+measurement of its contribution inside the later full suite, nor a promised saving.
+Both actual complete job and whole-workflow durations must still be strictly below
+600 seconds; the unchanged 30-minute hard timeout is not that acceptance criterion.
+
+Only Android's five command-derived artifacts change relative to the current
+accepted base: `AGENTS.md`, `README.md`, `CONTRIBUTING.md`,
+`.github/agent-policy.json` and `.github/workflows/ci.yml`. All other profiles,
+setup, inventory helper, checker, action pins, permissions, toolchains and deadlines
+remain unchanged. Source fixtures check exact command/argv composition, nonzero
+propagation, drift refusal and legacy classification; they neither execute Android's
+suites nor establish native parity.
+
+The source-only candidate leaves Android's registry `workflow_ref` at
+`1a540182f48a492772e5230219306632528c3967`, which renders the prior two-discovery
+sequence. Its workflow-history equality checks must remain RED until Root commits
+reviewed source A and follows with the real A reference and exact source-reference
+assertions; no future SHA or acceptance is invented here. Root owns publication,
+independent intake and coordinated Android regeneration after the paired provider
+supports this interface. Use the documented generator in the consumer's owned
+checkout, never manually patch its generated files. No consumer adoption, hosted
+rerun, hook/protection change, paid service or issue closure occurs in this source
+unit. Rollback is a reviewed source/reference reversal and corresponding consumer
+regeneration, not a runtime success-shaped fallback.
+
+#### PR77 native test-expectation correction
+
+The prebinding state above is historical: actual source
+`6867bd8f302e5ca607063dcfeb1a12b382e948fa` and binding
+`50deeed66a5981f5e17441c9038c157b5d566984` now exist, with the two real history
+equalities green locally. Their earlier RED evidence remains unchanged.
+Draft [#77](https://github.com/PenniLogic/infra/pull/77)'s first
+[native attempt](https://github.com/PenniLogic/infra/actions/runs/38013722196)
+failed two command-binding fixtures on both Linux and Windows. Its 336-second
+whole-workflow duration is a failed-run observation, not qualification.
+
+Local reproduction on exact binding B confirmed a stale literal command count
+(49 versus 48) and a historical profile expectation missing only the Android
+composition after its existing API Node adjustment. The test-only repair retains
+an independent 48-command expectation and removal/stub cases for every command.
+It asserts the exact old Android command list from immutable `dbdf2e27144e60b11aed54ed1e576d496a928ec3`
+before applying only the intended transformation in memory. Complete profile
+equality, the original historical protected-profile refusal and an isolated
+API Node refusal remain. No source-admission implementation, generated consumer,
+reference, native gate or deadline is changed; fresh native acceptance remains
+Root-owned and pending.
 
 ## Infra-only trusted PR command-binding bootstrap
 
@@ -743,9 +1000,9 @@ The local results on unaccepted `c9fceee` were not native acceptance.
 ([job 110158325561](https://github.com/PenniLogic/infra/actions/runs/36795639431/job/110158325561))
 failed `RealNodeFixtureTests.setUpClass` at `npm install --package-lock-only --ignore-scripts
 --no-audit --no-fund`, with `Cannot read properties of null (reading 'edgesOut')`. It reported
-227 tests, one error and 13 skips; uv had not been provisioned. Its immutable image
+227 tests, one error and 13 skips; uv had not been provisioned. Its recorded image build
 `ubuntu24/20260927.320` documents default Node `22.23.3`/npm `10.9.9`, while that native infra
-workflow had deliberately remained Python-only.
+workflow had deliberately remained Python-only. That build identifier is not an image-byte pin.
 
 A Linux reproduction downloaded checksum-verified Node distributions, recorded actual
 `node --version`/`npm --version`, and ran the same minimal Vitest `5.0.2` manifest and preparation
@@ -797,6 +1054,156 @@ each native platform and preserve the unsafe Windows flag. End-to-end `run.main`
 the real report redaction, self-scan and JSON/Markdown writing with opaque/shaped tokens,
 credential/path compression and unsplit controls.
 
+## Native OS qualification owner-maintenance transition
+
+This is local source preparation on accepted Infra
+`26fa29ffbaf9e2dd5ca9969c34ec5e664e884f45`, tree
+`e8a40ab1dd3af7540e924d5c40d0cfab253628ac`, not a deployed contract or acceptance.
+The coordinating owner admitted API's combined-build/Windows companion and then
+Infra's directly related standard-hosted Windows route in the same exclusive
+canonical checkout. No frozen [#72](https://github.com/PenniLogic/infra/pull/72)
+Contracts runner source, bcf/ebc branch, approval or qualification is imported.
+
+Infra's former single CI job becomes parallel `Linux qualification` and
+`Windows qualification` jobs plus the small always-running native job named `CI`.
+Only two explicit OS successes satisfy it; failure, cancellation, absence or skip
+does not. Every PowerShell native-command exit is propagated immediately. Linux
+retains all canonical commands and real-stack coverage. Windows runs the ordinary
+full governance and scripts discoveries serially, not isolated control selectors.
+The transparent Infra qualifier launches those same discoveries once with additional
+verbosity, checks full source/ID inventories and emits only safe per-test outcomes
+and version/image metadata. Missing historical objects cannot become qualifying skips.
+Details, exact applicability identities and prerequisites are in
+[governance/README.md](governance/README.md#infra-windowslinux-ordinary-qualification-owner-transition-held).
+
+The only Windows Docker concession uses the existing skip capability for the nine
+`StackLifecycleTests` methods; all nine must execute without skips on Linux at the
+same final source. The existing POSIX-flock-only Windows skip remains, as do Linux's
+exact legitimate Windows-only skips. Full ordinary discovery still includes every
+process/job/interruption/refusal/pipe/handle/unsafe-result/redaction and native-symlink
+control; no 0.8/5/2.5/4 bound or assertion changes. No new skip class, Docker Desktop,
+WSL, privilege mechanism, third-party action, storage allowance or paid runner is added.
+
+The Conformance runtime follow-up also requires both existing
+`test_conformance_processes.LinuxProcessTests` methods in each platform's full inventory:
+`test_timeout_stops_shell_and_argv_group_members_but_keeps_restoration_fail_closed` and
+`test_an_escaped_descendant_is_not_mistaken_for_a_terminated_owned_tree`.
+These exact IDs must be skipped on Windows and pass on Linux. Missing IDs, unknown skips
+or any other outcome refuse; neither class matching nor observed output defines applicability.
+Their Linux-only decorator and process/ownership assertions are unchanged.
+
+Python `3.14`, Node `24.14.0`/npm `11.9.0`, uv `0.11.33`, Git/Bash and immutable
+GitHub-owned action pins remain required. Actual versions and image build metadata
+must accompany native evidence; the standard runner labels are not image-byte pins.
+The existing ten-minute OS job limits are unchanged. Acceptance still requires
+actual complete OS job **and** whole-workflow times strictly below 600 seconds;
+the small result job, local synthetic checks and rendering cannot establish that.
+API's separate original criterion remains complete-test-suite time below 300 seconds,
+not whole-build/job time, and is unverified. Hosted jobs do not supply the separately
+scoped full supported Linux local qualification.
+
+The coordinator-confirmed read-only QA decision `fcc841df` conditionally admits
+prospective full exact-final-source Windows/Linux qualification for the Infra72
+integration prerequisite. It does **not** clear the previous receipt assertion or
+explicit fail-closed 3/4 exit-confirmation refusal: both remain failed/HOLD history,
+with unknown causes, and neither proves unsafe restoration or leakage. Recovery
+of discarded PIDs or qualification on that particular workstation is not required;
+the old workstation experiments are not repeated by this source unit.
+
+Owning `StackLifecycleTests.tearDownClass` no longer ignores reset exits or temporary
+tree errors. It attempts all four owned resets, requires readable zero-resource
+inventories and confirmed temporary removal, and fails teardown otherwise. Scoped
+reset/query failures retain the environment; partial deletion remains unconfirmed.
+This repairs success-shaped cleanup, but its receipts and PASS/VM disposal alone
+are not independent proof. Later native claims still need separately checked absence
+of the exact owned Docker resources, without credential/fixture payload publication.
+
+The **owner-maintenance contract changes explicitly**: only API and Infra receive
+their own exact-byte compound-CI checker exception; the common checker allowlists
+are not widened. Infra's CI/checker bytes and generated PR-integrity contract change.
+The currently protected checker/validator intentionally refuse their replacement;
+candidate self-approval, copied old approvals and a forged source reference cannot
+admit this transition. Root must separately obtain non-author Core/QA and applicable
+specialist review of the final source and decide the protected maintenance procedure.
+No source-authorized bypass, protection change or automatic remote control is implied.
+
+Publication remains gated on explicit Root intake authorization. Real source A must
+contain the final canonical code and owning generated outputs; later registry-only
+B must bind the changed API/Infra primary CI entries and Infra PR-integrity entry
+to actual source SHAs that reproduce their exact bytes. The source-only candidate
+deliberately leaves the old registry intact; existing historical-binding checks
+therefore refuse it until that authorized transition, rather than inventing a
+self/placeholder SHA or weakening/skipping those checks. Then both native OS legs,
+their full per-test inventories, actual cleanup absence and strict timing must qualify
+at the same final source. Only after separate review/acceptance may the existing
+Infra72 owner compose this route and obtain its own exact-current-source qualification.
+
+API's canonical Windows qualifier retains a safe `windows_qualification_diagnostic`
+record before closing captured streams when Python outcome parsing refuses. It contains
+the actual child exit, each complete stream's byte count and SHA256, a static parser
+code/boundary and line number, whether the parser reached the count summary, whether
+terminal-summary text appears anywhere in stderr, a hashed pending identity, and at
+most eight observed failed/error/unexpected-success prefix identities and statuses.
+The total negative-prefix count and truncation flag disclose omitted diagnostic entries.
+No child text, traceback, fixture value, skip reason, ANSI sequence or raw artifact is
+published. Prefix statuses and terminal text can themselves be quoted diagnostics:
+`diagnostic_only: true` and `inventory_complete: false` never establish a test inventory,
+required-case result, completeness, uniqueness, fresh JUnit result or qualification.
+The original refusal is re-raised; ordinary discovery and every existing success gate
+remain unchanged. This canonical observability correction does not recover the hidden
+testcase/cause from the original failed API Windows attempt or authorize consumer adoption.
+
+Already reported ERROR-prefix IDs also receive diagnostic-only exception details from
+matching ordinary unittest error sections. Only the fixed process-related exception
+allowlist is published, with at most eight total root-relative source-path hashes and
+line numbers across the existing eight-prefix limit. No raw exception name, message,
+traceback, path or environment is emitted. External frames are excluded; missing,
+duplicate, malformed, chained or unsupported reports remain explicitly unclassified
+and incomplete. Frame limits set explicit truncation/incompleteness flags. These are
+untrusted text observations, not authenticated exception objects or verified source
+locations; quoted reports cannot establish outcomes or repair a refusal. The extension
+does not recover the original API failure or classify a previously discarded capture.
+
+The real-unittest diagnostic fixture resolves its owned root before launch, matching
+the child fixture's resolved discovery root and the qualifier's ordinary `ROOT`.
+A real Windows short-path control reproduced the four assertion boundaries reported by
+[#80's first CI attempt](https://github.com/PenniLogic/infra/actions/runs/38032452261):
+an unresolved spelling of the same directory excluded its resolved traceback frames.
+A portable owned parent-directory alias regression also retains this boundary.
+Only fixture setup changes; the parser's lexical frame boundary and refusal policy
+remain unchanged. The native path spelling and failed comparison values were not
+retained, so this reproduction does not establish the hosted cause or native acceptance.
+
+Infra's shared synthetic PowerShell fixture attaches a bounded exception note to its
+private unittest error report before the fixture directory is cleaned up. On nonzero
+ordinary discovery only, the existing diagnostic projection recognizes the two exact
+owning methods and their fixed command counts (API nine; Infra one or four). It validates
+the hashed method identity, actual `fail_at`, count and completed-call index prefix,
+static exception category, numeric errno, nullable actual exit, and each available
+stdout/stderr byte count and SHA256. Returned captures are complete; exception captures
+are partial; unavailable or malformed captures are explicit, never fabricated empty data.
+Elapsed monotonic seconds cover only that subprocess invocation through return or raise,
+excluding environment/script preparation, assertions and cleanup. The unchanged timeout
+argument is 15 seconds; observed elapsed time is not clipped to it. The at-most-nine
+completed-call indices denote prior returned invocations, not passed assertions.
+
+Only one schema-checked note of at most 2,048 bytes is projected per known failure report,
+within the existing 20-report/eight-source-frame bounds. Missing or invalid/duplicate notes
+are explicitly unavailable or malformed. No stream, message, path, environment value or
+ANSI text is published. These remain untrusted diagnostic hints, never outcome admission.
+Invocation exceptions still abort before `subTest`; returned-result assertions retain
+their exact exit 0/37 and stdout-prefix checks and existing subtest continuation. Original
+nonzero refusal and cleanup are unchanged. This observation path neither recovers nor
+fixes the unobserved cause of native run 38018962358 or the original API Windows failure.
+
+API adoption remains separate and atomic with its owning combined-build interface;
+the Infra extension preserves the frozen API checkpoint bytes and does not become a
+second API evidence owner. Rollback is a reviewed source reversal/regeneration and
+corresponding real registry rebinding, not an unreviewed workflow or protection edit.
+No dispatch, commit, push, remote publication or integration is performed by this
+local source unit. [#22](https://github.com/PenniLogic/infra/issues/22)'s trusted-workflow
+identity/mandatory-absence gap and all independent native acceptance holds remain open.
+
 ## Remaining for infra#24
 
 - Reviewed integration and actual hosted verification of the authenticated Python/Node/uv runtime:
@@ -825,10 +1232,11 @@ credential/path compression and unsplit controls.
 - A consumer whose checker predates the current template refuses the planted workflow defects with the
   same exit code but may lack a newer rule (before PR E: no rule text and no step-level
   `continue-on-error` refusal). The harness therefore requires only the refusal line from the consumer's
-  checker, records `detail_surfaced`, and proves the newest rule by copying the current template over the
-  scratch checkout; the drift check catches every planted workflow defect regardless. In the committed
-  evidence all nine consumers run the PR E checker (rule text surfaced) and eight still carry the pre-PR F
-  `scripts/check_repository.py` — the stale-file warning is that regeneration wave.
+  checker, records `detail_surfaced`, and tests `continue-on-error` with the current profile-rendered
+  checker over the scratch checkout; the drift check catches every planted workflow defect regardless.
+  In the original committed evidence all nine consumers run the PR E checker (rule text surfaced)
+  and eight still carry the pre-PR F `scripts/check_repository.py` — the stale-file warning is that
+  regeneration wave.
 - The wall-clock figure is the run's own duration; queue time is excluded. android's last `main` runs took
   9 min 28 s and 9 min 33 s in the two live runs, inside the ten-minute budget but close; its reviewed
   profile timeout is 30 minutes, so an overrun would be a warning, not a failure, until the budget is

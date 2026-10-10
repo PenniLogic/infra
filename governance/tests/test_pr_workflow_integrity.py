@@ -18,6 +18,7 @@ import urllib.error
 
 import conformance_support as support
 from conformance import steps
+from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT
 
 
 gate = support.pr_gate_module()
@@ -132,9 +133,11 @@ class CommandBindingTests(unittest.TestCase):
         self.assertEqual(1, gate.exit_code(report))
         self.assertIn("required-generated-binding", report["violations"])
         self.assertNotIn(MARKER, json.dumps(report))
+        return report
 
     def test_every_profile_clean_control_and_each_required_command_removed_or_stubbed(self):
         commands = 0
+        api_build_cases = 0
         for name, profile in support.generator.PROFILES["repositories"].items():
             self.assertEqual(support.generator.workflow(name).encode("utf-8"),
                              edited_ci(name, lambda _document, _job: None))
@@ -145,7 +148,13 @@ class CommandBindingTests(unittest.TestCase):
                     self.assertEqual("pass", report["result"], report)
                     self.assertEqual(activated, report["required_checks"]["gate_required"])
                     self.assertLessEqual(report["requests"], 32)
-            for command in profile["commands"]:
+            rendered_commands = steps.workflow_run_commands(support.generator.workflow(name).encode("utf-8"))
+            self.assertEqual([
+                BUILD_COMMAND if name == "api" and command == "python scripts/quality.py build"
+                else support.generator.infra_ci_command(command) if name == "infra"
+                else command for command in profile["commands"]
+            ], rendered_commands)
+            for position, command in enumerate(rendered_commands):
                 if not set(steps.classify(command)) & {"build", "test", "lint", "checker"}:
                     continue
                 commands += 1
@@ -153,15 +162,88 @@ class CommandBindingTests(unittest.TestCase):
                     def update(_document, job):
                         run = next(step for step in job["steps"] if step.get("name") == "Run checks")
                         lines = run["run"].split("\n")
-                        position = lines.index(command)
+                        self.assertEqual(command, lines[position])
                         if stub:
                             lines[position] = "echo " + MARKER
                         else:
                             del lines[position]
                         run["run"] = "\n".join(lines)
                     with self.subTest(profile=name, command=command, stub=stub):
-                        self.assert_binding_failure(support.PRMetadata(name, {CI: edited_ci(name, update)}))
-        self.assertGreater(commands, 40)
+                        changed = edited_ci(name, update)
+                        mutated = steps.workflow_run_commands(changed)
+                        self.assertNotIn(command, mutated)
+                        self.assertEqual(len(rendered_commands) if stub else len(rendered_commands) - 1,
+                                         len(mutated))
+                        report = self.assert_binding_failure(support.PRMetadata(name, {CI: changed}))
+                        self.assertIn({"path": CI, "matches": False}, report["bindings"])
+                        if name == "api" and command == BUILD_COMMAND:
+                            api_build_cases += 1
+        self.assertEqual(48, commands)
+        self.assertEqual(2, api_build_cases)
+
+    def test_api_combined_handoff_mutations_fail_exact_workflow_binding(self):
+        command = BUILD_COMMAND
+        mutations = {
+            "missing-flag": command.removesuffix(NODE_ARGUMENT),
+            "missing-value": command.removesuffix(NODE_ARGUMENT) + " --money-client-interop-node",
+            "wrong-variable": command.replace("MONEY_CLIENT_INTEROP_NODE", "UNAPPROVED_NODE"),
+            "missing-refusal": command.replace(
+                "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}", "$MONEY_CLIENT_INTEROP_NODE",
+            ),
+            "unquoted-path": command.replace(NODE_ARGUMENT, NODE_ARGUMENT.replace('"', "")),
+            "split-command": command.replace(" --money-client-interop-node", "\n--money-client-interop-node", 1),
+            "extra-sdk-flag": command + NODE_ARGUMENT,
+            "missing-base": command.replace(BASE_ARGUMENT, ""),
+            "head-base": command.replace(BASE_ARGUMENT, ' --base "$GITHUB_SHA"'),
+            "empty-base": command.replace(BASE_ARGUMENT, ' --base ""'),
+            "unquoted-base": command.replace(BASE_ARGUMENT, BASE_ARGUMENT.replace('"', "")),
+            "unexpected-argument": command + " --unexpected",
+            "unexpected-command": command + "\necho " + MARKER,
+        }
+        for mutation, replacement in mutations.items():
+            def update(_document, job):
+                step = next(step for step in job["steps"] if step["name"] == "Run checks")
+                lines = step["run"].split("\n")
+                self.assertEqual(1, lines.count(command))
+                lines[lines.index(command)] = replacement
+                step["run"] = "\n".join(lines)
+            with self.subTest(mutation=mutation):
+                changed = edited_ci("api", update)
+                self.assertNotEqual(support.generator.workflow("api").encode("utf-8"), changed)
+                report = self.assert_binding_failure(support.PRMetadata("api", {CI: changed}))
+                self.assertIn({"path": CI, "matches": False}, report["bindings"])
+
+    def test_api_node_profile_delta_is_not_a_protected_source_admission_waiver(self):
+        accepted = support.git(
+            support.GOVERNANCE.parent,
+            "show", "dbdf2e27144e60b11aed54ed1e576d496a928ec3:governance/repository-profiles.json",
+        ).encode("utf-8")
+        expected = json.loads(accepted)
+        android_commands = expected["repositories"]["android"]["commands"]
+        self.assertEqual([
+            "python scripts/check_repository.py",
+            "python -m pip install -r scripts/privacy_traffic/requirements.txt",
+            "python scripts/quality_gates.py ci",
+            "python scripts/quality_gates.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test",
+            "python scripts/check_privacy_components.py",
+            'python -m unittest discover -s scripts/tests -p "test_*.py"',
+        ], android_commands)
+        android_commands[4] = "python scripts/privacy_traffic_harness.py self-test --all-scripts"
+        android_commands.pop()
+        self.assertNotIn("node", expected["repositories"]["api"])
+        android_only = encoded(expected)
+        expected["repositories"]["api"]["node"] = "24.14.0"
+        self.assertEqual(expected, support.generator.PROFILES)
+        for composed_android, source in ((False, accepted), (True, android_only)):
+            with self.subTest(composed_android=composed_android):
+                fixture = support.PRMetadata("infra")
+                fixture.base_files[gate.PROFILES] = source
+                fixture.snapshot(fixture.base_files, fixture.source_sha)
+                report = fixture.evaluate(gate)
+                self.assertEqual("fail", report["result"])
+                self.assertEqual(["protected-profile-binding"], report["violations"])
+                self.assertEqual(1, gate.exit_code(report))
 
     def test_whole_step_job_filters_skips_masking_and_wrong_names_all_fail(self):
         for name in support.generator.PROFILES["repositories"]:
@@ -483,7 +565,7 @@ class MetadataBoundaryTests(unittest.TestCase):
 class RealCLIAndStepTests(unittest.TestCase):
     def run_cli(self, fixture, bash_step=False, env_changes=None, http_case=None):
         with tempfile.TemporaryDirectory(prefix="pr-integrity-cli-") as directory:
-            root = Path(directory)
+            root = Path(directory).resolve(strict=True)
             program = root / "validator.py"
             program.write_text(support.generator.pr_integrity_program(fixture.name), encoding="utf-8")
             driver = root / "fixture_driver.py"
@@ -520,6 +602,34 @@ class RealCLIAndStepTests(unittest.TestCase):
             self.assertNotIn(fixture.token, result.stdout.decode())
             self.assertNotIn(str(root), result.stdout.decode())
             return result.returncode, report
+
+    def test_real_cli_and_bash_use_canonical_owned_event_paths(self):
+        for bash_step in (False, True):
+            with self.subTest(bash_step=bash_step), tempfile.TemporaryDirectory(prefix="pr-event-alias-") as directory:
+                root = Path(directory).resolve(strict=True)
+                component = root / "alias component"
+                component.mkdir()
+                alias = str(component / "..")
+                if sys.platform == "win32":
+                    alias = alias.swapcase()
+                self.assertTrue(os.path.samefile(root, alias))
+                environments = []
+                run = subprocess.run
+
+                def observed(command, **kwargs):
+                    environments.append(kwargs["env"])
+                    return run(command, **kwargs)
+
+                with mock.patch.object(tempfile, "TemporaryDirectory",
+                                       return_value=contextlib.nullcontext(alias)), \
+                        mock.patch.object(subprocess, "run", side_effect=observed):
+                    code, report = self.run_cli(support.PRMetadata(), bash_step=bash_step)
+                self.assertEqual(0, code)
+                self.assertEqual("pass", report["result"])
+                self.assertEqual(1, len(environments))
+                self.assertEqual(str(root), environments[0]["RUNNER_TEMP"])
+                self.assertEqual(str(root / "_github_workflow" / "event.json"),
+                                 environments[0]["GITHUB_EVENT_PATH"])
 
     def test_all_nine_actual_cli_clean_controls_and_echo_omission_failures(self):
         for name in support.generator.PROFILES["repositories"]:

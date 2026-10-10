@@ -4,10 +4,13 @@ exactly the required native check, and a required context without a producing wo
 reported as missing."""
 
 import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import conformance_support as support
-from conformance import github_api, steps
+from conformance import defects, github_api, run, steps
+from test_api_node_runtime import BUILD_COMMAND
 
 
 class ClassificationTests(unittest.TestCase):
@@ -88,7 +91,7 @@ class ClassificationTests(unittest.TestCase):
                 self.assertEqual(["build", "lint"], steps.missing_categories(detected, ("build", "test", "lint")))
                 self.assertEqual([
                     "python scripts/quality_gates.py self-test",
-                    "python scripts/privacy_traffic_harness.py self-test",
+                    "python scripts/privacy_traffic_harness.py self-test --all-scripts",
                 ], detected["consumer_self_tests"])
 
     def test_known_profiles_classify_as_reviewed(self):
@@ -102,7 +105,7 @@ class ClassificationTests(unittest.TestCase):
         android = steps.detect_steps(support.generator.PROFILES["repositories"]["android"]["commands"])
         self.assertEqual([
             "python scripts/quality_gates.py self-test",
-            "python scripts/privacy_traffic_harness.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test --all-scripts",
         ], android["consumer_self_tests"])
         ci = "python scripts/quality_gates.py ci"
         self.assertEqual([ci], android["build"])
@@ -110,8 +113,7 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(["python scripts/check_repository.py", "python scripts/check_privacy_components.py"],
                          android["checker"])
         self.assertEqual([ci, "python scripts/quality_gates.py self-test",
-                          "python scripts/privacy_traffic_harness.py self-test",
-                          'python -m unittest discover -s scripts/tests -p "test_*.py"'], android["test"])
+                          "python scripts/privacy_traffic_harness.py self-test --all-scripts"], android["test"])
         self.assertEqual(["python -m pip install -r scripts/privacy_traffic/requirements.txt"], android["install"])
         self.assertEqual([], android["other"])
 
@@ -123,9 +125,59 @@ class ProducedCheckTests(unittest.TestCase):
                 artifacts = support.generator.artifacts(name)
                 workflow = artifacts[".github/workflows/ci.yml"].encode("utf-8")
                 policy = json.loads(artifacts[".github/agent-policy.json"])
-                self.assertEqual({policy["required_native_check"]}, steps.produced_check_names(workflow))
-                self.assertEqual(support.generator.PROFILES["repositories"][name]["commands"],
-                                 steps.workflow_run_commands(workflow))
+                expected_checks = ({policy["required_native_check"], "Linux qualification", "Windows qualification"}
+                                   if name in ("api", "infra") else {policy["required_native_check"]})
+                self.assertEqual(expected_checks, steps.produced_check_names(workflow))
+                manual = support.generator.PROFILES["repositories"][name]["commands"]
+                expected = [
+                    BUILD_COMMAND if name == "api" and command == "python scripts/quality.py build"
+                    else support.generator.infra_ci_command(command) if name == "infra"
+                    else command for command in manual
+                ]
+                actual = steps.workflow_run_commands(workflow)
+                self.assertEqual(expected, actual)
+                self.assertEqual(manual, policy["commands"])
+                if name == "api":
+                    self.assertEqual(9, len(actual))
+                    self.assertEqual(1, manual.count("python scripts/quality.py build"))
+                    for category in ("build", "test", "lint"):
+                        self.assertIn(BUILD_COMMAND, steps.detect_steps(actual)[category])
+
+    def test_api_report_drift_refuses_actual_removed_and_stubbed_rendered_tests(self):
+        profile = support.generator.profile_for("api")
+        with tempfile.TemporaryDirectory(prefix="api-sdk-conformance-drift-") as temporary:
+            root = Path(temporary)
+            support.generator.generate("api", root)
+            context = defects.Context("api", profile, root, support.GOVERNANCE.parent)
+            path = root / ".github/workflows/ci.yml"
+            original = path.read_bytes()
+            runner = lambda command, cwd: defects.subprocess_runner(command, cwd, 30)
+            baseline = run.generated_baseline(support.generator, "api", root, support.GOVERNANCE.parent, runner)
+            self.assertTrue(baseline["workflow_files_identical"])
+            self.assertEqual(0, baseline["exit_code"])
+            for transform in (defects._remove_test_lines, defects._stub_run_checks):
+                with self.subTest(transform=transform.__name__):
+                    document = json.loads(original)
+                    transform(context, document)
+                    mutated = support.generator.encoded(document).encode("utf-8")
+                    actual = steps.workflow_run_commands(mutated)
+                    self.assertNotIn(BUILD_COMMAND, actual)
+                    self.assertEqual(profile["commands"][:7] if transform is defects._remove_test_lines
+                                     else ["echo tests skipped"], actual)
+                    path.write_bytes(mutated)
+                    refused = run.generated_baseline(
+                        support.generator, "api", root, support.GOVERNANCE.parent, runner,
+                    )
+                    self.assertEqual(1, refused["exit_code"])
+                    self.assertFalse(refused["workflow_files_identical"])
+                    self.assertEqual([".github/workflows/ci.yml"], refused["workflow_differences"])
+                    self.assertEqual([], refused["stale_files"])
+            path.write_bytes(original)
+            recovered = run.generated_baseline(
+                support.generator, "api", root, support.GOVERNANCE.parent, runner,
+            )
+            self.assertEqual(0, recovered["exit_code"])
+            self.assertTrue(recovered["workflow_files_identical"])
 
     def test_job_without_a_name_produces_its_id_and_malformed_documents_produce_nothing(self):
         self.assertEqual({"build", "Named"}, steps.produced_check_names(
@@ -151,10 +203,12 @@ class ProducedCheckTests(unittest.TestCase):
             files = {path: text.encode("utf-8") for path, text in support.generator.artifacts(name).items()
                      if path.startswith(".github/workflows/")}
             with self.subTest(profile=name):
-                expected = {"CI", "PR workflow integrity"} if name == "infra" else {"CI"}
+                native = ({"CI", "Linux qualification", "Windows qualification"}
+                          if name in ("api", "infra") else {"CI"})
+                expected = native | {"PR workflow integrity"} if name == "infra" else native
                 self.assertEqual(expected, steps.produced_pr_check_names(files))
                 files.pop(".github/workflows/pr-workflow-integrity.yml", None)
-                self.assertEqual({"CI"}, steps.produced_pr_check_names(files))
+                self.assertEqual(native, steps.produced_pr_check_names(files))
         self.assertEqual(set(), steps.produced_pr_check_names({
             ".github/workflows/pr-workflow-integrity.yml":
                 b'{"on":{"workflow_dispatch":{}},"jobs":{"g":{"name":"PR workflow integrity"}}}',

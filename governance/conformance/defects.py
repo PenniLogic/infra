@@ -26,13 +26,15 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
 
-from conformance import report, steps
+from conformance import generator as generator_module, report, steps
 
 
 LANGUAGES = ("workflow", "python", "documentation", "typescript", "kotlin")
@@ -41,7 +43,12 @@ DEFAULT_EXERCISE = ("python",)
 COMMAND_TIMEOUT_SECONDS = 900
 OUTPUT_TAIL = 3000
 RECORDED_TAIL = 400
+POSIX_TEARDOWN_SECONDS = 5
 UNITTEST_COMMAND = re.compile(r"python -m unittest discover -s (\S+)")
+UNITTEST_FAILURE = re.compile(
+    r"(?m)^FAIL: test_planted_defect_must_fail "
+    r"\(test_planted_conformance_defect_[0-9]+\.PlantedConformanceDefect\.test_planted_defect_must_fail\)\r?$"
+)
 # Removed from every child environment (names compared upper-case, as Windows does). The names and
 # prefixes carry credentials, point git/ssh/gh at credential sources, or let a child write state the
 # Actions runner reads in later steps (GITHUB_ENV, GITHUB_PATH, ACTIONS_RUNTIME_TOKEN).
@@ -60,6 +67,7 @@ DENIED_PREFIXES = (
 CREDENTIAL_VARIABLE = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY|_KEY$", re.IGNORECASE)
 _ISOLATION = None
 _WINDOWS_HELPERS = None
+_UNCONFIRMED_PROCESS = False
 WINDOWS_GATE = """import json
 import subprocess
 import sys
@@ -77,10 +85,28 @@ else:
 """
 PLANTED_PYTHON_TEST = '''"""Planted by the PenniLogic conformance job; never committed."""
 
+import json
+import os
+import stat
 import unittest
 
 
 class PlantedConformanceDefect(unittest.TestCase):
+    def run(self, result=None):
+        result = super().run(result)
+        # Observe the recorded TestResult, not an assertion message or an attempted self.fail.
+        failed = any(test is self for test, _ in result.failures)
+        document = {"nonce": __WITNESS_NONCE__, "test": self.id(), "failed": failed}
+        with open(__WITNESS_PATH__, "r+b") as witness:
+            info = os.fstat(witness.fileno())
+            if ((info.st_dev, info.st_ino) != __WITNESS_ID__ or not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink != 1):
+                raise RuntimeError("unittest witness ownership changed")
+            if witness.read(1):
+                raise RuntimeError("unittest witness was already populated")
+            witness.write(json.dumps(document, sort_keys=True, separators=(",", ":")).encode("ascii"))
+        return result
+
     def test_planted_defect_must_fail(self):
         self.fail("planted defect")
 '''
@@ -119,10 +145,18 @@ class Result:
     timed_out: bool = False
     error: str = None
     restoration_safe: bool = True
+    failure_evidence: str = ""
+    elapsed_seconds: float | None = None
+    process_cleanup: dict | None = None
 
 
 class UnsafeProcessTreeError(RuntimeError):
     """The caller must retain the planted tree because process exit could not be confirmed."""
+
+    def __init__(self, message, result=None, command=None):
+        super().__init__(message)
+        self.result = result
+        self.command = command
 
 
 @dataclasses.dataclass
@@ -132,6 +166,8 @@ class Probe:
     ``expect`` is ``fail`` (the command must exit non-zero, with ``expect_text`` in its output when
     given), ``consumer`` (a consumer-owned self-test that must exit 0; its success is recorded as the
     consumer's evidence, never as a defect this job proved) or ``observe`` (recorded, never required).
+    ``expect_exit_code`` additionally pins the failure code when the fixture requires one.
+    Indexed unittest failure headings require validated TestResult evidence, never an output substring.
     ``detail_text`` is recorded when present in the output but never required: the checker template
     surfaces its rule text only since PR E (#50), and a consumer that has not regenerated still
     refuses correctly.
@@ -142,6 +178,7 @@ class Probe:
     expect_text: str = None
     detail_text: str = None
     note: str = None
+    expect_exit_code: int | None = None
 
 
 @dataclasses.dataclass
@@ -170,6 +207,15 @@ def denied_variable(name):
             or CREDENTIAL_VARIABLE.search(name) is not None)
 
 
+def _cleanup_isolation(directory):
+    if not _UNCONFIRMED_PROCESS:
+        try:
+            shutil.rmtree(directory)
+        except OSError as error:
+            print(f"Conformance isolated configuration cleanup failed ({error.__class__.__name__}); "
+                  "remaining configuration retained", file=sys.stderr)
+
+
 def isolation_directory():
     """A process-wide temporary directory with an empty git config file and an empty gh config dir."""
     global _ISOLATION
@@ -178,7 +224,7 @@ def isolation_directory():
         with open(os.path.join(_ISOLATION, "gitconfig"), "wb"):
             pass
         os.mkdir(os.path.join(_ISOLATION, "gh"))
-        atexit.register(shutil.rmtree, _ISOLATION, ignore_errors=True)
+        atexit.register(_cleanup_isolation, _ISOLATION)
     return _ISOLATION
 
 
@@ -255,9 +301,81 @@ def _capture_redactor(cwd, replacements=None, credentials=None):
     return lambda text: report.redact_text(text, replacements, credentials)
 
 
-def _captured_tail(output, redact_output):
-    # The whole captured value must be redacted before its first cut can destroy a matching prefix.
-    return redact_output(output.decode("utf-8", errors="replace"))[-OUTPUT_TAIL:]
+class _UnittestWitness:
+    """One private, single-use result record for one indexed discovery command."""
+
+    def __init__(self, directory, case_id):
+        self.directory = Path(directory)
+        self.directory_id = self._identity(self.directory.lstat())
+        self.nonce = uuid.uuid4().hex
+        self.path = self.directory / f"{self.nonce}.json"
+        self.case_id = case_id
+        self.heading = f"FAIL: test_planted_defect_must_fail ({case_id})"
+        self.responses = {
+            json.dumps({"nonce": self.nonce, "test": case_id, "failed": failed},
+                       sort_keys=True, separators=(",", ":")).encode("ascii"): failed
+            for failed in (False, True)
+        }
+        self.limit = max(map(len, self.responses))
+        self.armed = False
+        self.consumed = False
+        with self.path.open("xb") as stream:
+            self.file_id = self._identity(os.fstat(stream.fileno()))
+
+    @staticmethod
+    def _identity(info):
+        return info.st_dev, info.st_ino
+
+    def _check(self, info, identity, directory=False):
+        kind = stat.S_ISDIR if directory else stat.S_ISREG
+        if (self._identity(info) != identity or not kind(info.st_mode)
+                or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                or (not directory and info.st_nlink != 1)):
+            raise ValueError("unsafe unittest witness path")
+
+    def _read(self):
+        self._check(self.directory.lstat(), self.directory_id, directory=True)
+        info = self.path.lstat()
+        self._check(info, self.file_id)
+        if info.st_size > self.limit:
+            raise ValueError("oversized unittest witness")
+        with self.path.open("rb") as stream:
+            self._check(os.fstat(stream.fileno()), self.file_id)
+            data = stream.read(self.limit + 1)
+        self._check(self.path.lstat(), self.file_id)
+        if len(data) > self.limit or len(data) != info.st_size:
+            raise ValueError("unittest witness changed during capture")
+        return data
+
+    def arm(self):
+        if self.armed or self.consumed or self._read():
+            raise ValueError("stale unittest witness")
+        self.armed = True
+
+    def consume(self, result, cwd):
+        result = dataclasses.replace(result, failure_evidence="")
+        if (result.error or result.timed_out or not result.restoration_safe
+                or result.exit_code != 1):
+            return result
+        try:
+            if not self.armed or self.consumed:
+                raise ValueError("unarmed or consumed unittest witness")
+            self.consumed = True
+            data = self._read()
+            if data not in self.responses:
+                raise ValueError("missing, malformed or mismatched unittest witness")
+            heading = _capture_redactor(cwd)(self.heading) if self.responses[data] else ""
+            evidence = heading[:RECORDED_TAIL] if heading == self.heading else ""
+            return dataclasses.replace(result, failure_evidence=evidence)
+        except (OSError, ValueError) as error:
+            detail = str(error) if isinstance(error, ValueError) else error.__class__.__name__
+            return dataclasses.replace(result, error=f"unittest witness refused: {detail}")
+
+
+def _captured_output(output, redact_output):
+    # Printed diagnostics, including complete quoted reports, are never unittest attribution.
+    text = redact_output(output.decode("utf-8", errors="replace"))
+    return {"output": text[-OUTPUT_TAIL:], "failure_evidence": ""}
 
 
 def _windows_runner(command, cwd, environ, timeout, redact_output=None):
@@ -289,7 +407,7 @@ def _windows_runner(command, cwd, environ, timeout, redact_output=None):
             # Windows reader threads populate their buffers only at EOF; after confirmed release,
             # collect the cached output without an additional drain wait.
             output = process.communicate(timeout=0)[0] if detail is None else expired.output or b""
-            return Result(None, _captured_tail(output, redact_output), timed_out=True, error=detail,
+            return Result(None, **_captured_output(output, redact_output), timed_out=True, error=detail,
                           restoration_safe=detail is None)
         except OSError as error:
             stopped = (_finish_windows_tree(helpers, job, process) is None if owned else
@@ -305,40 +423,113 @@ def _windows_runner(command, cwd, environ, timeout, redact_output=None):
                 raise UnsafeProcessTreeError("interrupted probe process-tree exit not confirmed") from None
             raise
         detail = _finish_windows_tree(helpers, job, process)
-        output = _captured_tail(output, redact_output)
+        output = _captured_output(output, redact_output)
         if detail is not None:
-            return Result(None, output, error=detail, restoration_safe=False)
+            return Result(None, **output, error=detail, restoration_safe=False)
         try:
             status = json.loads(control.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
-            return Result(None, output, error="isolated probe gate returned an invalid status")
+            return Result(None, **output, error="isolated probe gate returned an invalid status")
         if not isinstance(status, dict) or ("error" not in status and type(status.get("exit_code")) is not int):
-            return Result(None, output, error="isolated probe gate returned an invalid status")
+            return Result(None, **output, error="isolated probe gate returned an invalid status")
         if "error" in status:
             detail = f"{status['error']}: command could not start"
             return Result(None, detail, error=detail)
-        return Result(status["exit_code"], output)
+        return Result(status["exit_code"], **output)
+
+
+def _finish_posix_group(process, output=b""):
+    """Signal only the new session's unreaped leader group; this cannot contain detached descendants."""
+    deadline = time.monotonic() + POSIX_TEARDOWN_SECONDS
+    cleanup = {"process_group_signal": "not attempted",
+               "leader_exit_confirmed": False, "pipes_released": False, "descendant_exit_confirmed": False}
+    # Before reaping, our child reserves its PID/PGID. Afterwards it could belong to an unrelated
+    # process: never signal a group identifier after communicate()/wait() has reaped its leader.
+    try:
+        if process.returncode is None:
+            cleanup["process_group_signal"] = "attempted: result unconfirmed"
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+                cleanup["process_group_signal"] = "sent"
+            except OSError as error:
+                cleanup["process_group_signal"] = f"failed: {error.__class__.__name__}"
+                try:
+                    process.kill()
+                except OSError as stopped:
+                    cleanup["leader_signal_error"] = stopped.__class__.__name__
+        else:
+            cleanup["process_group_signal"] = "not sent: leader already reaped"
+        try:
+            output = process.communicate(timeout=max(0.0, deadline - time.monotonic()))[0]
+            cleanup["pipes_released"] = True
+        except subprocess.TimeoutExpired as expired:
+            output = expired.output or output
+        except OSError as error:
+            cleanup["pipe_error"] = error.__class__.__name__
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except (OSError, subprocess.TimeoutExpired) as error:
+            cleanup["leader_wait_error"] = error.__class__.__name__
+    except BaseException as error:
+        cleanup["teardown_interrupted"] = error.__class__.__name__
+    cleanup["leader_exit_confirmed"] = process.returncode is not None
+    return output, cleanup
+
+
+def _posix_runner(command, cwd, environ, timeout, redact_output):
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        detail = "POSIX ownership requires the default SIGCHLD handler; no consumer was started"
+        return Result(None, detail, error=detail)
+    process = None
+    try:
+        process = subprocess.Popen(
+            command, cwd=str(cwd), shell=isinstance(command, str), env=environ, start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        output = process.communicate(timeout=timeout)[0]
+    except BaseException as error:
+        if process is None and isinstance(error, OSError):
+            raise
+        timed_out = isinstance(error, subprocess.TimeoutExpired)
+        output = (error.output or b"") if timed_out else b""
+        cleanup = None
+        if process is not None:
+            output, cleanup = _finish_posix_group(process, output)
+        reason = "timeout" if timed_out else f"interrupted ({error.__class__.__name__})"
+        detail = f"POSIX {reason}: descendant exit is not confirmed; scratch restoration is unsafe"
+        result = Result(None, **_captured_output(output, redact_output), timed_out=timed_out, error=detail,
+                        restoration_safe=False, process_cleanup=cleanup)
+        raise UnsafeProcessTreeError(detail, result, command) from None
+    return Result(process.returncode, **_captured_output(output, redact_output))
 
 
 def subprocess_runner(command, cwd, timeout=COMMAND_TIMEOUT_SECONDS, *, replacements=None, credentials=None):
     """Redact before the first capture tail; on Windows own the lifetime before releasing consumer code."""
+    global _UNCONFIRMED_PROCESS
+    started = time.monotonic()
     redact_output = _capture_redactor(cwd, replacements, credentials)
     try:
         if os.name == "nt":
             result = _windows_runner(command, cwd, probe_environment(), timeout, redact_output)
-            if not result.restoration_safe:
-                raise UnsafeProcessTreeError(result.error or "probe process-tree exit not confirmed")
-            return result
-        completed = subprocess.run(
-            command, cwd=str(cwd), shell=isinstance(command, str), env=probe_environment(), check=False,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout,
-        )
+        else:
+            result = _posix_runner(command, cwd, probe_environment(), timeout, redact_output)
     except subprocess.TimeoutExpired as expired:
-        return Result(None, _captured_tail(expired.output or b"", redact_output), timed_out=True)
+        detail = "probe timed out outside confirmed teardown; scratch restoration is unsafe"
+        result = Result(None, **_captured_output(expired.output or b"", redact_output), timed_out=True,
+                        error=detail, restoration_safe=False)
+    except UnsafeProcessTreeError as error:
+        result = error.result or Result(None, "", error=str(error), restoration_safe=False)
     except OSError as error:
         detail = f"{error.__class__.__name__}: command could not start"
-        return Result(None, detail, error=detail)
-    return Result(completed.returncode, _captured_tail(completed.stdout, redact_output))
+        result = Result(None, detail, error=detail)
+    except BaseException:
+        _UNCONFIRMED_PROCESS = True
+        raise
+    result = dataclasses.replace(result, elapsed_seconds=time.monotonic() - started)
+    if not result.restoration_safe:
+        _UNCONFIRMED_PROCESS = True
+        raise UnsafeProcessTreeError(result.error or "probe process-tree exit not confirmed", result, command)
+    return result
 
 
 def git_status(root, run=subprocess.run):
@@ -357,6 +548,7 @@ class Planter:
         self._undo = []
         self._aside = None
         self._backups = {}
+        self._unittest_witnesses = {}
         self.cleanup_error = None
 
     def _path(self, relative):
@@ -536,9 +728,31 @@ def _continue_on_error(context, document):
 
 
 def _plant_continue_on_error(context, planter):
+    generator = generator_module.load(context.infra_root / "governance" / "generate.py")
+    checker = generator.checker(context.name)
+    namespace = {"__name__": "conformance_current_checker",
+                 "__file__": str(context.root / "scripts" / "check_repository.py")}
+    exec(compile(checker, "<current rendered checker>", "exec"), namespace)
+    try:
+        namespace["validate_workflow"](
+            ".github/workflows/ci.yml", (context.root / ".github" / "workflows" / "ci.yml").read_bytes(),
+        )
+    except ValueError as error:
+        raise ValueError("current rendered checker refuses the unmodified workflow") from error
     planter.edit_json(".github/workflows/ci.yml", lambda document: _continue_on_error(context, document))
-    template = (context.infra_root / "governance" / "templates" / "check_repository.py").read_bytes()
-    planter.write("scripts/check_repository.py", template)
+    planter.write("scripts/check_repository.py", checker)
+
+
+def _continue_on_error_probe(context):
+    rule = "step-level key outside the generated step keys"
+    if context.name in ("api", "infra"):
+        name = "API" if context.name == "api" else "Infra"
+        rule = f"{name} CI must match its generated qualification jobs and required result"
+    return Probe(
+        "current rendered check_repository.py over the scratch tree",
+        [sys.executable, "scripts/check_repository.py"], expect="fail", expect_text=rule, expect_exit_code=1,
+        note="the current generator renders this profile's checker, including its exact workflow bindings",
+    )
 
 
 def _plant_python_removed(context, planter):
@@ -551,15 +765,44 @@ def _plant_python_removed(context, planter):
 
 
 def _plant_python_failing(context, planter):
-    for directory in unittest_directories(context.profile):
-        planter.create(f"{directory}/test_planted_conformance_defect.py", PLANTED_PYTHON_TEST)
+    if planter._aside is None:
+        planter._aside = tempfile.mkdtemp(prefix="pennilogic-conformance-aside-")
+    for index, (directory, command) in enumerate(zip(
+            unittest_directories(context.profile), unittest_commands(context.profile))):
+        module = f"test_planted_conformance_defect_{index}"
+        witness = _UnittestWitness(
+            planter._aside, f"{module}.PlantedConformanceDefect.test_planted_defect_must_fail",
+        )
+        planter._unittest_witnesses[command] = witness
+        source = (PLANTED_PYTHON_TEST
+                  .replace("__WITNESS_NONCE__", repr(witness.nonce))
+                  .replace("__WITNESS_PATH__", repr(str(witness.path)))
+                  .replace("__WITNESS_ID__", repr(witness.file_id)))
+        planter.create(f"{directory}/{module}.py", source)
 
 
-def _unittest_probes(expect_text):
+def _unittest_probes(expect_text, expect_exit_code):
     def probes(context):
-        return [Probe(f"profile command: {command}", command, expect="fail", expect_text=expect_text)
+        return [Probe(f"profile command: {command}", command, expect="fail", expect_text=expect_text,
+                      expect_exit_code=expect_exit_code)
                 for command in unittest_commands(context.profile)]
     return probes
+
+
+def _unittest_failing_probes(context):
+    return [
+        Probe(f"profile command: {command}", command, expect="fail", expect_exit_code=1,
+              expect_text="FAIL: test_planted_defect_must_fail "
+                          f"(test_planted_conformance_defect_{index}.PlantedConformanceDefect.test_planted_defect_must_fail)")
+        for index, command in enumerate(unittest_commands(context.profile))
+    ]
+
+
+def _unittest_prepare(context):
+    # Contracts' unittest suite invokes the npm-backed lint and pinned generator/diff tools.
+    if has_command(context.profile, r"\bpython scripts/lint_spec\.py\b"):
+        return context.profile.get("install", [])
+    return []
 
 
 def _pytest_command(profile):
@@ -662,26 +905,21 @@ FIXTURES = (
     ),
     Fixture(
         "workflow-step-continue-on-error", "workflow", "python",
-        "continue-on-error: true is added to the Run checks step; refused by the current template (the step-key rule from PR E) and by the drift check",
+        "continue-on-error: true is added to the Run checks step; refused by the current rendered checker and by the drift check",
         lambda context: True, _plant_continue_on_error,
-        lambda context: [drift_probe(context), Probe(
-            "current infra template check_repository.py over the scratch tree",
-            [sys.executable, "scripts/check_repository.py"], expect="fail",
-            expect_text="step-level key outside the generated step keys",
-            note="the template of the generator running this job is copied over scripts/check_repository.py for this probe",
-        )],
+        lambda context: [drift_probe(context), _continue_on_error_probe(context)],
     ),
     Fixture(
         "python-tests-removed", "python", "python",
         "every test module of each unittest start directory is removed; unittest exits 5 (NO TESTS RAN)",
         lambda context: bool(unittest_directories(context.profile)), _plant_python_removed,
-        _unittest_probes("NO TESTS RAN"),
+        _unittest_probes("NO TESTS RAN", 5),
     ),
     Fixture(
         "python-test-failing", "python", "python",
-        "a failing unittest module is planted in each unittest start directory and must be counted as a failure",
+        "a distinct failing unittest module is planted in each start directory and each unchanged command must report its own failure",
         lambda context: bool(unittest_directories(context.profile)), _plant_python_failing,
-        _unittest_probes("test_planted_defect_must_fail"),
+        _unittest_failing_probes, prepare=_unittest_prepare,
     ),
     Fixture(
         "python-pytest-failing", "python", "uv",
@@ -758,9 +996,14 @@ def probe_outcome(probe, result):
     if result.error or not result.restoration_safe or result.timed_out or result.exit_code is None:
         return "error"
     failed = result.exit_code != 0
-    matched = probe.expect_text is None or probe.expect_text in result.output
+    if probe.expect_text is not None and UNITTEST_FAILURE.fullmatch(probe.expect_text):
+        matched = result.failure_evidence == probe.expect_text
+    else:
+        matched = (probe.expect_text is None or probe.expect_text in result.output
+                   or probe.expect_text in result.failure_evidence)
     if probe.expect == "fail":
-        return "as_expected" if failed and matched else "unexpected"
+        code_matches = probe.expect_exit_code is None or result.exit_code == probe.expect_exit_code
+        return "as_expected" if failed and code_matches and matched else "unexpected"
     if probe.expect in ("pass", "consumer"):
         return "as_expected" if not failed else "unexpected"
     return "detected" if failed else "not_detected"
@@ -771,14 +1014,34 @@ def _probe_record(probe, result):
         "label": probe.label, "command": probe.command, "expect": probe.expect,
         "expect_text": probe.expect_text, "detail_text": probe.detail_text, "note": probe.note,
         "exit_code": result.exit_code, "timed_out": result.timed_out, "outcome": probe_outcome(probe, result),
+        "elapsed_seconds": result.elapsed_seconds,
         "detail_surfaced": None if probe.detail_text is None else probe.detail_text in result.output,
         "output_tail": result.output[-RECORDED_TAIL:],
     }
     if result.error:
         record["error"] = result.error
+    if probe.expect_exit_code is not None:
+        record["expect_exit_code"] = probe.expect_exit_code
+    if result.failure_evidence:
+        record["failure_evidence"] = result.failure_evidence
     if not result.restoration_safe:
         record["restoration_safe"] = False
+    if result.process_cleanup is not None:
+        record["process_cleanup"] = result.process_cleanup
     return record
+
+
+def _run_probe(probe, root, runner):
+    global _UNCONFIRMED_PROCESS
+    result = None
+    try:
+        result = runner(probe.command, root)
+    except UnsafeProcessTreeError as error:
+        result = error.result or Result(None, "", error=str(error), restoration_safe=False)
+    finally:
+        if result is None or not result.restoration_safe:
+            _UNCONFIRMED_PROCESS = True
+    return result
 
 
 def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXERCISE, status=git_status):
@@ -806,8 +1069,9 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
         record["outcome"], record["reason"] = "error", "scratch checkout is not clean before planting"
         return record
     for command in (fixture.prepare(context) if fixture.prepare else []):
-        result = runner(command, context.root)
-        record["probes"].append(_probe_record(Probe(f"prepare: {command}", command, expect="pass"), result))
+        probe = Probe(f"prepare: {command}", command, expect="pass")
+        result = _run_probe(probe, context.root, runner)
+        record["probes"].append(_probe_record(probe, result))
         if result.error or not result.restoration_safe or result.exit_code != 0:
             record["outcome"], record["reason"] = "error", result.error or "prepare command failed"
             if not result.restoration_safe:
@@ -818,15 +1082,21 @@ def run_fixture(fixture, context, runner=subprocess_runner, exercise=DEFAULT_EXE
     try:
         fixture.plant(context, planter)
         for probe in fixture.probes(context):
-            result = runner(probe.command, context.root)
-            record["probes"].append(_probe_record(probe, result))
+            witness = planter._unittest_witnesses.get(probe.command) if isinstance(probe.command, str) else None
+            if witness is not None:
+                witness.arm()
+            restoration_safe = False
+            result = _run_probe(probe, context.root, runner)
             restoration_safe = result.restoration_safe
+            if witness is not None:
+                result = witness.consume(result, context.root)
+            record["probes"].append(_probe_record(probe, result))
             if not restoration_safe or result.error or result.exit_code is None:
                 break
     except UnsafeProcessTreeError as error:
         restoration_safe = False
         record["outcome"], record["reason"] = "error", str(error)
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except Exception as error:  # noqa: BLE001 - preserve fixture failures without assuming a crashed runner exited
         record["outcome"], record["reason"] = "error", f"planting failed: {error.__class__.__name__}: {error}"
     finally:
         if restoration_safe:

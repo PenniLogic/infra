@@ -125,6 +125,8 @@ def validate_profile(repo, profile):
             raise ValueError(f"{repo}: {field} has an unexpected value")
     if repo == "infra" and profile.get("node") is None:
         raise ValueError("infra: node is required for the real governance fixtures")
+    if repo == "api" and profile.get("node") != "24.14.0":
+        raise ValueError("api: the reviewed SDK is Node 24.14.0 with bundled npm 11.9.0")
     if ".." in profile.get("developer_guide", ""):
         raise ValueError(f"{repo}: developer_guide must stay inside the repository")
     timeout = profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES)
@@ -165,8 +167,8 @@ def action_pins():
     return pins
 
 
-def checker(repo="infra", integrity=None):
-    """Render the checker with the canonical pins and its repository-bound workflow exception.
+def standard_checker(repo="infra"):
+    """Render the common checker with the canonical action pins and repository identity.
 
     The block is replaced, not trusted: the consumer checker binds exactly the commits that
     tool_steps() renders into its workflows, whatever the template's own copy says, and a
@@ -179,12 +181,18 @@ def checker(repo="infra", integrity=None):
     rendered, count = ACTION_PINS_BLOCK.subn(lambda match: block, template)
     if count != 1:
         raise ValueError("templates/check_repository.py must define WORKFLOW_ACTION_PINS exactly once")
-    profile = profile_for(repo)
+    profile_for(repo)
     rendered, count = WORKFLOW_REPOSITORY_LINE.subn(
         lambda match: f"WORKFLOW_REPOSITORY = {json.dumps(repo)}\n", rendered,
     )
     if count != 1:
         raise ValueError("templates/check_repository.py must define WORKFLOW_REPOSITORY exactly once")
+    return rendered
+
+
+def checker(repo="infra", integrity=None):
+    rendered = standard_checker(repo)
+    profile = profile_for(repo)
     if integrity is None:
         integrity = profile.get("pr_workflow_integrity", False)
     if integrity:
@@ -197,6 +205,19 @@ def checker(repo="infra", integrity=None):
         if rendered.count(definition) != 1 or rendered.count(insertion) != 1:
             raise ValueError("PR workflow integrity checker extension needs exact insertion points")
         rendered = rendered.replace(definition, "def validate_standard_workflow(name, data):\n")
+        rendered = rendered.replace(insertion, extension.rstrip() + "\n\n\n" + insertion)
+    if repo in ("api", "infra"):
+        extension = (HERE / f"templates/{repo}_ci_checker.py").read_text(encoding="utf-8")
+        placeholder = f"__{repo.upper()}_CI_SHA256__"
+        if extension.count(placeholder) != 1:
+            raise ValueError(f"{repo.upper()} CI checker must have one digest placeholder")
+        extension = extension.replace(
+            placeholder, hashlib.sha256(workflow(repo).encode("utf-8")).hexdigest(),
+        )
+        definition, insertion = "def validate_workflow(name, data):\n", "def check(files):\n"
+        if rendered.count(definition) != 1 or rendered.count(insertion) != 1:
+            raise ValueError(f"{repo.upper()} CI checker needs exact insertion points")
+        rendered = rendered.replace(definition, f"def validate_non_{repo}_ci_workflow(name, data):\n")
         rendered = rendered.replace(insertion, extension.rstrip() + "\n\n\n" + insertion)
     return rendered
 
@@ -242,8 +263,124 @@ def tool_steps(profile):
     return steps
 
 
-def uv_install_step():
+def uv_install_step(windows=False):
+    if windows:
+        wheel = ("https://files.pythonhosted.org/packages/dd/be/"
+                 "b90df95297cdae2cbd5a83fddf429a304b17a0e9c277ca02190d995cbe09/"
+                 "uv-0.11.33-py3-none-win_amd64.whl"
+                 "#sha256=521229afa69ad5f57127de800120cb2bea1ac729a05a0851aaf920124f8edf66")
+        command = f'python -m pip install --quiet --only-binary :all: --require-hashes --no-deps "{wheel}"'
+        return {"name": "Install uv", "run": powershell_commands([command])}
     return {"name": "Install uv", "run": profile_for("ai-service")["install"][0]}
+
+
+def api_node_step(profile):
+    # The pinned action has no node-path output. Bind its exact Linux x64 cache
+    # layout before repository commands run, without consulting PATH.
+    # npm accepts hyphenated environment names that Bash's exported-name list omits.
+    return {"name": "Prepare API Node SDK", "run": f"""set -o pipefail
+if ! /usr/bin/env -0 2>/dev/null | while IFS= read -r -d '' setting; do
+  name="${{setting%%=*}}"
+  case "${{name^^}}" in
+    NODE_OPTIONS|NODE_PATH|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_NODE-OPTIONS) exit 1 ;;
+  esac
+done; then
+  echo "::error::API Node SDK startup environment check failed." >&2
+  exit 1
+fi
+case "${{RUNNER_TOOL_CACHE-}}" in
+  /*) ;;
+  *) echo "::error::API runner tool cache must be absolute." >&2; exit 1 ;;
+esac
+case "$RUNNER_TOOL_CACHE" in
+  *$'\\n'*|*$'\\r'*) echo "::error::API runner tool cache must be one line." >&2; exit 1 ;;
+esac
+sdk="$RUNNER_TOOL_CACHE/node/{profile["node"]}/x64"
+node="$sdk/bin/node"
+npm="$sdk/lib/node_modules/npm/bin/npm-cli.js"
+if [ ! -f "$node" ] || [ ! -x "$node" ] || [ ! -f "$npm" ]; then
+  echo "::error::API Node SDK or bundled npm is missing." >&2
+  exit 1
+fi
+if ! version="$("$node" --version)" || [ "$version" != "v{profile["node"]}" ]; then
+  echo "::error::API Node SDK version check failed." >&2
+  exit 1
+fi
+if ! version="$("$node" "$npm" --version)" || [ "$version" != "11.9.0" ]; then
+  echo "::error::API bundled npm version check failed." >&2
+  exit 1
+fi
+printf 'MONEY_CLIENT_INTEROP_NODE=%s\\n' "$node" >> "${{GITHUB_ENV:?GitHub step environment is missing}}"
+"""}
+
+
+def api_node_command(command):
+    for task in ("build", "coverage", "gate-self-test"):
+        prefix = f"python scripts/quality.py {task}"
+        if command == prefix or command.startswith(prefix + " "):
+            return command + ' --money-client-interop-node "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"'
+    return command
+
+
+def api_ci_command(command):
+    if command == "python scripts/quality.py build":
+        command += ' --base "$BASE_SHA"'
+    return api_node_command(command)
+
+
+def infra_ci_command(command):
+    if command in ("python -m unittest discover -s governance/tests", "python -m unittest discover -s scripts/tests"):
+        return "python governance/qualify.py -- " + command
+    return command
+
+
+def powershell_commands(commands):
+    return "\n".join(command + "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" for command in commands)
+
+
+def api_windows_job(profile):
+    preparation = profile["commands"][:profile["commands"].index("python scripts/quality.py build")]
+    commands = [command.replace("/", "\\") for command in preparation]
+    commands.append("python -I -S -B scripts\\money_client_interop.py prepare")
+    commands.append("python scripts\\qualify_windows.py")
+    return {
+        "name": "Windows qualification", "runs-on": "windows-2025",
+        "timeout-minutes": profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES),
+        "steps": [*tool_steps(profile), {
+            "name": "Run Windows owning suites",
+            "run": powershell_commands(commands),
+        }],
+    }
+
+
+def infra_windows_job(profile):
+    commands = [infra_ci_command(command).replace("/", "\\") for command in profile["commands"]
+                if command != "docker compose -f docker-compose.yml config --quiet"]
+    return {
+        "name": "Windows qualification", "runs-on": "windows-2025",
+        "timeout-minutes": profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES),
+        "steps": [*tool_steps(profile), uv_install_step(windows=True), {
+            "name": "Run Windows owning suites", "run": powershell_commands(commands),
+        }],
+    }
+
+
+def ci_result_job(repo):
+    if repo not in ("api", "infra"):
+        raise ValueError("Only API and Infra have OS qualification results")
+    label = "API" if repo == "api" else "Infra"
+    return {
+        "name": "CI", "runs-on": PROFILES["runner"], "timeout-minutes": 1,
+        "needs": ["ci", "windows"], "if": "always()",
+        "steps": [{
+            "name": "Require both qualification results",
+            "env": {"LINUX_RESULT": "${{ needs.ci.result }}", "WINDOWS_RESULT": "${{ needs.windows.result }}"},
+            "run": f"""if [ "${{LINUX_RESULT-}}" != success ] || [ "${{WINDOWS_RESULT-}}" != success ]; then
+  echo "::error::{label} CI requires successful Linux and Windows qualification." >&2
+  exit 1
+fi""",
+        }],
+    }
 
 
 def workflow(repo, setup=False):
@@ -251,6 +388,8 @@ def workflow(repo, setup=False):
     steps = tool_steps(profile)
     if repo == "infra":
         steps.append(uv_install_step())
+    if repo == "api" and not setup:
+        steps.append(api_node_step(profile))
     if "gradle_wrapper_jar_sha256" in profile and not setup:
         steps.append({
             "name": "Verify Gradle wrapper",
@@ -258,13 +397,14 @@ def workflow(repo, setup=False):
                    " | sha256sum -c -",
         })
     commands = ["python scripts/check_repository.py"] if setup else profile["commands"]
-    steps.append({"name": "Verify repository" if setup else "Run checks", "run": "\n".join(commands)})
     if repo == "api" and not setup:
-        steps.append({
-            "name": "Coverage against explicit base",
-            "env": {"BASE_SHA": "${{ github.event.pull_request.base.sha || github.sha }}"},
-            "run": 'python scripts/quality.py coverage --base "$BASE_SHA"',
-        })
+        commands = [api_ci_command(command) for command in commands]
+    if repo == "infra" and not setup:
+        commands = [infra_ci_command(command) for command in commands]
+    checks = {"name": "Verify repository" if setup else "Run checks", "run": "\n".join(commands)}
+    if repo == "api" and not setup:
+        checks["env"] = {"BASE_SHA": "${{ github.event.pull_request.base.sha || github.sha }}"}
+    steps.append(checks)
     if setup:
         if profile.get("install"):
             steps.append({"name": "Install dependencies", "run": "\n".join(profile["install"])})
@@ -280,6 +420,11 @@ def workflow(repo, setup=False):
     if profile.get("env"):
         job["env"] = profile["env"]
     job["steps"] = steps
+    jobs = {"copilot-setup-steps" if setup else "ci": job}
+    if repo in ("api", "infra") and not setup:
+        job["name"] = "Linux qualification"
+        windows = api_windows_job(profile) if repo == "api" else infra_windows_job(profile)
+        jobs.update({"windows": windows, "ci-result": ci_result_job(repo)})
     return encoded({
         "name": "Copilot Setup Steps" if setup else "CI",
         "on": events,
@@ -288,7 +433,7 @@ def workflow(repo, setup=False):
             "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}",
             "cancel-in-progress": True,
         },
-        "jobs": {"copilot-setup-steps" if setup else "ci": job},
+        "jobs": jobs,
     })
 
 
@@ -694,13 +839,15 @@ alone is not a license grant. Existing source notices are preserved.
         "scripts/check_repository.py": checker(repo),
         "scripts/setup.py": (HERE / "templates/setup.py").read_text(encoding="utf-8"),
     }
-    if repo == "infra":
+    if repo in ("infra", "api"):
         output[".nvmrc"] = profile["node"] + "\n"
+    if repo == "infra":
         output[".github/workflows/conformance.yml"] = conformance_workflow()
     if profile.get("money_source_materialization", False):
         output["scripts/materialize_money_sources.py"] = money_materializer()
     if repo == "api":
         output.update(database_admission_artifacts())
+        output["scripts/qualify_windows.py"] = (HERE / "templates/qualify_windows.py").read_text(encoding="utf-8")
     if repo == "android":
         output["scripts/check_privacy_components.py"] = (
             HERE / "templates/check_privacy_components.py"

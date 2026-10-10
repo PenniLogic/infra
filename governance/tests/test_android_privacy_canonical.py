@@ -5,6 +5,8 @@ import copy
 import importlib.util
 import io
 import json
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 import conformance_support as support
-from conformance import steps
+from conformance import registry, steps
 from test_baseline import (
     CONTRACTS_COMMAND_ARTIFACTS, CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND,
     CONTRACTS_STATE, contracts_command_delta,
@@ -22,8 +24,13 @@ from test_baseline import (
 
 
 ACCEPTED_BASE = "1360c30a5caaff8039d76d57bfb9b060cf81a351"
+RUNTIME_BASE = "e601c13091bf156193ba266a6f03fdbae279a69e"
+QUALIFICATION_SOURCE = "889c5c35a1677ef33899a2e63bc528d3bac802f9"
+API_WORKFLOW_SOURCE = "733c42e177d61c552e5baa9dc01d55c850e1b33f"
 RESTORE = "python -m pip install -r scripts/privacy_traffic/requirements.txt"
 SELF_TEST = "python scripts/privacy_traffic_harness.py self-test"
+COMBINED_SELF_TEST = SELF_TEST + " --all-scripts"
+SCRIPT_TESTS = 'python -m unittest discover -s scripts/tests -p "test_*.py"'
 INVENTORY = "python scripts/check_privacy_components.py"
 TASK = ":app:privacyComponentInventory"
 PREFIX = "PRIVACY_COMPONENT_INVENTORY "
@@ -34,10 +41,15 @@ CHANGED_ARTIFACTS = {
 }
 API_PIN_AND_ADMISSION_ARTIFACTS = {
     "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json",
-    ".github/workflows/ci.yml", "scripts/materialize_money_sources.py",
+    ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml", ".nvmrc",
+    "scripts/materialize_money_sources.py",
     "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
+    "scripts/check_repository.py", "scripts/qualify_windows.py",
 }
 CONTRACTS_SCOPE_ARTIFACTS = {"AGENTS.md", "README.md", "CONTRIBUTING.md"}
+INFRA_QUALIFICATION_ARTIFACTS = {
+    ".github/workflows/ci.yml", ".github/workflows/pr-workflow-integrity.yml", "scripts/check_repository.py",
+}
 
 
 def load(name, path):
@@ -78,9 +90,11 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     self.assertEqual(CHANGED_ARTIFACTS if repo == "android" else
                                      API_PIN_AND_ADMISSION_ARTIFACTS if repo == "api" else
                                      CONTRACTS_SCOPE_ARTIFACTS | CONTRACTS_COMMAND_ARTIFACTS
-                                     if repo == "contracts" else set(), changed)
+                                     if repo == "contracts" else
+                                     INFRA_QUALIFICATION_ARTIFACTS if repo == "infra" else set(), changed)
                     if repo == "api":
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
+                        expected["node"] = "24.14.0"
                         expected["commands"][2] = expected["commands"][2].replace(
                             "contracts-ea56c63d5c9b679537bd9205b04626049c20c572",
                             "contracts-aa8d90cb98cec9b6dd08c91b3a4d869e47362662",
@@ -90,6 +104,16 @@ class CanonicalPrivacyTests(unittest.TestCase):
                             "python -I -S -B scripts/prepare_database_admission.py verify",
                         ]
                         self.assertEqual(expected, current.PROFILES["repositories"][repo])
+                        self.assertNotIn(".nvmrc", previous)
+                        self.assertEqual("24.14.0\n", candidate[".nvmrc"])
+                        setup = ".github/workflows/copilot-setup-steps.yml"
+                        expected_setup = json.loads(previous[setup])
+                        expected_setup["jobs"]["copilot-setup-steps"]["steps"].insert(2, {
+                            "name": "Node",
+                            "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                            "with": {"node-version-file": ".nvmrc"},
+                        })
+                        self.assertEqual(accepted.encoded(expected_setup), candidate[setup])
                     elif repo == "contracts":
                         expected = copy.deepcopy(accepted.PROFILES["repositories"][repo])
                         previous_state = expected["state"]
@@ -118,15 +142,14 @@ class CanonicalPrivacyTests(unittest.TestCase):
                 "python -I -S -B scripts/prepare_database_admission.py prepare --fetch",
                 "python -I -S -B scripts/prepare_database_admission.py verify",
             ]
+            original["repositories"]["api"]["node"] = "24.14.0"
             self.assertEqual(original, current.PROFILES)
 
     def test_accepted_money_inputs_flags_and_registry_survive_android_composition(self):
         current_registry = json.loads((support.GOVERNANCE / "conformance/check-names.json").read_bytes())
-        api_source = next(entry["workflow_ref"] for entry in current_registry["entries"]
-                          if entry["repo"] == "PenniLogic/api")
         for path in ("governance/api-money-sources.json", "governance/templates/materialize_money_sources.py"):
             with self.subTest(path=path):
-                source = api_source if path.endswith("materialize_money_sources.py") else ACCEPTED_BASE
+                source = API_WORKFLOW_SOURCE if path.endswith("materialize_money_sources.py") else ACCEPTED_BASE
                 accepted = subprocess.run(
                     ["git", "show", f"{source}:{path}"],
                     cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
@@ -151,28 +174,112 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     self.assertEqual(old, updated)
                 else:
                     self.assertEqual(accepted, current)
+        self.assert_registry_composition(current_registry)
+
+    def assert_registry_composition(self, current):
         accepted = json.loads(subprocess.run(
             ["git", "show", f"{ACCEPTED_BASE}:governance/conformance/check-names.json"],
             cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
             capture_output=True, check=True, timeout=30,
         ).stdout)
-        current = current_registry
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
-        android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
         contracts = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/contracts")
         contracts["workflow_ref"] = "68a59601b4f24986dbc66cf23d8b58c0913327bc"
-        api = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/api")
-        api["workflow_ref"] = next(entry["workflow_ref"] for entry in current["entries"]
-                                   if entry["repo"] == "PenniLogic/api")
-        self.assertEqual(expected, current)
+        android["workflow_ref"] = "6867bd8f302e5ca607063dcfeb1a12b382e948fa"
+        for name, source in (("api", API_WORKFLOW_SOURCE), ("infra", QUALIFICATION_SOURCE)):
+            entry = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/" + name)
+            entry["workflow_ref"] = source
+            if name == "infra":
+                entry["pr_gate"]["workflow_ref"] = QUALIFICATION_SOURCE
+        self.assertEqual(expected, current, "registry composition differs from the proven references")
+        for name, workflow, source in (
+            ("api", registry.CI_WORKFLOW, API_WORKFLOW_SOURCE),
+            ("infra", registry.CI_WORKFLOW, QUALIFICATION_SOURCE),
+            ("infra", registry.PR_GATE_WORKFLOW, QUALIFICATION_SOURCE),
+        ):
+            with self.subTest(repo=name, workflow=workflow):
+                rendered = registry.render_workflow_at(
+                    support.GOVERNANCE.parent, source, name, workflow_file=workflow,
+                )
+                self.assertIsNotNone(rendered, "the pinned workflow source must exist in complete Git history")
+                self.assertEqual(support.generator.artifacts(name)[workflow].encode("utf-8"), rendered)
 
-    def test_commands_restore_declared_requirements_and_preserve_every_old_gate(self):
+    def test_stale_api_qualification_source_cannot_bind_the_current_workflow(self):
+        previous = registry.render_workflow_at(support.GOVERNANCE.parent, QUALIFICATION_SOURCE, "api")
+        current = registry.render_workflow_at(support.GOVERNANCE.parent, API_WORKFLOW_SOURCE, "api")
+        self.assertIsNotNone(previous, "the stale API source must exist for this regression")
+        self.assertIsNotNone(current, "the current API source must be a real Git commit")
+        self.assertEqual(support.generator.workflow("api").encode("utf-8"), current)
+        self.assertNotEqual(previous, current)
+        prepare = "python -I -S -B scripts\\money_client_interop.py prepare"
+        self.assertNotIn(prepare, json.loads(previous)["jobs"]["windows"]["steps"][-1]["run"])
+        self.assertIn(prepare, json.loads(current)["jobs"]["windows"]["steps"][-1]["run"])
+
+    def test_registry_composition_rejects_other_refs_and_unrelated_field_changes(self):
+        path = support.GOVERNANCE / "conformance" / "check-names.json"
+        original = json.loads(path.read_bytes())
+        previous_source = "26fa29ffbaf9e2dd5ca9969c34ec5e664e884f45"
+        for name, field, value in (
+            ("api", "workflow_ref", previous_source),
+            ("api", "workflow_ref", QUALIFICATION_SOURCE),
+            ("infra", "workflow_ref", previous_source),
+            ("infra", "workflow_ref", API_WORKFLOW_SOURCE),
+            ("infra", "pr_gate", previous_source),
+            ("infra", "pr_gate", API_WORKFLOW_SOURCE),
+            ("android", "workflow_ref", API_WORKFLOW_SOURCE),
+            ("docs", "workflow_ref", QUALIFICATION_SOURCE),
+            ("infra", "language", "kotlin"),
+        ):
+            changed = copy.deepcopy(original)
+            entry = next(entry for entry in changed["entries"] if entry["repo"] == "PenniLogic/" + name)
+            if field == "pr_gate":
+                entry[field]["workflow_ref"] = value
+            else:
+                entry[field] = value
+
+            with self.subTest(repo=name, field=field, value=value):
+                with self.assertRaisesRegex(AssertionError, "registry composition differs"):
+                    self.assert_registry_composition(changed)
+
+    def test_combined_discovery_changes_only_android_command_derived_artifacts(self):
+        accepted = json.loads(support.git(
+            support.GOVERNANCE.parent, "show", f"{RUNTIME_BASE}:governance/repository-profiles.json",
+        ))
+        contracts = accepted["repositories"]["contracts"]["commands"]
+        self.assertEqual(CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, contracts[-1])
+        contracts[-1] = CONTRACTS_SOURCE_TEST_COMMAND
+        expected = copy.deepcopy(accepted)
+        commands = expected["repositories"]["android"]["commands"]
+        self.assertEqual([SELF_TEST, INVENTORY, SCRIPT_TESTS], commands[-3:])
+        commands[-3] = COMBINED_SELF_TEST
+        commands.pop()
+        self.assertEqual(expected, support.generator.PROFILES)
+        with mock.patch.object(support.generator, "PROFILES", accepted):
+            previous = {name: support.generator.artifacts(name) for name in accepted["repositories"]}
+        changed_artifacts = {
+            "AGENTS.md", "README.md", "CONTRIBUTING.md",
+            ".github/agent-policy.json", ".github/workflows/ci.yml",
+        }
+        for name, original in previous.items():
+            with self.subTest(repo=name):
+                current = support.generator.artifacts(name)
+                changed = {
+                    path for path in original.keys() | current.keys()
+                    if original.get(path) != current.get(path)
+                }
+                self.assertEqual(changed_artifacts if name == "android" else set(), changed)
+        workflow = json.loads(previous["android"][".github/workflows/ci.yml"])
+        run = next(step for step in workflow["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+        run["run"] = "\n".join(commands)
+        self.assertEqual(workflow, json.loads(support.generator.workflow("android")))
+
+    def test_commands_restore_requirements_and_preserve_gates_without_duplicate_discovery(self):
         commands = support.generator.profile_for("android")["commands"]
         self.assertEqual([
             "python scripts/check_repository.py", RESTORE,
             "python scripts/quality_gates.py ci", "python scripts/quality_gates.py self-test",
-            SELF_TEST, INVENTORY, 'python -m unittest discover -s scripts/tests -p "test_*.py"',
+            COMBINED_SELF_TEST, INVENTORY,
         ], commands)
         self.assertNotIn("run-rc", "\n".join(commands))
         self.assertEqual([RESTORE], support.generator.profile_for("android")["install"])
@@ -194,14 +301,52 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     support.generator.workflow("android").encode("utf-8"),
                 ))
 
+    def test_emitted_commands_run_once_and_stop_at_each_failure(self):
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "Bash is required to execute the emitted Android command fixture")
+        document = json.loads(support.generator.workflow("android"))
+        checks = next(step["run"] for step in document["jobs"]["ci"]["steps"]
+                      if step["name"] == "Run checks")
+        calls = [shlex.split(command)[1:] for command in checks.splitlines()]
+        self.assertEqual([["scripts/privacy_traffic_harness.py", "self-test", "--all-scripts"]],
+                         [call for call in calls if call[0] == "scripts/privacy_traffic_harness.py"])
+        self.assertFalse(any("unittest" in call for call in calls))
+        recorder = r"""count=0
+python() {
+  count=$((count + 1))
+  printf '%s\0' "$@"
+  printf '\n'
+  if [ "$count" -eq "$FAIL_AT" ]; then return 37; fi
+}
+"""
+        with tempfile.TemporaryDirectory(prefix="android-canonical-shell-") as directory:
+            root = Path(directory)
+            script = root / "emitted.sh"
+            script.write_text(recorder + checks + "\n", encoding="utf-8", newline="\n")
+            for fail_at in range(len(calls) + 1):
+                environment = support.defects.probe_environment()
+                environment["FAIL_AT"] = str(fail_at)
+                result = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-e", "-o", "pipefail", str(script)],
+                    cwd=root, env=environment, capture_output=True, check=False, timeout=15,
+                )
+                with self.subTest(fail_at=fail_at):
+                    self.assertEqual(37 if fail_at else 0, result.returncode, result.stderr)
+                    observed = [line.decode("utf-8").split("\0")[:-1] for line in result.stdout.splitlines()]
+                    self.assertEqual(calls[:fail_at or len(calls)], observed)
+
     def test_privacy_commands_have_exact_categories_without_borrowing_native_gates(self):
-        self.assertEqual(["test"], steps.classify(SELF_TEST))
+        for command in (SELF_TEST, COMBINED_SELF_TEST):
+            self.assertEqual(["test"], steps.classify(command))
+            self.assertEqual([command], steps.detect_steps([command])["consumer_self_tests"])
         self.assertEqual(["checker"], steps.classify(INVENTORY))
-        for command in (SELF_TEST, INVENTORY):
+        for command in (SELF_TEST, COMBINED_SELF_TEST, INVENTORY):
             for altered in (
                 "echo " + command, command + " --skip", command + " || true",
                 command + "; true", command + " ", command.replace("python ", "python3 ", 1),
-                command.replace("/", "\\"), command + "\n",
+                command.replace("/", "\\"), command + "\n", command + "\r\n",
+                command + " --all-scripts=false", command + " --all-scripts --all-scripts",
+                command.replace(".py", ".py --all-scripts", 1),
             ):
                 with self.subTest(command=altered):
                     self.assertEqual(["other"], steps.classify(altered))
@@ -224,8 +369,14 @@ class CanonicalPrivacyTests(unittest.TestCase):
             subprocess.run(invocation, capture_output=True, check=True, timeout=30)
             path = root / ".github" / "workflows" / "ci.yml"
             original = path.read_bytes()
-            for command in (RESTORE, SELF_TEST, INVENTORY):
-                for replacement in (None, "echo privacy skipped"):
+            for command in (RESTORE, COMBINED_SELF_TEST, INVENTORY):
+                replacements = (None, "echo privacy skipped")
+                if command == COMBINED_SELF_TEST:
+                    replacements += (
+                        SELF_TEST, SCRIPT_TESTS, COMBINED_SELF_TEST + " || " + SELF_TEST,
+                        COMBINED_SELF_TEST + "\n" + SCRIPT_TESTS,
+                    )
+                for replacement in replacements:
                     with self.subTest(command=command, replacement=replacement):
                         document = json.loads(original)
                         run = next(step for step in document["jobs"]["ci"]["steps"]

@@ -173,13 +173,13 @@ class TokenChannelTests(unittest.TestCase):
 
 
 class RuntimeRenderingTests(unittest.TestCase):
-    def test_node_pin_and_nvmrc_are_canonical_and_infra_only(self):
+    def test_node_pin_and_nvmrc_are_canonical_for_infra_and_api(self):
         self.assertEqual("24.14.0", support.generator.PROFILES["repositories"]["infra"]["node"])
         self.assertEqual("24.14.0\n", support.generator.artifacts("infra")[".nvmrc"])
         for name in support.generator.PROFILES["repositories"]:
             with self.subTest(profile=name):
-                self.assertEqual(name == "infra", ".nvmrc" in support.generator.artifacts(name))
-                self.assertEqual(23 if name in ("infra", "api") else 21 if name == "android" else 20,
+                self.assertEqual(name in ("infra", "api"), ".nvmrc" in support.generator.artifacts(name))
+                self.assertEqual(25 if name == "api" else 23 if name == "infra" else 21 if name == "android" else 20,
                                  len(support.generator.artifacts(name)))
 
     def test_node_and_verified_uv_install_precede_the_authenticated_three_toolchain_run(self):
@@ -241,8 +241,8 @@ class RuntimeRenderingTests(unittest.TestCase):
                         previous_profile["install"] = [restore]
                         previous_profile["commands"] = [
                             previous_commands[0], restore, "python scripts/quality_gates.py ci",
-                            previous_commands[-2], "python scripts/privacy_traffic_harness.py self-test",
-                            "python scripts/check_privacy_components.py", previous_commands[-1],
+                            previous_commands[-2], "python scripts/privacy_traffic_harness.py self-test --all-scripts",
+                            "python scripts/check_privacy_components.py",
                         ]
                     if name == "api":
                         self.assertEqual([
@@ -251,6 +251,7 @@ class RuntimeRenderingTests(unittest.TestCase):
                         ], previous_profile["commands"])
                         previous_profile["commands"] = support.generator.profile_for("api")["commands"]
                         previous_profile["money_source_materialization"] = True
+                        previous_profile["node"] = "24.14.0"
                     if name == "contracts":
                         previous_profile["state"] = CONTRACTS_STATE
                         self.assertEqual(CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, previous_profile["commands"][-1])
@@ -283,8 +284,37 @@ class RuntimeRenderingTests(unittest.TestCase):
                                               if step["name"] == "Run checks")
                             run_checks["run"] = "\n".join(previous_profile["commands"])
                             expected = json.dumps(value, indent=2) + "\n"
-                        self.assertEqual(expected.encode("utf-8"),
-                                         support.generator.workflow(name, setup=setup).encode("utf-8"))
+                        actual = support.generator.workflow(name, setup=setup)
+                        if name == "api":
+                            value = json.loads(actual)
+                            native_steps = next(iter(value["jobs"].values()))["steps"]
+                            self.assertEqual({
+                                "name": "Node",
+                                "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                                "with": {"node-version-file": ".nvmrc"},
+                            }, native_steps.pop(2))
+                            if not setup:
+                                self.assertEqual(support.generator.api_windows_job(support.generator.profile_for("api")),
+                                                 value["jobs"].pop("windows"))
+                                self.assertEqual(support.generator.ci_result_job("api"), value["jobs"].pop("ci-result"))
+                                self.assertEqual("Linux qualification", value["jobs"]["ci"]["name"])
+                                value["jobs"]["ci"]["name"] = "CI"
+                                preparation = native_steps.pop(3)
+                                self.assertEqual("Prepare API Node SDK", preparation["name"])
+                                self.assertEqual({"name", "run"}, set(preparation))
+                                flag = (' --money-client-interop-node '
+                                        '"${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"')
+                                checks = next(step for step in native_steps if step["name"] == "Run checks")
+                                self.assertEqual(1, checks["run"].count(flag))
+                                checks["run"] = checks["run"].replace(flag, "")
+                                self.assertEqual(1, checks["run"].count(' --base "$BASE_SHA"'))
+                                checks["run"] = checks["run"].replace(' --base "$BASE_SHA"', "")
+                                coverage = next(step for step in json.loads(expected)["jobs"]["ci"]["steps"]
+                                                if step["name"] == "Coverage against explicit base")
+                                self.assertEqual(coverage["env"], checks.pop("env"))
+                                native_steps.append(coverage)
+                            actual = old.encoded(value)
+                        self.assertEqual(expected.encode("utf-8"), actual.encode("utf-8"))
                     self.assertEqual(previous_profile, support.generator.PROFILES["repositories"][name])
         self.assertEqual("python", registry.expected_language("infra", support.generator.profile_for("infra")))
 
@@ -442,6 +472,8 @@ class RuntimeIsolationTests(unittest.TestCase):
     def test_raw_ephemeral_token_is_redacted_from_output_reports_and_the_public_summary(self):
         with tempfile.TemporaryDirectory() as scratch:
             output = Path(scratch) / "published"
+            summary = Path(scratch) / "job-summary.md"
+            environment = {**hostile_environment(), "GITHUB_STEP_SUMMARY": str(summary)}
             client = support.FakeClient({})
             contaminated = {
                 "repository": "PenniLogic/infra", "profile": "infra", "repository_id": 1394135059,
@@ -449,7 +481,7 @@ class RuntimeIsolationTests(unittest.TestCase):
                 "planted_defects": [], "language_coverage": {},
             }
             stdout, stderr = io.StringIO(), io.StringIO()
-            with mock.patch.object(defects.os, "environ", hostile_environment()), \
+            with mock.patch.object(defects.os, "environ", environment), \
                     mock.patch.object(run.github_api, "choose_client", return_value=client), \
                     mock.patch.object(run, "inspect_repository", return_value=contaminated), \
                     contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -458,9 +490,10 @@ class RuntimeIsolationTests(unittest.TestCase):
             self.assertEqual(1, code)
             for text in (stdout.getvalue(), stderr.getvalue(),
                          (output / "conformance-report.json").read_text(),
-                         (output / "conformance-summary.md").read_text()):
+                         (output / "conformance-summary.md").read_text(), summary.read_text()):
                 self.assertNotIn(SYNTHETIC_TOKEN, text)
             self.assertIn("[redacted]", stdout.getvalue())
+            self.assertIn("[redacted]", summary.read_text())
 
     def test_failed_credential_redaction_is_not_published_or_echoed(self):
         with tempfile.TemporaryDirectory() as scratch:

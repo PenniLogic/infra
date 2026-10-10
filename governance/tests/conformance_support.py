@@ -6,9 +6,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -28,6 +30,86 @@ class BaselineTest(unittest.TestCase):
     def test_baseline_passes(self):
         self.assertEqual(2, 1 + 1)
 '''
+
+
+def standard_workflow(renderer, name, setup=False):
+    """Exercise common single-job policy; compound API/Infra CI has exact-byte tests."""
+    document = json.loads(renderer.workflow(name, setup=setup))
+    if name in ("api", "infra") and not setup:
+        document["jobs"] = {"ci": document["jobs"]["ci"]}
+        document["jobs"]["ci"]["name"] = "CI"
+    return renderer.encoded(document)
+
+
+def _powershell_failure_note(case, error, count, fail_at, completed, elapsed, result=None):
+    from qualify import POWERSHELL_FIXTURE_PREFIX
+
+    def capture(value):
+        if value is None:
+            return {"state": "unavailable", "bytes": None, "sha256": None}
+        if type(value) is not bytes:
+            return {"state": "malformed", "bytes": None, "sha256": None}
+        return {"state": "partial" if result is None else "complete",
+                "bytes": len(value), "sha256": hashlib.sha256(value).hexdigest()}
+
+    def number(value):
+        return value if value is None or type(value) is int else "malformed"
+
+    category = "other-exception"
+    for kind, label in ((subprocess.TimeoutExpired, "timeout"), (OSError, "os-error"),
+                        (AssertionError, "assertion"), (UnicodeError, "unicode-error"),
+                        (subprocess.SubprocessError, "subprocess-error")):
+        if isinstance(error, kind):
+            category = label
+            break
+    observed = error if result is None else result
+    value = {
+        "test_id_sha256": hashlib.sha256(case.id().encode("utf-8")).hexdigest(),
+        "count": count, "fail_at": fail_at, "completed_cases": completed[:9],
+        "elapsed_seconds": elapsed, "timeout_seconds": 15,
+        "boundary": "invoke" if result is None else "assertions", "exception_category": category,
+        "errno": number(getattr(error, "errno", None)), "exit_code": number(getattr(observed, "returncode", None)),
+        "stdout": capture(getattr(observed, "stdout", None)), "stderr": capture(getattr(observed, "stderr", None)),
+    }
+    error.add_note(POWERSHELL_FIXTURE_PREFIX.decode("ascii") + json.dumps(value, sort_keys=True))
+
+
+def assert_powershell_failure_boundaries(case, source, count):
+    powershell = shutil.which("pwsh")
+    case.assertIsNotNone(powershell, "PowerShell is required for the emitted Windows command fixture")
+    fixture = """$global:Count = 0
+function python {
+  $global:Count++
+  [Console]::Out.WriteLine($global:Count)
+  $global:LASTEXITCODE = if ($global:Count -eq [int]$env:FAIL_AT) { 37 } else { 0 }
+}
+"""
+    with tempfile.TemporaryDirectory(prefix="native-powershell-") as temporary:
+        script = Path(temporary) / "emitted.ps1"
+        script.write_text(fixture + source, encoding="utf-8")
+        completed = []
+        for fail_at in range(count + 1):
+            environment = defects.probe_environment()
+            environment["FAIL_AT"] = str(fail_at)
+            started = time.monotonic()
+            try:
+                result = subprocess.run(
+                    [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)],
+                    env=environment, capture_output=True, check=False, timeout=15,
+                )
+            except Exception as error:
+                _powershell_failure_note(case, error, count, fail_at, completed, time.monotonic() - started)
+                raise
+            elapsed = time.monotonic() - started
+            with case.subTest(fail_at=fail_at):
+                try:
+                    case.assertEqual(37 if fail_at else 0, result.returncode, result.stderr)
+                    case.assertEqual([str(number) for number in range(1, (fail_at or count) + 1)],
+                                     result.stdout.decode("utf-8").splitlines())
+                except Exception as error:
+                    _powershell_failure_note(case, error, count, fail_at, completed, elapsed, result)
+                    raise
+            completed.append(fail_at)
 
 
 def git(root, *args):

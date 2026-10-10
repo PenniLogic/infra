@@ -20,8 +20,12 @@ Owner-only credential procedures: [Account security baseline](ACCOUNT_SECURITY.m
 
 The separate **governance** test suite also needs Node `24.14.0` (generated `.nvmrc`, bundled npm
 `11.9.0`) and uv `0.11.33`, plus a network to prepare its temporary Vitest/pytest consumers.
+Its emitted-shell controls also require Bash and PowerShell (`pwsh`); both are present
+on the standard hosted runner. The Windows routing fixtures exercise PowerShell
+failure propagation, not the API's real Windows executable or symlink qualification.
 Infra's generated native CI/setup provisions Node with the existing pinned action and uv with
-the ai-service profile's hash-verified installer. Missing tools are explicit fixture-setup errors,
+the hash-verified installers (the existing ai-service line on Linux, the exact Windows wheel
+for the proposed Windows CI leg). Missing tools are explicit fixture-setup errors,
 not successful skips. Those dependencies are for the real repository-automation fixtures, not the
 stdlib Compose/bootstrap scripts. Details and preserved failure evidence:
 [CI_CONFORMANCE.md](CI_CONFORMANCE.md#native-pr-ci-failure-and-required-runtime-repair).
@@ -334,9 +338,10 @@ object directly (job-scoped member list, process objects awaited, a held file de
 both fail-closed paths (job creation refused: nothing started; assignment refused: the started
 command terminated), a command that exits before it can be assigned, and a failing cleanup that
 must leave the timeout error primary.
-`test_integration_stack.py` runs the real stack in a uniquely named project
-(`pennilogic-test-<random>`) on free loopback ports and removes only that project afterwards;
-it is skipped with the reason when Docker is unreachable or `PENNILOGIC_SKIP_DOCKER_TESTS=1`.
+`test_integration_stack.StackLifecycleTests` runs the real stack in uniquely named
+owned projects (`pennilogic-test-<random>` and the three fixture suffixes) on free
+loopback ports. Only that class is skipped with the reason when Docker is unreachable
+or `PENNILOGIC_SKIP_DOCKER_TESTS=1`; the module's Docker-free cleanup regressions still run.
 Its nine ordered steps cover: fresh start healthy with smoke output and `health_log` timings,
 second start leaves one stack and reports `already_running`, `--down` keeps data and recreate
 restores it, an existing volume with other credentials is warned about and never wiped,
@@ -344,6 +349,27 @@ restores it, an existing volume with other credentials is warned about and never
 fails within seconds naming the port, `--status` is read-only, a Docker bind failure after the
 preflight is reported as `port_conflict` and rolled back without touching volumes, and two
 simultaneous first runs share one `.env` and one stack.
+
+Cleanup attempts `--reset` on each of the four owned projects even if an earlier
+reset fails. A nonzero reset or failed resource inspection fails class teardown and
+retains the temporary environment. Successful resets must leave zero scoped
+containers, volumes and networks before the owned temporary tree is removed.
+Tree-deletion errors also fail teardown; partial removal cannot be labelled retained
+or removed. Safe receipts contain only project labels, resource counts and confirmed
+temporary removal, never credentials or command/fixture payloads. Synthetic cleanup
+regressions do not prove actual Docker resource absence.
+
+The proposed native Infra route runs **full** governance discovery, then **full**
+scripts discovery, serially within each parallel Linux/Windows job. A thin
+`governance/qualify.py` wrapper adds verbose per-test collection without selectors or
+changed assertions. On Windows it permits only the nine existing real-stack skips
+and the existing POSIX-flock skip; on Linux all nine real-stack tests must pass at
+the same final source. The harmless process/Docker-command fakes and native symlink
+controls are not exempt. Missing history, tools, inventory, unknown skips or
+setup/teardown errors refuse qualification. See the exact profile and evidence
+contract in [governance/README.md](governance/README.md#infra-windowslinux-ordinary-qualification-owner-transition-held).
+This is an unaccepted source/owner-maintenance candidate, not a hosted result, cleanup
+attestation, old-HOLD clearance or a substitute for separately required local qualification.
 
 ## Out of scope and owners
 

@@ -55,6 +55,7 @@
       "money_source_materialization": true,
       "purpose": "Kotlin/Ktor core API with deterministic server-authoritative money",
       "state": "Kotlin/Ktor health-service scaffold from the reviewed initial import only; no authentication, ledger or product APIs are implemented.",
+      "node": "24.14.0",
       "java": "21",
       "timeout_minutes": 30,
       "commands": [
@@ -103,9 +104,8 @@
         "python -m pip install -r scripts/privacy_traffic/requirements.txt",
         "python scripts/quality_gates.py ci",
         "python scripts/quality_gates.py self-test",
-        "python scripts/privacy_traffic_harness.py self-test",
-        "python scripts/check_privacy_components.py",
-        "python -m unittest discover -s scripts/tests -p \"test_*.py\""
+        "python scripts/privacy_traffic_harness.py self-test --all-scripts",
+        "python scripts/check_privacy_components.py"
       ]
     },
     "web": {

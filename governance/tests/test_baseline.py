@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+import conformance_support as support
+from test_api_node_runtime import BUILD_COMMAND
+
 
 HERE = Path(__file__).resolve().parents[1]
 
@@ -53,9 +56,8 @@ ANDROID_COMMANDS = [
     ANDROID_GROUPED_COMMANDS[0],
     "python -m pip install -r scripts/privacy_traffic/requirements.txt",
     *ANDROID_GROUPED_COMMANDS[1:3],
-    "python scripts/privacy_traffic_harness.py self-test",
+    "python scripts/privacy_traffic_harness.py self-test --all-scripts",
     "python scripts/check_privacy_components.py",
-    ANDROID_GROUPED_COMMANDS[3],
 ]
 
 
@@ -76,7 +78,9 @@ class BaselineTests(unittest.TestCase):
             with self.subTest(repo=repo):
                 output = generator.artifacts(repo)
                 for name in (".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml"):
-                    checker.validate_workflow(name, output[name].encode())
+                    checker.validate_workflow(name, support.standard_workflow(
+                        generator, repo, setup=name.endswith("copilot-setup-steps.yml"),
+                    ).encode())
                 ci = json.loads(output[".github/workflows/ci.yml"])
                 self.assertEqual("ubuntu-24.04", ci["jobs"]["ci"]["runs-on"])
                 self.assertIn("pull_request", ci["on"])
@@ -92,16 +96,15 @@ class BaselineTests(unittest.TestCase):
 
     def test_api_build_is_real_and_no_profile_gets_an_invented_step(self):
         api = json.loads(generator.workflow("api"))["jobs"]["ci"]["steps"]
-        self.assertIn("python scripts/quality.py build", api[-2]["run"])
-        self.assertIn("coverage --base", api[-1]["run"])
+        self.assertIn(BUILD_COMMAND, api[-1]["run"])
+        self.assertNotIn("python scripts/quality.py coverage", json.dumps(api))
         contracts = json.loads(generator.workflow("contracts"))["jobs"]["ci"]["steps"]
         self.assertEqual(["Checkout", "Python", "Node", "JDK", "Run checks"], [step["name"] for step in contracts])
         self.assertEqual("\n".join(CONTRACTS_COMMANDS), contracts[-1]["run"])
-        # Only api's explicit-base coverage follows the requested commands; the generator never
-        # appends a build, test or publication step that a profile did not ask for.
+        # API folds explicit-base coverage into its build; no profile gets an extra
+        # build, test or publication step after its requested commands.
         for repo in generator.PROFILES["repositories"]:
-            if repo != "api":
-                self.assertEqual("Run checks", json.loads(generator.workflow(repo))["jobs"]["ci"]["steps"][-1]["name"])
+            self.assertEqual("Run checks", json.loads(generator.workflow(repo))["jobs"]["ci"]["steps"][-1]["name"])
 
     def test_profiles_run_exactly_their_requested_commands(self):
         expected = {
@@ -141,7 +144,12 @@ class BaselineTests(unittest.TestCase):
                 output = generator.artifacts(repo)
                 steps = json.loads(output[".github/workflows/ci.yml"])["jobs"]["ci"]["steps"]
                 run = [step for step in steps if step["name"] == "Run checks"]
-                self.assertEqual([commands], [step["run"].split("\n") for step in run])
+                workflow_commands = [
+                    BUILD_COMMAND if repo == "api" and command == "python scripts/quality.py build"
+                    else generator.infra_ci_command(command) if repo == "infra" else command
+                    for command in commands
+                ]
+                self.assertEqual([workflow_commands], [step["run"].split("\n") for step in run])
                 self.assertEqual(commands, json.loads(output[".github/agent-policy.json"])["commands"])
                 block = "```text\npython scripts/setup.py\n" + "\n".join(commands) + "\n```"
                 for name in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
@@ -172,7 +180,7 @@ class BaselineTests(unittest.TestCase):
                            if current[repo][name].encode("utf-8") != previous[repo][name].encode("utf-8")}
                 self.assertEqual(CONTRACTS_COMMAND_ARTIFACTS if repo == "contracts" else set(), changed)
                 unchanged += len(current[repo]) - len(changed)
-        self.assertEqual(182, unchanged)
+        self.assertEqual(184, unchanged)
         self.assertEqual(contracts_command_delta(self, previous["contracts"]), current["contracts"])
         self.assertNotIn("scripts/run_source_tests.py", current["contracts"])
 
@@ -264,7 +272,7 @@ class BaselineTests(unittest.TestCase):
                         commands.remove(ANDROID_COMMANDS[2])
                     else:
                         commands[2] = replacement
-                    self.assertEqual(ANDROID_COMMANDS[3:], commands[-4:])
+                    self.assertEqual(ANDROID_COMMANDS[3:], commands[-3:])
                     run_checks["run"] = "\n".join(commands)
                     path.write_bytes(generator.encoded(changed).encode("utf-8"))
                     refused = invoke("--check")
@@ -322,7 +330,7 @@ class BaselineTests(unittest.TestCase):
                         self.assertEqual("Python", steps[steps.index(node[0]) - 1]["name"])
                     else:
                         self.assertEqual([], node)
-        self.assertEqual({"web", "admin", "contracts", "infra"}, {
+        self.assertEqual({"web", "admin", "contracts", "infra", "api"}, {
             repo for repo, profile in generator.PROFILES["repositories"].items() if "node" in profile
         })
 
@@ -368,7 +376,8 @@ class BaselineTests(unittest.TestCase):
                         self.assertNotIn("that guide is not generated", output[name])
         web = generator.artifacts("web")
         self.assertIn("Install Python 3.14, Git, and Node 24.14.0 (see `.nvmrc`), then run:", web["CONTRIBUTING.md"])
-        self.assertIn("Install Python 3.14, Git, and JDK 21, then run:", generator.artifacts("api")["CONTRIBUTING.md"])
+        self.assertIn("Install Python 3.14, Git, Node 24.14.0 (see `.nvmrc`), and JDK 21, then run:",
+                      generator.artifacts("api")["CONTRIBUTING.md"])
         self.assertIn("Install Python 3.14, Git, and Node 24.14.0 (see `.nvmrc`), then run:",
                       generator.artifacts("infra")["CONTRIBUTING.md"])
         contracts = generator.artifacts("contracts")
@@ -556,7 +565,7 @@ class BaselineTests(unittest.TestCase):
                     if "run" in step:
                         self.assertNotIn("${{", step["run"], msg=f"{repo} {step['name']}")
                 if repo == "api" and not setup:
-                    self.assertEqual(["Coverage against explicit base"],
+                    self.assertEqual(["Run checks"],
                                      [step["name"] for step in job["steps"] if "${{" in json.dumps(step)])
                 self.assertNotIn("${{", json.dumps(job.get("env", {})))
 
@@ -570,13 +579,14 @@ class BaselineTests(unittest.TestCase):
                     for path in root.rglob("*") if path.is_file()
                 }
                 files["migration-source.json"] = b"{}\n"
+                exact_exceptions = [".github/workflows/ci.yml"] if repo in ("api", "infra") else []
                 if generator.profile_for(repo).get("pr_workflow_integrity", False):
-                    self.assertEqual([
-                        "Invalid or unsafe workflow: .github/workflows/pr-workflow-integrity.yml: "
-                        "unreviewed workflow expression; public jobs must not receive secrets",
-                    ], checker.check(files))
-                else:
-                    self.assertEqual([], checker.check(files))
+                    exact_exceptions.append(".github/workflows/pr-workflow-integrity.yml")
+                self.assertEqual([
+                    f"Invalid or unsafe workflow: {name}: "
+                    "unreviewed workflow expression; public jobs must not receive secrets"
+                    for name in exact_exceptions
+                ], checker.check(files))
                 generated_checker = load(f"generated_checker_{repo.strip('.')}", root / "scripts/check_repository.py")
                 self.assertEqual([], generated_checker.check(files))
 
@@ -681,7 +691,7 @@ class BaselineTests(unittest.TestCase):
         emitted = set()
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):
-                for text in checker.workflow_strings(json.loads(generator.workflow(repo, setup=setup))):
+                for text in checker.workflow_strings(json.loads(support.standard_workflow(generator, repo, setup))):
                     emitted.update(re.findall(r"\$\{\{.*?\}\}", text))
         self.assertEqual(emitted, checker.WORKFLOW_EXPRESSIONS)
         self.assertEqual(3, len(checker.WORKFLOW_EXPRESSIONS))
@@ -698,7 +708,7 @@ class BaselineTests(unittest.TestCase):
         for expression in unreviewed:
             for level in ("run", "env", "with", "name", "concurrency"):
                 with self.subTest(expression=expression, level=level):
-                    workflow = json.loads(generator.workflow("api"))
+                    workflow = json.loads(support.standard_workflow(generator, "api"))
                     job = workflow["jobs"]["ci"]
                     if level == "run":
                         job["steps"][-2]["run"] += f"\necho '{expression}'"
@@ -726,7 +736,7 @@ class BaselineTests(unittest.TestCase):
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):
                 checker.validate_workflow(f".github/workflows/{'copilot-setup-steps' if setup else 'ci'}.yml",
-                                          generator.workflow(repo, setup=setup).encode())
+                                          support.standard_workflow(generator, repo, setup).encode())
 
     def test_sensitive_key_material_files_are_rejected(self):
         for name in ("release.jks", "app/keystore.bks", "certs/server.pem", "upload.keystore", "id_rsa", ".env",
@@ -772,7 +782,7 @@ class BaselineTests(unittest.TestCase):
             self.assertIn("[LOCAL_INFRASTRUCTURE.md](LOCAL_INFRASTRUCTURE.md)", output[name])
             self.assertIn("python -m unittest discover -s scripts/tests\n```", output[name])
         steps = json.loads(output[".github/workflows/ci.yml"])["jobs"]["ci"]["steps"]
-        self.assertTrue(steps[-1]["run"].endswith("\npython -m unittest discover -s scripts/tests"))
+        self.assertTrue(steps[-1]["run"].endswith("\n" + generator.infra_ci_command(profile["commands"][-1])))
         self.assertTrue((HERE.parent / "LOCAL_INFRASTRUCTURE.md").is_file())
         self.assertTrue((HERE.parent / "scripts/tests").is_dir())
 

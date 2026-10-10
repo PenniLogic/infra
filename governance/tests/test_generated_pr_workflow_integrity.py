@@ -12,6 +12,7 @@ from unittest import mock
 
 import conformance_support as support
 from conformance import steps
+from test_api_node_runtime import BUILD_COMMAND
 from test_baseline import CONTRACTS_STATE, contracts_command_delta
 
 
@@ -143,6 +144,7 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     continue
                 for relative in (".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml"):
                     expected = old[relative]
+                    actual = new[relative]
                     if name == "api" and relative == ".github/workflows/ci.yml":
                         value = json.loads(expected)
                         run_checks = next(step for step in value["jobs"]["ci"]["steps"]
@@ -151,13 +153,60 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                         expected = json.dumps(value, indent=2) + "\n"
                     elif name == "contracts":
                         expected = contracts_command_delta(self, old)[relative]
-                    self.assertEqual(expected, new[relative], (name, relative))
+                    if name == "api":
+                        value = json.loads(expected)
+                        native_steps = next(iter(value["jobs"].values()))["steps"]
+                        native_steps.insert(2, {
+                            "name": "Node",
+                            "uses": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+                            "with": {"node-version-file": ".nvmrc"},
+                        })
+                        if relative == ".github/workflows/ci.yml":
+                            preparation = json.loads(actual)["jobs"]["ci"]["steps"][4]
+                            self.assertEqual({"name", "run"}, set(preparation))
+                            self.assertEqual("Prepare API Node SDK", preparation["name"])
+                            # Bind C's exact added program without duplicating its shell fixture.
+                            self.assertEqual(
+                                "d194c5568ed1a7dbb44440a1a88e4ceec07d34196535bb10d2426b18955cb55a",
+                                hashlib.sha256(preparation["run"].encode("utf-8")).hexdigest(),
+                            )
+                            native_steps.insert(4, preparation)
+                            for step in native_steps:
+                                if step["name"] == "Run checks":
+                                    commands = step["run"].split("\n")
+                                    self.assertEqual(1, commands.count("python scripts/quality.py build"))
+                                    commands[commands.index("python scripts/quality.py build")] = BUILD_COMMAND
+                                    step["run"] = "\n".join(commands)
+                            coverage = next(step for step in native_steps
+                                            if step["name"] == "Coverage against explicit base")
+                            next(step for step in native_steps
+                                 if step["name"] == "Run checks")["env"] = coverage["env"]
+                            native_steps.remove(coverage)
+                            value["jobs"]["ci"]["name"] = "Linux qualification"
+                            value["jobs"]["windows"] = generator.api_windows_job(generator.profile_for("api"))
+                            value["jobs"]["ci-result"] = generator.ci_result_job("api")
+                        expected = generator.encoded(value)
+                    if name == "infra" and relative == ".github/workflows/ci.yml":
+                        value = json.loads(expected)
+                        linux = value["jobs"]["ci"]
+                        linux["name"] = "Linux qualification"
+                        checks = next(step for step in linux["steps"] if step["name"] == "Run checks")
+                        checks["run"] = "\n".join(generator.infra_ci_command(command)
+                                                  for command in checks["run"].split("\n"))
+                        value["jobs"]["windows"] = generator.infra_windows_job(generator.profile_for("infra"))
+                        value["jobs"]["ci-result"] = generator.ci_result_job("infra")
+                        expected = generator.encoded(value)
+                    self.assertEqual(expected, actual, (name, relative))
                 if name == "api":
                     self.assertEqual({
                         "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json",
-                        ".github/workflows/ci.yml", "scripts/materialize_money_sources.py",
+                        ".github/workflows/ci.yml", ".github/workflows/copilot-setup-steps.yml", ".nvmrc",
+                        "scripts/materialize_money_sources.py",
                         "scripts/prepare_database_admission.py", "src/main/resources/database-admission-installation.json",
+                        "scripts/check_repository.py", "scripts/qualify_windows.py",
                     }, {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
+                    self.assertNotIn(".nvmrc", old)
+                    self.assertEqual("24.14.0\n", new[".nvmrc"])
                     unchanged += sum(old[path] == new.get(path) for path in old)
                 elif name == "contracts":
                     previous_state = accepted.PROFILES["repositories"][name]["state"]
@@ -172,11 +221,11 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     unchanged += len(new)
                 else:
                     self.assertEqual(23, len(new))
-                    self.assertEqual({GATE, "scripts/check_repository.py"},
+                    self.assertEqual({GATE, "scripts/check_repository.py", ".github/workflows/ci.yml"},
                                      {path for path in set(old) | set(new) if old.get(path) != new.get(path)})
                     self.assertEqual(old[".github/workflows/conformance.yml"],
                                      new[".github/workflows/conformance.yml"])
-            self.assertEqual(144, unchanged)
+            self.assertEqual(142, unchanged)
 
     def test_exact_opt_in_checker_extension_never_widens_the_common_template(self):
         original = (support.GOVERNANCE / "templates" / "check_repository.py").read_bytes()

@@ -22,7 +22,7 @@
     {
       "repo": "PenniLogic/api",
       "check_name": "CI",
-      "workflow_ref": "952ebd1700c54df6127c4c0778390aa0815d4f42",
+      "workflow_ref": "733c42e177d61c552e5baa9dc01d55c850e1b33f",
       "language": "kotlin"
     },
     {
@@ -34,7 +34,7 @@
     {
       "repo": "PenniLogic/android",
       "check_name": "CI",
-      "workflow_ref": "1a540182f48a492772e5230219306632528c3967",
+      "workflow_ref": "6867bd8f302e5ca607063dcfeb1a12b382e948fa",
       "language": "kotlin"
     },
     {
@@ -52,11 +52,11 @@
     {
       "repo": "PenniLogic/infra",
       "check_name": "CI",
-      "workflow_ref": "d62cbdfbc9c84202e48da5013b272a966180e301",
+      "workflow_ref": "889c5c35a1677ef33899a2e63bc528d3bac802f9",
       "language": "python",
       "pr_gate": {
         "check_name": "PR workflow integrity",
-        "workflow_ref": "ff6a47835f27c73a403dab331d3f8dd7fd43b412"
+        "workflow_ref": "889c5c35a1677ef33899a2e63bc528d3bac802f9"
       }
     }
   ]

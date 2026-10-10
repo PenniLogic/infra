@@ -12,6 +12,8 @@ import types
 import unittest
 from unittest import mock
 
+import conformance_support as support
+
 
 HERE = Path(__file__).resolve().parents[1]
 CI = ".github/workflows/ci.yml"
@@ -67,7 +69,8 @@ class GeneratedConformanceTests(unittest.TestCase):
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 output = generator.artifacts(repo)
-                self.assertEqual(23 if repo in ("infra", "api") else 21 if repo == "android" else 20, len(output))
+                self.assertEqual(25 if repo == "api" else 23 if repo == "infra"
+                                 else 21 if repo == "android" else 20, len(output))
                 self.assertEqual({CI, SETUP, CONFORMANCE, PR_GATE} if repo == "infra" else {CI, SETUP},
                                  {name for name in output if name.startswith(".github/workflows/")})
 
@@ -105,11 +108,11 @@ class GeneratedConformanceTests(unittest.TestCase):
         for stale in (template.replace(line, 'WORKFLOW_REPOSITORY = "web"\n'),
                       template.replace(line, 'WORKFLOW_REPOSITORY = ""\n')):
             with mock.patch.object(generator.Path, "read_text", return_value=stale):
-                self.assertEqual(template, generator.checker("infra", integrity=False))
+                self.assertEqual(template, generator.standard_checker("infra"))
         for invalid in (template.replace(line, ""), template.replace(line, line + line)):
             with mock.patch.object(generator.Path, "read_text", return_value=invalid):
                 with self.assertRaisesRegex(ValueError, "WORKFLOW_REPOSITORY exactly once"):
-                    generator.checker("infra", integrity=False)
+                    generator.standard_checker("infra")
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
                 checker = rendered_checker(repo)
@@ -120,7 +123,7 @@ class GeneratedConformanceTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         checker.validate_workflow(CONFORMANCE, json.dumps(document()).encode())
                     with self.assertRaisesRegex(ValueError, "workflow file outside"):
-                        checker.validate_workflow(CONFORMANCE, generator.workflow(repo).encode())
+                        checker.validate_workflow(CONFORMANCE, support.standard_workflow(generator, repo).encode())
 
     def test_schedule_is_only_allowed_in_the_infra_conformance_file(self):
         for repo in generator.PROFILES["repositories"]:
@@ -128,13 +131,14 @@ class GeneratedConformanceTests(unittest.TestCase):
                 with self.subTest(repo=repo, name=name):
                     value = json.loads(generator.workflow(repo, setup=setup))
                     value["on"]["schedule"] = [{"cron": "17 5 * * 1"}]
-                    with self.assertRaisesRegex(ValueError, "unreviewed workflow trigger"):
+                    rule = "CI must match" if repo in ("api", "infra") and not setup else "unreviewed workflow trigger"
+                    with self.assertRaisesRegex(ValueError, rule):
                         validate(value, repo, name)
         for repo in generator.PROFILES["repositories"]:
             for name in (".github/workflows/extra.yml", ".github/workflows/conformance.yaml",
                          ".github/workflows/Conformance.yml", ".github/workflows/sub/conformance.yml"):
                 with self.subTest(repo=repo, name=name):
-                    value = json.loads(generator.workflow(repo))
+                    value = json.loads(support.standard_workflow(generator, repo))
                     value["on"]["schedule"] = [{"cron": "17 5 * * 1"}]
                     with self.assertRaisesRegex(ValueError, "unreviewed workflow trigger"):
                         validate(value, repo, name)
@@ -199,7 +203,9 @@ class GeneratedConformanceTests(unittest.TestCase):
                 with self.subTest(repo=repo, name=name):
                     value = json.loads(generator.workflow(repo, setup=setup))
                     next(iter(value["jobs"].values()))["steps"].append(copy.deepcopy(upload))
-                    with self.assertRaisesRegex(ValueError, "artifact upload is reserved for infra conformance"):
+                    rule = ("CI must match" if repo in ("api", "infra") and not setup
+                            else "artifact upload is reserved for infra conformance")
+                    with self.assertRaisesRegex(ValueError, rule):
                         validate(value, repo, name)
 
     def test_upload_and_other_actions_keep_exact_immutable_pins(self):

@@ -138,7 +138,7 @@ class RegistryTests(unittest.TestCase):
                     self.skipTest("commit not present in this (shallow) history")
                 self.assertEqual(support.generator.artifacts(name)[".github/workflows/ci.yml"].encode("utf-8"), rendered)
 
-    def test_android_workflow_ref_exists_and_renders_the_exact_grouped_caller(self):
+    def test_android_workflow_ref_exists_and_renders_the_exact_combined_caller(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "android")
         self.assertIsNotNone(rendered, "the Android source binding must exist in real Git history")
@@ -148,10 +148,21 @@ class RegistryTests(unittest.TestCase):
             "python -m pip install -r scripts/privacy_traffic/requirements.txt",
             "python scripts/quality_gates.py ci",
             "python scripts/quality_gates.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test --all-scripts",
+            "python scripts/check_privacy_components.py",
+        ], steps.workflow_run_commands(rendered))
+
+    def test_previous_android_privacy_ref_cannot_bind_the_combined_workflow(self):
+        previous = registry.render_workflow_at(
+            support.GOVERNANCE.parent, "1a540182f48a492772e5230219306632528c3967", "android",
+        )
+        self.assertIsNotNone(previous, "the accepted privacy workflow must be present for this regression")
+        self.assertEqual([
             "python scripts/privacy_traffic_harness.py self-test",
             "python scripts/check_privacy_components.py",
             'python -m unittest discover -s scripts/tests -p "test_*.py"',
-        ], steps.workflow_run_commands(rendered))
+        ], steps.workflow_run_commands(previous)[-3:])
+        self.assertNotEqual(support.generator.workflow("android").encode("utf-8"), previous)
 
     def test_previous_android_standalone_ref_cannot_bind_the_grouped_workflow(self):
         previous = registry.render_workflow_at(

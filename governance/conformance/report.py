@@ -1,7 +1,7 @@
 """Assemble the machine-readable conformance report and its Markdown summary.
 
 The report is the published artifact: one record per repository with its identity, generated
-baseline, checker result, detected steps, required checks, last ``main`` CI run and planted-defect
+baseline, checker result, detected steps, required checks, ``main`` CI history and planted-defect
 records, plus the per-repository and overall result. ``redact`` removes every local path and
 credential-shaped string before anything is written; the summary is rendered from the redacted
 document only, so both files carry the same facts.
@@ -9,9 +9,11 @@ document only, so both files carry the same facts.
 
 import ctypes
 import getpass
+import html
 import json
 import os
 import re
+import statistics
 import sys
 import tempfile
 from pathlib import Path
@@ -31,6 +33,14 @@ USER_PLACEHOLDER = "<user>"
 # An absolute drive path that survived redaction (a letter that is not part of a longer word such as
 # the `s` of `https:`, a colon, then a separator in plain, repr or JSON spelling).
 DRIVE_PATH = re.compile(r"(?<![A-Za-z])[A-Za-z]:(?:\\\\|\\|/)")
+TREND_MINIMUM_SAMPLES = 4
+TREND_REGRESSION_SECONDS = 60
+TREND_REGRESSION_PERCENT = 20
+TREND_WARNING_PERCENT = 80
+RUN_CONCLUSIONS = {
+    "success", "failure", "cancelled", "timed_out", "action_required", "neutral", "skipped",
+    "stale", "startup_failure",
+}
 
 
 def spellings(text):
@@ -164,9 +174,115 @@ def redact(value, replacements, credentials=()):
     return value
 
 
+def ci_duration_trend(record, budget_minutes=10):
+    """Compare complete first attempts only, retaining every sampled outcome in the report."""
+    latest = record.get("last_main_run") or {}
+    seconds = latest.get("wall_clock_seconds")
+    trend = {
+        "status": "unavailable", "direction": None, "sample_count": 0,
+        "minimum_samples": TREND_MINIMUM_SAMPLES, "baseline_seconds": None,
+        "latest_seconds": seconds, "change_seconds": None, "change_percent": None,
+        "warning_at_seconds": budget_minutes * 60 * TREND_WARNING_PERCENT // 100,
+        "regression_minimum_seconds": TREND_REGRESSION_SECONDS,
+        "regression_minimum_percent": TREND_REGRESSION_PERCENT,
+        "alerts": [], "reasons": [],
+    }
+    warnings = []
+    action = "inspect recent CI steps and caches without dropping required checks"
+    if type(seconds) is int and trend["warning_at_seconds"] <= seconds <= budget_minutes * 60:
+        trend["alerts"].append("approaching_budget")
+        warnings.append(f"CI duration approaching budget: latest run took {seconds} s, at least "
+                        f"{TREND_WARNING_PERCENT}% of the {budget_minutes}-minute budget; {action}")
+    history = record.get("main_run_history")
+    if not isinstance(history, dict) or not isinstance(history.get("runs"), list):
+        trend["reasons"] = ["completed main CI history was not available"]
+    else:
+        samples = history["runs"]
+        trend["sample_count"] = len(samples)
+        invalid, incomparable = [], []
+        if len(samples) > 10:
+            invalid.append("history exceeds the ten-run sample limit")
+        identities, numbers = [], []
+        workflow = None
+        for sample in samples:
+            if not isinstance(sample, dict):
+                invalid.append("a history entry is not a run")
+                continue
+            run_id = sample.get("id")
+            label = f"run {run_id}" if type(run_id) is int else "run with missing/invalid id"
+            number, attempt = sample.get("run_number"), sample.get("run_attempt")
+            source = (sample.get("workflow_id"), sample.get("path"))
+            if (type(run_id) is not int or run_id <= 0 or type(number) is not int or number <= 0
+                    or type(attempt) is not int or attempt <= 0
+                    or type(source[0]) is not int or source[0] <= 0
+                    or not isinstance(source[1], str) or not source[1]
+                    or sample.get("name") != history.get("workflow_name")
+                    or sample.get("head_branch") != history.get("branch")
+                    or sample.get("event") != "push" or sample.get("status") != "completed"):
+                invalid.append(f"{label} has missing or non-comparable workflow metadata")
+            identities.append(run_id)
+            numbers.append(number)
+            if workflow is None:
+                workflow = source
+            elif source != workflow:
+                invalid.append(f"{label} belongs to a different workflow id/path")
+            duration = sample.get("wall_clock_seconds")
+            if type(duration) is not int or duration < 0:
+                invalid.append(f"{label} has missing or invalid wall-clock timestamps")
+            conclusion = sample.get("conclusion")
+            if not isinstance(conclusion, str) or conclusion not in RUN_CONCLUSIONS:
+                invalid.append(f"{label} has a missing or invalid conclusion")
+            elif conclusion != "success":
+                incomparable.append(f"{label} concluded {conclusion}; retained, not a faster successful baseline")
+            if type(attempt) is int and attempt > 1:
+                incomparable.append(f"{label} is a rerun (attempt {attempt}); individual earlier attempts are not available")
+            if sample is not samples[0] and type(duration) is int and duration > budget_minutes * 60:
+                warnings.append(f"historical main CI {label} took {duration} s, over the "
+                                f"{budget_minutes}-minute budget; the overrun remains in the trend history")
+        if all(type(value) is int for value in identities) and len(set(identities)) != len(identities):
+            invalid.append("duplicate run ids in the history")
+        if all(type(value) is int for value in numbers) and any(a <= b for a, b in zip(numbers, numbers[1:])):
+            invalid.append("run numbers are not in newest-first order")
+        if samples and samples[0] != latest:
+            invalid.append("history does not start with the recorded last main CI run")
+        if history.get("scan_limit_reached") and len(samples) < 10:
+            warnings.append("CI duration history reached the 100-run scan limit; "
+                            f"only {len(samples)} CI samples found; older runs were not fetched")
+        if invalid:
+            trend["status"], trend["reasons"] = "invalid_history", invalid + incomparable
+        elif incomparable:
+            trend["status"], trend["reasons"] = "incomparable_history", incomparable
+        elif len(samples) < TREND_MINIMUM_SAMPLES:
+            trend["status"] = "insufficient_history"
+            trend["reasons"] = [f"need at least {TREND_MINIMUM_SAMPLES} comparable runs; found {len(samples)}"]
+        else:
+            baseline = statistics.median(sample["wall_clock_seconds"] for sample in samples[1:])
+            trend["baseline_seconds"] = baseline
+            if baseline == 0:
+                trend["status"] = "incomparable_history"
+                trend["reasons"] = ["prior median is zero; a relative duration comparison is unavailable"]
+            else:
+                change = seconds - baseline
+                material = (abs(change) >= TREND_REGRESSION_SECONDS
+                            and abs(change) * 100 >= baseline * TREND_REGRESSION_PERCENT)
+                trend.update(
+                    status="available", change_seconds=change, change_percent=round(change * 100 / baseline, 1),
+                    direction=("regressing" if change > 0 else "improving") if material else "no_material_change",
+                )
+                if material and change > 0:
+                    trend["alerts"].append("regression")
+                    warnings.append(f"CI duration regression: latest {seconds} s versus prior median {baseline:g} s "
+                                    f"(+{change:g} s; at least {TREND_REGRESSION_PERCENT}% and "
+                                    f"{TREND_REGRESSION_SECONDS} s slower); {action}")
+    if trend["reasons"]:
+        warnings.append(f"CI duration trend {trend['status']}: " + "; ".join(trend["reasons"]))
+    return trend, warnings
+
+
 def evaluate_repository(record, budget_minutes=10):
     """Fill ``failures``, ``warnings`` and ``result`` of one repository record in place."""
     failures, warnings = [], []
+    record["ci_duration_trend"], trend_warnings = ci_duration_trend(record, budget_minutes)
     identity = record.get("identity") or {}
     if record.get("job_error"):
         # Nothing else was inspected; one line says why instead of a cascade of missing sections.
@@ -187,6 +303,8 @@ def evaluate_repository(record, budget_minutes=10):
     if baseline.get("stale_files"):
         warnings.append("generated non-workflow files predate the current generator: "
                         + ", ".join(baseline["stale_files"]))
+    if baseline.get("error") or baseline.get("timed_out"):
+        failures.append("the generator drift command timed out or could not run")
     checker = record.get("repository_check") or {}
     if checker.get("exit_code") not in (0, None):
         failures.append("the repository's own scripts/check_repository.py failed")
@@ -235,6 +353,7 @@ def evaluate_repository(record, budget_minutes=10):
                 failures.append(message)
         if run.get("head_sha") and record.get("main_sha") and run["head_sha"] != record["main_sha"]:
             warnings.append("main moved since the last completed CI run; results describe the cloned commit")
+    warnings.extend(trend_warnings)
     record["failures"] = failures
     record["warnings"] = warnings
     record["result"] = "fail" if failures else "pass"
@@ -242,11 +361,11 @@ def evaluate_repository(record, budget_minutes=10):
 
 
 def build_report(records, generator_commit, github_client, exercised, budget_minutes=10,
-                 generated_at=None, api_requests=None, rate_limit_remaining=None, not_run=None):
+                 generated_at=None, api_requests=None, rate_limit_remaining=None, not_run=None, execution=None):
     for record in records:
         evaluate_repository(record, budget_minutes)
     failures = [f"{record['repository']}: {failure}" for record in records for failure in record["failures"]]
-    return {
+    document = {
         "schema": SCHEMA,
         "generated_at": generated_at,
         "generator_commit": generator_commit,
@@ -261,6 +380,9 @@ def build_report(records, generator_commit, github_client, exercised, budget_min
         "not_run": list(not_run or []),
         "repositories": records,
     }
+    if execution is not None:
+        document["execution"] = execution
+    return document
 
 
 def to_json(report):
@@ -276,6 +398,85 @@ def _seconds(value):
 
 def _short(sha):
     return sha[:12] if isinstance(sha, str) else "-"
+
+
+def _cell(value, *, literal=False):
+    text = html.escape(str(value), quote=False).replace("|", "&#124;").replace("\r", " ").replace("\n", " ")
+    # Entity references preserve label punctuation as text, not Markdown links, code or emphasis.
+    return re.sub(r"[\\`*_\[\]~]", lambda match: f"&#{ord(match[0])};", text) if literal else text
+
+
+def _elapsed(value):
+    return "unavailable" if value is None else f"{value:.3f}"
+
+
+def render_execution(document):
+    execution = document.get("execution")
+    if execution is None:
+        return []
+    lines = [
+        "", "## Current conformance execution", "",
+        f"Serial repository inspection loop: {_elapsed(execution['elapsed_seconds'])} s; "
+        f"{execution['repository_workers']} worker. "
+        "This is this invocation, not historical main CI or native whole-job/workflow timing.",
+        "",
+        "Repository timing includes checkout, preparation, commands, restoration and metadata reads. "
+        "Checkout and command timings are parts of that inclusive interval, not additional totals. "
+        "Unavailable measurements stay unavailable; historical CI durations are not substituted.",
+    ]
+    if execution.get("unsafe_process_lifetime"):
+        lines += ["", "FAIL: " + _cell(execution["unsafe_process_lifetime"], literal=True)
+                  + "; scratch ownership is retained. No descendant-exit or cleanup success is claimed."]
+    lines += [
+        "", "| Repository | Inclusive inspection (s) | Checkout (s) |",
+        "| --- | --- | --- |",
+    ]
+    for record in document["repositories"]:
+        timing = record.get("timings") or {}
+        lines.append(f"| {_cell(record['repository'])} | {_elapsed(timing.get('elapsed_seconds'))} | "
+                     f"{_elapsed(timing.get('checkout_seconds'))} |")
+    return lines
+
+
+def render_duration_trends(records):
+    lines = [
+        "", "## CI wall-clock trends", "",
+        "Up to 10 completed main/push CI runs; seconds below are oldest -> newest, linked to each run. "
+        "Comparison needs four successful first attempts of the same workflow; "
+        "failed, rerun and invalid samples stay visible, never filtered into a faster baseline.",
+        "",
+        "| Repository | Run durations (s) / conclusions | Prior median (s) | Latest change | Assessment |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for record in records:
+        trend = record.get("ci_duration_trend") or {}
+        history = record.get("main_run_history")
+        samples = history.get("runs") if isinstance(history, dict) else None
+        samples = samples if isinstance(samples, list) else []
+        rendered = []
+        for sample in reversed(samples):
+            if not isinstance(sample, dict):
+                rendered.append("invalid run")
+                continue
+            seconds, conclusion = sample.get("wall_clock_seconds"), sample.get("conclusion")
+            label = str(seconds) if type(seconds) is int and seconds >= 0 else "unknown"
+            run_id = sample.get("id")
+            if type(run_id) is int and run_id > 0:
+                label = f"[{label}](https://github.com/{record['repository']}/actions/runs/{run_id})"
+            label += " / " + (conclusion if isinstance(conclusion, str) and conclusion in RUN_CONCLUSIONS else "unknown")
+            if sample.get("within_budget") is False:
+                label += " OVER BUDGET"
+            if type(sample.get("run_attempt")) is int and sample["run_attempt"] > 1:
+                label += f" (attempt {sample['run_attempt']})"
+            rendered.append(label)
+        baseline, change, percent = (trend.get(key) for key in ("baseline_seconds", "change_seconds", "change_percent"))
+        delta = "-" if change is None else f"{change:+g} s ({percent:+g}%)"
+        assessment = trend.get("direction") or trend.get("status") or "unavailable"
+        if trend.get("alerts"):
+            assessment += "; ALERT: " + ", ".join(trend["alerts"])
+        lines.append(f"| {_cell(record['repository'])} | {' -> '.join(rendered) or 'no samples'} | "
+                     f"{baseline if baseline is not None else '-'} | {delta} | {_cell(assessment)} |")
+    return lines
 
 
 def render_markdown(report):
@@ -320,6 +521,8 @@ def render_markdown(report):
             + (f", {consumer} consumer evidence" if consumer else "")
             + f" | **{record['result'].upper()}** |"
         )
+    lines += render_execution(report)
+    lines += render_duration_trends(report["repositories"])
     lines += ["", "## Findings", ""]
     if not report["failures"]:
         lines.append("No failures.")
@@ -351,12 +554,14 @@ def render_markdown(report):
         lines += [f"### {record['repository']}", "", "| Fixture | Language | Toolchain | Outcome | Probes |", "| --- | --- | --- | --- | --- |"]
         for defect in record.get("planted_defects") or []:
             probes = "; ".join(
-                f"{probe['label']} -> exit {probe['exit_code']} ({probe['outcome']}"
+                f"{_cell(probe['label'], literal=True)} -> exit {probe['exit_code']} ({probe['outcome']}"
                 + (", rule text surfaced" if probe.get("detail_surfaced") is True else
                    ", refused without rule text: checker predates PR E" if probe.get("detail_surfaced") is False else "")
                 + ")"
+                + (f"; elapsed: {_elapsed(probe['elapsed_seconds'])} s" if "elapsed_seconds" in probe else "")
+                + (f"; failure evidence: `{_cell(probe['failure_evidence'])}`" if probe.get("failure_evidence") else "")
                 for probe in defect.get("probes", [])
-            ) or (defect.get("reason") or "-")
+            ) or _cell(defect.get("reason") or "-", literal=True)
             lines.append(f"| `{defect['id']}` | {defect['language']} | {defect['toolchain']} | {OUTCOME_MARK.get(defect['outcome'], defect['outcome'])} | {probes} |")
         steps = record.get("detected_steps") or {}
         lines += ["", f"Detected steps - build: {len(steps.get('build', []))}, test: {len(steps.get('test', []))}, "

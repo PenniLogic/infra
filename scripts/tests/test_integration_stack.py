@@ -1,14 +1,17 @@
 """Integration tests that run the real Compose stack in uniquely named, self-owned projects.
 
 They need a reachable Docker Engine and are skipped (with the reason) otherwise, or when
-``PENNILOGIC_SKIP_DOCKER_TESTS=1``. Every project created here is removed with ``--reset``
-in ``tearDownClass``; nothing outside those projects is ever touched. Ports are chosen from
+``PENNILOGIC_SKIP_DOCKER_TESTS=1``. Cleanup resets each owned project and checks resource
+absence; failed reset, inspection or temporary-tree removal fails the suite. Ports are chosen from
 the currently free loopback ports, so the machine's own Postgres/Redis stay untouched.
 """
 
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -16,7 +19,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import support
 import smoke_infra as smoke
@@ -45,11 +50,22 @@ def docker_available():
 
 def project_containers(project):
     result = docker("ps", "-a", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.ID}} {{.Names}}")
+    if result.returncode:
+        raise RuntimeError("Owned container inspection failed")
     return sorted(line for line in result.stdout.splitlines() if line.strip())
 
 
 def project_volumes(project):
     result = docker("volume", "ls", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.Name}}")
+    if result.returncode:
+        raise RuntimeError("Owned volume inspection failed")
+    return sorted(line for line in result.stdout.splitlines() if line.strip())
+
+
+def project_networks(project):
+    result = docker("network", "ls", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.Name}}")
+    if result.returncode:
+        raise RuntimeError("Owned network inspection failed")
     return sorted(line for line in result.stdout.splitlines() if line.strip())
 
 
@@ -85,12 +101,35 @@ class StackLifecycleTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        if (not re.fullmatch(r"pennilogic-test-[0-9a-f]{8}", cls.project)
+                or not cls.tmp.is_absolute() or not cls.tmp.name.startswith("pennilogic-infra-test-")
+                or cls.tmp.is_symlink() or cls.tmp.is_junction()):
+            raise RuntimeError("Owned stack cleanup scope is invalid")
+        failures = []
         for suffix in ("", "-conflict", "-bind", "-race"):
             env_file = {"": cls.env_file, "-conflict": cls.tmp / "conflict.env", "-bind": cls.tmp / "bind.env",
                         "-race": cls.tmp / "race.env"}[suffix]
-            support.run_script("bootstrap.py", "--reset", "--project", cls.project + suffix, "--env-file", env_file,
-                               env=cls.env, timeout=300)
-        shutil.rmtree(cls.tmp, ignore_errors=True)
+            project = cls.project + suffix
+            try:
+                result = support.run_script("bootstrap.py", "--reset", "--project", project, "--env-file", env_file,
+                                            env=cls.env, timeout=300)
+                if result.returncode:
+                    failures.append(suffix or "main")
+                    continue
+                counts = {"containers": len(project_containers(project)), "volumes": len(project_volumes(project)),
+                          "networks": len(project_networks(project))}
+                print("INFRA_STACK_CLEANUP " + json.dumps({"project": project, **counts}, sort_keys=True))
+                if any(counts.values()):
+                    failures.append(suffix or "main")
+            except (OSError, subprocess.TimeoutExpired, RuntimeError):
+                failures.append(suffix or "main")
+        if failures:
+            raise RuntimeError("Owned stack cleanup failed; environment retained: " + ", ".join(failures))
+        try:
+            shutil.rmtree(cls.tmp)
+        except OSError:
+            raise RuntimeError("Owned stack temporary cleanup failed; removal is unconfirmed") from None
+        print("INFRA_STACK_CLEANUP_TEMP " + json.dumps({"project": cls.project, "removed": True}, sort_keys=True))
 
     def bootstrap(self, *args, timeout=420):
         return support.run_script("bootstrap.py", "--project", self.project, "--env-file", self.env_file,
@@ -305,6 +344,122 @@ class StackLifecycleTests(unittest.TestCase):
         self.assertEqual("ok", smoke.probe("postgres", smoke.load_settings(env_file, env), 5.0)["status"],
                          "both runs used the single generated password")
         self.assertNotIn(password, "".join(o[0] + o[1] for o in outputs))
+
+
+class StackCleanupTests(unittest.TestCase):
+    def subject(self, root):
+        env_file = root / ".env"
+        env_file.write_text("fixture-only-private-value", encoding="utf-8")
+        return SimpleNamespace(project="pennilogic-test-01234567", tmp=root, env_file=env_file, env={})
+
+    def test_failed_reset_attempts_every_owned_project_and_retains_the_environment(self):
+        with tempfile.TemporaryDirectory(prefix="pennilogic-infra-test-") as temporary:
+            subject = self.subject(Path(temporary))
+            result = subprocess.CompletedProcess([], 7, "fixture-only-private-value", "fixture-only-private-value")
+            with mock.patch.object(support, "run_script", return_value=result) as reset, \
+                    mock.patch(__name__ + ".docker"), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "Owned stack cleanup failed"):
+                    StackLifecycleTests.tearDownClass.__func__(subject)
+            self.assertEqual(4, reset.call_count)
+            self.assertTrue(subject.env_file.is_file())
+            self.assertEqual([
+                subject.project + suffix for suffix in ("", "-conflict", "-bind", "-race")
+            ], [call.args[call.args.index("--project") + 1] for call in reset.call_args_list])
+
+    def test_temporary_tree_deletion_error_is_not_a_success(self):
+        def remove(path, **options):
+            if options.get("ignore_errors"):
+                return
+            raise PermissionError("fixture-only-private-value")
+
+        with tempfile.TemporaryDirectory(prefix="pennilogic-infra-test-") as temporary:
+            subject = self.subject(Path(temporary))
+            with mock.patch.object(support, "run_script", return_value=subprocess.CompletedProcess([], 0)), \
+                    mock.patch(__name__ + ".docker", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                    mock.patch.object(shutil, "rmtree", side_effect=remove), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "Owned stack temporary cleanup failed") as error:
+                    StackLifecycleTests.tearDownClass.__func__(subject)
+            self.assertNotIn("fixture-only-private-value", str(error.exception))
+            self.assertTrue(subject.env_file.is_file())
+
+    def test_success_checks_all_scoped_resources_and_removes_only_the_owned_tree(self):
+        with tempfile.TemporaryDirectory(prefix="pennilogic-infra-test-") as temporary:
+            subject = self.subject(Path(temporary))
+            output = io.StringIO()
+            with mock.patch.object(support, "run_script", return_value=subprocess.CompletedProcess([], 0)) as reset, \
+                    mock.patch(__name__ + ".docker", return_value=subprocess.CompletedProcess([], 0, "", "")) as inspect, \
+                    contextlib.redirect_stdout(output):
+                StackLifecycleTests.tearDownClass.__func__(subject)
+            self.assertFalse(subject.tmp.exists())
+            self.assertEqual(4, reset.call_count)
+            self.assertEqual(12, inspect.call_count)
+            projects = [subject.project + suffix for suffix in ("", "-conflict", "-bind", "-race")]
+            self.assertEqual(
+                [f"label=com.docker.compose.project={project}" for project in projects for _ in range(3)],
+                [call.args[call.args.index("--filter") + 1] for call in inspect.call_args_list],
+            )
+            lines = output.getvalue().splitlines()
+            self.assertEqual(4, sum(line.startswith("INFRA_STACK_CLEANUP ") for line in lines))
+            self.assertTrue(lines[-1].startswith("INFRA_STACK_CLEANUP_TEMP "))
+            self.assertNotIn("fixture-only-private-value", output.getvalue())
+
+    def test_remaining_resources_and_unreadable_inventory_preserve_the_environment(self):
+        for result in (subprocess.CompletedProcess([], 0, "fixture-only-private-value\n", ""),
+                       subprocess.CompletedProcess([], 7, "", "fixture-only-private-value")):
+            with self.subTest(exit_code=result.returncode), \
+                    tempfile.TemporaryDirectory(prefix="pennilogic-infra-test-") as temporary:
+                subject = self.subject(Path(temporary))
+                output = io.StringIO()
+                with mock.patch.object(support, "run_script", return_value=subprocess.CompletedProcess([], 0)) as reset, \
+                        mock.patch(__name__ + ".docker", return_value=result), contextlib.redirect_stdout(output):
+                    with self.assertRaisesRegex(RuntimeError, "Owned stack cleanup failed"):
+                        StackLifecycleTests.tearDownClass.__func__(subject)
+                self.assertEqual(4, reset.call_count)
+                self.assertTrue(subject.env_file.exists())
+                self.assertNotIn("fixture-only-private-value", output.getvalue())
+                self.assertNotIn("INFRA_STACK_CLEANUP_TEMP", output.getvalue())
+
+    def test_reset_spawn_and_timeout_errors_do_not_prevent_other_owned_reset_attempts(self):
+        for error in (OSError("fixture-only-private-value"), subprocess.TimeoutExpired("fixture-only-private-value", 300)):
+            with self.subTest(error=type(error).__name__), \
+                    tempfile.TemporaryDirectory(prefix="pennilogic-infra-test-") as temporary:
+                subject = self.subject(Path(temporary))
+                with mock.patch.object(support, "run_script", side_effect=error) as reset:
+                    with self.assertRaisesRegex(RuntimeError, "Owned stack cleanup failed") as raised:
+                        StackLifecycleTests.tearDownClass.__func__(subject)
+                self.assertEqual(4, reset.call_count)
+                self.assertTrue(subject.env_file.exists())
+                self.assertNotIn("fixture-only-private-value", str(raised.exception))
+
+    def test_unowned_project_is_refused_before_reset_or_tree_removal(self):
+        with tempfile.TemporaryDirectory(prefix="pennilogic-infra-test-") as temporary:
+            subject = self.subject(Path(temporary))
+            subject.project = "not-an-owned-project"
+            with mock.patch.object(support, "run_script") as reset:
+                with self.assertRaisesRegex(RuntimeError, "scope is invalid"):
+                    StackLifecycleTests.tearDownClass.__func__(subject)
+                reset.assert_not_called()
+            self.assertTrue(subject.env_file.exists())
+
+    def test_each_resource_query_refuses_nonzero_without_exposing_its_diagnostic(self):
+        result = subprocess.CompletedProcess([], 7, "fixture-only-private-value", "fixture-only-private-value")
+        for query in (project_containers, project_volumes, project_networks):
+            with self.subTest(query=query.__name__), mock.patch(__name__ + ".docker", return_value=result):
+                with self.assertRaises(RuntimeError) as error:
+                    query("pennilogic-test-01234567")
+                self.assertNotIn("fixture-only-private-value", str(error.exception))
+
+    def test_linked_temporary_root_is_refused_without_reset_or_removal(self):
+        for method in ("is_symlink", "is_junction"):
+            with self.subTest(method=method), tempfile.TemporaryDirectory(prefix="pennilogic-infra-test-") as temporary:
+                subject = self.subject(Path(temporary))
+                with mock.patch.object(Path, method, return_value=True), \
+                        mock.patch.object(support, "run_script") as reset:
+                    with self.assertRaisesRegex(RuntimeError, "scope is invalid"):
+                        StackLifecycleTests.tearDownClass.__func__(subject)
+                    reset.assert_not_called()
+                self.assertTrue(subject.env_file.exists())
 
 
 if __name__ == "__main__":

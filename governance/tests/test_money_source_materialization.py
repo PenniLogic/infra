@@ -17,6 +17,8 @@ from unittest import mock
 import urllib.error
 import urllib.request
 
+from test_api_node_runtime import BUILD_COMMAND
+
 
 HERE = Path(__file__).resolve().parents[1]
 
@@ -179,7 +181,7 @@ class CatalogAndRendererTests(unittest.TestCase):
                          (strategy["path"], strategy["bytes"], strategy["sha256"], strategy["git_blob"]))
         self.assertEqual(14, len(materializer.provider_bindings(CATALOG)))
 
-    def test_only_api_changes_five_command_artifacts_and_adds_one_script(self):
+    def test_only_api_changes_command_artifacts_and_checker_binding_and_adds_one_script(self):
         current = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
         old = copy.deepcopy(generator.PROFILES)
         del old["repositories"]["api"]["money_source_materialization"]
@@ -197,7 +199,7 @@ class CatalogAndRendererTests(unittest.TestCase):
                        if current[repo].get(name) != previous[repo].get(name)}
             self.assertEqual({
                 "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json",
-                ".github/workflows/ci.yml", "scripts/materialize_money_sources.py",
+                ".github/workflows/ci.yml", "scripts/check_repository.py", "scripts/materialize_money_sources.py",
             } if repo == "api" else set(), changed, repo)
         namespace = {"__file__": str(HERE / "templates/materialize_money_sources.py"), "__name__": "rendered_fixture"}
         exec(compile(current["api"]["scripts/materialize_money_sources.py"], "rendered_fixture", "exec"), namespace)
@@ -221,9 +223,11 @@ class CatalogAndRendererTests(unittest.TestCase):
         workflow = json.loads(generator.workflow("api"))
         self.assertEqual({"contents": "read"}, workflow["permissions"])
         self.assertEqual(30, workflow["jobs"]["ci"]["timeout-minutes"])
-        self.assertEqual("CI", workflow["jobs"]["ci"]["name"])
-        self.assertEqual('python scripts/quality.py coverage --base "$BASE_SHA"',
-                         workflow["jobs"]["ci"]["steps"][-1]["run"])
+        self.assertEqual("Linux qualification", workflow["jobs"]["ci"]["name"])
+        self.assertEqual("CI", workflow["jobs"]["ci-result"]["name"])
+        self.assertEqual([BUILD_COMMAND, "python -m unittest discover -s scripts/tests"],
+                         workflow["jobs"]["ci"]["steps"][-1]["run"].splitlines()[7:])
+        self.assertNotIn("python scripts/quality.py coverage", json.dumps(workflow))
         self.assertNotIn("GH_TOKEN", json.dumps(workflow))
         self.assertNotIn("authenticated-local", json.dumps(workflow))
 
