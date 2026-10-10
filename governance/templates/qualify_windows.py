@@ -1,5 +1,6 @@
 """Run the ordinary Windows owning suites and emit only safe, fresh per-test outcomes."""
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -25,6 +26,9 @@ STATUSES = {b"ok": "passed", b"FAIL": "failed", b"ERROR": "error",
             b"expected failure": "expected_failure", b"unexpected success": "unexpected_success"}
 DIAGNOSTIC_CASE_LIMIT = 8
 DIAGNOSTIC_FRAME_LIMIT = 8
+DIAGNOSTIC_BYTE_LIMIT = 4096
+PROCESS_BUDGET_PREFIX = b"process_budget_state="
+PROCESS_BUDGET_UNAVAILABLE = {"schema": "pennilogic.process-budget-state/1", "status": "unavailable"}
 PYTHON_ERROR_HEADER = re.compile(
     rb"(FAIL|ERROR): (test[A-Za-z0-9_]*) \(([A-Za-z_][A-Za-z0-9_.]*)\)"
 )
@@ -121,6 +125,46 @@ def python_outcomes(data):
     return records
 
 
+def process_budget_note(line):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate-note-key")
+            result[key] = value
+        return result
+
+    unavailable = dict(PROCESS_BUDGET_UNAVAILABLE)
+    if len(line) > 384 or not line.isascii() or not line.startswith(PROCESS_BUDGET_PREFIX):
+        return unavailable
+    try:
+        value = json.loads(line[len(PROCESS_BUDGET_PREFIX):], object_pairs_hook=unique)
+    except (UnicodeError, ValueError, RecursionError):
+        return unavailable
+    if (not isinstance(value, dict) or value.get("schema") != unavailable["schema"]
+            or line != PROCESS_BUDGET_PREFIX + json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")):
+        return unavailable
+    if value == unavailable:
+        return value
+    fields = {"schema", "status", "process_running", "returncode", "capture_readers",
+              "capture_readers_alive", "setup_ms", "wait_ms", "elapsed_ms"}
+    if set(value) != fields or value["status"] != "observed" or type(value["process_running"]) is not bool:
+        return unavailable
+    code = value["returncode"]
+    if (value["process_running"] and code is not None) or (
+        not value["process_running"] and (type(code) is not int or not -2147483648 <= code <= 4294967295)
+    ):
+        return unavailable
+    for key, limit in (("capture_readers", 2), ("capture_readers_alive", 2),
+                       ("setup_ms", 86400000), ("wait_ms", 86400000), ("elapsed_ms", 86400000)):
+        if type(value[key]) is not int or not 0 <= value[key] <= limit:
+            return unavailable
+    if (value["capture_readers_alive"] > value["capture_readers"]
+            or value["setup_ms"] + value["wait_ms"] != value["elapsed_ms"]):
+        return unavailable
+    return value
+
+
 def python_error_diagnostics(root, data, parser):
     selected = {record["id_sha256"]: None for record in parser["negative_prefix"] if record["outcome"] == "error"}
     if not selected:
@@ -161,13 +205,16 @@ def python_error_diagnostics(root, data, parser):
             end + 3 < len(lines) and lines[end] == divider and PYTHON_SUMMARY.fullmatch(lines[end + 1]) is not None
             and lines[end + 2] == b"" and PYTHON_TERMINAL.fullmatch(lines[end + 3]) is not None
         )
-        frames, exception, malformed, truncated = [], None, False, False
+        frames, exception, malformed, truncated, notes = [], None, False, False, []
+        last_content = next((line for line in reversed(lines[start:end]) if line), b"")
         for line in lines[start:end]:
             if line in (
                 traceback_header, b"During handling of the above exception, another exception occurred:",
                 b"The above exception was the direct cause of the following exception:",
             ):
                 malformed = True
+            if line.startswith(PROCESS_BUDGET_PREFIX):
+                notes.append((line, exception is not None))
             if exception is not None:
                 continue
             if line.startswith(b"  File "):
@@ -196,8 +243,15 @@ def python_error_diagnostics(root, data, parser):
             frames = []
         if malformed or not boundary or not frames or exception is None:
             exception = "unclassified"
-        selected[digest] = {"exception": exception, "source_frames": frames,
-                            "incomplete": exception == "unclassified" or truncated, "truncated": truncated}
+        detail = {"exception": exception, "source_frames": frames,
+                  "incomplete": exception == "unclassified" or truncated, "truncated": truncated}
+        if notes:
+            valid = (len(notes) == 1 and notes[0][1] and notes[0][0] == last_content
+                     and boundary and not malformed and bool(frames))
+            state = process_budget_note(notes[0][0]) if valid else dict(PROCESS_BUDGET_UNAVAILABLE)
+            detail["process_budget_state"] = state
+            detail["incomplete"] |= state["status"] == "unavailable"
+        selected[digest] = detail
     remaining, records = DIAGNOSTIC_FRAME_LIMIT, []
     for record in parser["negative_prefix"]:
         if record["outcome"] == "error":
@@ -210,6 +264,26 @@ def python_error_diagnostics(root, data, parser):
             record = {**record, "error": detail}
         records.append(record)
     return records
+
+
+def python_diagnostic_json(diagnostic):
+    encoded = json.dumps(diagnostic, sort_keys=True)
+    for replacement in (PROCESS_BUDGET_UNAVAILABLE, None):
+        for record in reversed(diagnostic["parser"]["negative_prefix"]):
+            if len(encoded.encode("utf-8")) < DIAGNOSTIC_BYTE_LIMIT:
+                return encoded
+            detail = record.get("error", {})
+            if "process_budget_state" not in detail:
+                continue
+            if replacement is None:
+                del detail["process_budget_state"]
+            elif detail["process_budget_state"] == replacement:
+                continue
+            else:
+                detail["process_budget_state"] = dict(replacement)
+            detail.update(incomplete=True, truncated=True)
+            encoded = json.dumps(diagnostic, sort_keys=True)
+    return encoded
 
 
 def junit_outcomes(root):
@@ -249,13 +323,14 @@ def junit_outcomes(root):
     return records
 
 
-def qualify(root):
+def qualify(root, require_prepared=False):
     if (root / JUNIT).exists() or (root / JUNIT).is_symlink():
         raise Refused("preexisting-ordinary-junit-results")
-    print("+ python scripts\\quality.py test", flush=True)
+    arguments = ["--require-prepared"] if require_prepared else []
+    print("+ python scripts\\quality.py test" + (" --require-prepared" if require_prepared else ""), flush=True)
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         result = subprocess.run(
-            [sys.executable, str(root / "scripts" / "quality.py"), "test"],
+            [sys.executable, str(root / "scripts" / "quality.py"), "test", *arguments],
             cwd=root, stdout=stdout, stderr=stderr, check=False,
         )
         stdout.seek(0)
@@ -266,14 +341,14 @@ def qualify(root):
         try:
             records = python_outcomes(errors)
         except _PythonOutcomeRefused as error:
-            print(json.dumps({
+            print(python_diagnostic_json({
                 "event": "windows_qualification_diagnostic", "diagnostic_only": True,
                 "inventory_complete": False, "exit_code": result.returncode,
                 "stdout": {"bytes": len(output), "sha256": hashlib.sha256(output).hexdigest()},
                 "stderr": {"bytes": len(errors), "sha256": hashlib.sha256(errors).hexdigest()},
                 "parser": {**error.diagnostic,
                            "negative_prefix": python_error_diagnostics(root, errors, error.diagnostic)},
-            }, sort_keys=True), flush=True)
+            }), flush=True)
             raise
     for record in records:
         print(json.dumps(record, sort_keys=True))
@@ -299,11 +374,14 @@ def qualify(root):
                       "python_tests": len(records), "junit_tests": len(junit)}, sort_keys=True))
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-prepared", action="store_true", help="Require existing verified interop inputs; never acquire")
+    args = parser.parse_args(argv)
     try:
         if sys.platform != "win32":
             raise Refused("windows-owning-suites-require-windows")
-        qualify(ROOT)
+        qualify(ROOT, require_prepared=args.require_prepared)
         return 0
     except Refused as error:
         print(json.dumps({"event": "windows_qualification_refused", "code": str(error)}), file=sys.stderr)

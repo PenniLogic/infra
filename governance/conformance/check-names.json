@@ -22,7 +22,7 @@
     {
       "repo": "PenniLogic/api",
       "check_name": "CI",
-      "workflow_ref": "733c42e177d61c552e5baa9dc01d55c850e1b33f",
+      "workflow_ref": "bd431d48c065d3bf7f03adab3efa261f52640314",
       "language": "kotlin"
     },
     {

@@ -272,13 +272,18 @@ def publish(root, data, contents, helper, budget):
         raise
 
 
-def prepare(root, data, helper, fetch=False, client=None):
+def prepare(root, data, helper, fetch=False, client=None, native_fetch=False):
     require(data["binding"] is not None, "accepted-sources-unbound")
+    require(not native_fetch or fetch, "installation-native-fetch-mode")
+    sources = data["binding"]["sources"]
+    if native_fetch:
+        client = client or helper.ReadOnlyClient({"sources": list(sources.values())}, native_fetch=True)
+    if client is not None:
+        require(client.native_fetch == native_fetch, "installation-native-fetch-mode")
     if helper.owned_path(root, OUTPUT).exists():
         verify(root, data, helper)
         return {"event": "database_admission_installation", "status": "verified_existing", "requests": 0}
     require(fetch, "explicit-fetch-required")
-    sources = data["binding"]["sources"]
     client = client or helper.ReadOnlyClient({"sources": list(sources.values())})
     require(not client.authenticated_local, "installation-authentication-mode")
     contents = {}
@@ -331,6 +336,7 @@ def main():
     commands = parser.add_subparsers(dest="action", required=True)
     preparation = commands.add_parser("prepare")
     preparation.add_argument("--fetch", action="store_true", help="Explicit bounded public fetch of committed sources")
+    preparation.add_argument("--native-fetch", action="store_true", help="Use only the explicit API Actions source-step credential")
     commands.add_parser("verify")
     execution = commands.add_parser("run")
     execution.add_argument("command", choices=("plan", "admit-apply"))
@@ -340,7 +346,7 @@ def main():
         try:
             data = read_installation(ROOT, helper)
             if args.action == "prepare":
-                result = prepare(ROOT, data, helper, fetch=args.fetch)
+                result = prepare(ROOT, data, helper, fetch=args.fetch, native_fetch=args.native_fetch)
             else:
                 payloads = verify(ROOT, data, helper)
                 if args.action == "run":

@@ -1062,7 +1062,7 @@ class RuntimeRepairTests(unittest.TestCase):
         document = json.loads(support.generator.workflow("api"))
         step = document["jobs"]["windows"]["steps"][-1]
         commands = step["run"].splitlines()[::2]
-        self.assertEqual("python -I -S -B scripts\\money_client_interop.py prepare", commands[-2])
+        self.assertEqual("python -I -S -B scripts\\money_client_interop.py prepare --require-prepared", commands[-2])
         step["run"] = support.generator.powershell_commands(commands[:-2] + commands[-1:])
         root, context = self.consumer("api", {".github/workflows/ci.yml": support.generator.encoded(document)})
         before = support.tree_digest(root)

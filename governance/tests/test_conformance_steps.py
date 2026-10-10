@@ -10,7 +10,7 @@ import unittest
 
 import conformance_support as support
 from conformance import defects, github_api, run, steps
-from test_api_node_runtime import BUILD_COMMAND
+from test_api_node_runtime import BUILD_COMMAND, native_command
 
 
 class ClassificationTests(unittest.TestCase):
@@ -119,6 +119,24 @@ class ClassificationTests(unittest.TestCase):
 
 
 class ProducedCheckTests(unittest.TestCase):
+    def test_split_owning_steps_preserve_order_and_do_not_count_or_borrow_removed_commands(self):
+        document = {"jobs": {
+            "ci": {"steps": [
+                {"name": "Check repository", "run": ""},
+                {"name": "Prepare pinned Money sources", "run": "acquisition"},
+                {"name": "Prepare verified Money provider", "run": "verify inputs\nrun provider"},
+                {"name": "Run checks", "run": "owning suite\n"},
+            ]},
+            "windows": {"steps": [{"name": "Check repository", "run": "unrelated job"}]},
+        }}
+        encoded = lambda: json.dumps(document).encode("utf-8")
+        self.assertEqual(["verify inputs", "run provider", "owning suite"], steps.workflow_run_commands(encoded()))
+        self.assertEqual(["acquisition"], steps.workflow_run_commands(encoded(), step_name="Prepare pinned Money sources"))
+        for step in document["jobs"]["ci"]["steps"]:
+            if step["name"] != "Prepare pinned Money sources":
+                step["run"] = ""
+        self.assertEqual([], steps.workflow_run_commands(encoded()))
+
     def test_every_rendered_workflow_produces_exactly_the_required_native_check(self):
         for name in support.generator.PROFILES["repositories"]:
             with self.subTest(profile=name):
@@ -130,7 +148,7 @@ class ProducedCheckTests(unittest.TestCase):
                 self.assertEqual(expected_checks, steps.produced_check_names(workflow))
                 manual = support.generator.PROFILES["repositories"][name]["commands"]
                 expected = [
-                    BUILD_COMMAND if name == "api" and command == "python scripts/quality.py build"
+                    native_command(command) if name == "api"
                     else support.generator.infra_ci_command(command) if name == "infra"
                     else command for command in manual
                 ]
@@ -162,8 +180,10 @@ class ProducedCheckTests(unittest.TestCase):
                     mutated = support.generator.encoded(document).encode("utf-8")
                     actual = steps.workflow_run_commands(mutated)
                     self.assertNotIn(BUILD_COMMAND, actual)
-                    self.assertEqual(profile["commands"][:7] if transform is defects._remove_test_lines
-                                     else ["echo tests skipped"], actual)
+                    preparation = [native_command(command) for command in profile["commands"][:7]]
+                    self.assertEqual(preparation if transform is defects._remove_test_lines
+                                     else [*preparation[:5], "echo tests skipped"], actual)
+                    self.assertEqual([], steps.detect_steps(actual)["test"])
                     path.write_bytes(mutated)
                     refused = run.generated_baseline(
                         support.generator, "api", root, support.GOVERNANCE.parent, runner,

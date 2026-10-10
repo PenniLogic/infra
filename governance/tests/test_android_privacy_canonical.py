@@ -21,12 +21,16 @@ from test_baseline import (
     CONTRACTS_COMMAND_ARTIFACTS, CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND,
     CONTRACTS_STATE, contracts_command_delta,
 )
+from test_api_native_source_fetch import remove_native_steps
 
 
 ACCEPTED_BASE = "1360c30a5caaff8039d76d57bfb9b060cf81a351"
 RUNTIME_BASE = "e601c13091bf156193ba266a6f03fdbae279a69e"
 QUALIFICATION_SOURCE = "889c5c35a1677ef33899a2e63bc528d3bac802f9"
 API_WORKFLOW_SOURCE = "733c42e177d61c552e5baa9dc01d55c850e1b33f"
+HISTORICAL_ACCEPTED = "a40b9018a4b04fa78a5643905ebedc3a1a107db3"
+NATIVE_API_SOURCE = next(entry["workflow_ref"] for entry in registry.load_registry()["entries"]
+                         if entry["repo"] == "PenniLogic/api")
 RESTORE = "python -m pip install -r scripts/privacy_traffic/requirements.txt"
 SELF_TEST = "python scripts/privacy_traffic_harness.py self-test"
 COMBINED_SELF_TEST = SELF_TEST + " --all-scripts"
@@ -173,7 +177,18 @@ class CanonicalPrivacyTests(unittest.TestCase):
                     updated["provider_outputs"][2] = old["provider_outputs"][2]
                     self.assertEqual(old, updated)
                 else:
-                    self.assertEqual(accepted, current)
+                    historical = subprocess.run(
+                        ["git", "show", f"{HISTORICAL_ACCEPTED}:{path}"],
+                        cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+                        capture_output=True, check=True, timeout=30,
+                    ).stdout
+                    self.assertEqual(accepted, historical)
+                    declared = subprocess.run(
+                        ["git", "show", f"{NATIVE_API_SOURCE}:{path}"],
+                        cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+                        capture_output=True, check=True, timeout=30,
+                    ).stdout
+                    self.assertEqual(declared, current)
         self.assert_registry_composition(current_registry)
 
     def assert_registry_composition(self, current):
@@ -184,17 +199,22 @@ class CanonicalPrivacyTests(unittest.TestCase):
         ).stdout)
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
-        contracts = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/contracts")
-        contracts["workflow_ref"] = "68a59601b4f24986dbc66cf23d8b58c0913327bc"
         android["workflow_ref"] = "6867bd8f302e5ca607063dcfeb1a12b382e948fa"
         for name, source in (("api", API_WORKFLOW_SOURCE), ("infra", QUALIFICATION_SOURCE)):
             entry = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/" + name)
             entry["workflow_ref"] = source
             if name == "infra":
                 entry["pr_gate"]["workflow_ref"] = QUALIFICATION_SOURCE
+        historical = json.loads(support.git(
+            support.GOVERNANCE.parent, "show", f"{HISTORICAL_ACCEPTED}:governance/conformance/check-names.json",
+        ))
+        self.assertEqual(expected, historical)
+        contracts = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/contracts")
+        contracts["workflow_ref"] = "68a59601b4f24986dbc66cf23d8b58c0913327bc"
+        next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/api")["workflow_ref"] = NATIVE_API_SOURCE
         self.assertEqual(expected, current, "registry composition differs from the proven references")
         for name, workflow, source in (
-            ("api", registry.CI_WORKFLOW, API_WORKFLOW_SOURCE),
+            ("api", registry.CI_WORKFLOW, NATIVE_API_SOURCE),
             ("infra", registry.CI_WORKFLOW, QUALIFICATION_SOURCE),
             ("infra", registry.PR_GATE_WORKFLOW, QUALIFICATION_SOURCE),
         ):
@@ -210,7 +230,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
         current = registry.render_workflow_at(support.GOVERNANCE.parent, API_WORKFLOW_SOURCE, "api")
         self.assertIsNotNone(previous, "the stale API source must exist for this regression")
         self.assertIsNotNone(current, "the current API source must be a real Git commit")
-        self.assertEqual(support.generator.workflow("api").encode("utf-8"), current)
+        self.assertEqual(remove_native_steps(self, support.generator.workflow("api")).encode("utf-8"), current)
         self.assertNotEqual(previous, current)
         prepare = "python -I -S -B scripts\\money_client_interop.py prepare"
         self.assertNotIn(prepare, json.loads(previous)["jobs"]["windows"]["steps"][-1]["run"])
@@ -223,6 +243,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
         for name, field, value in (
             ("api", "workflow_ref", previous_source),
             ("api", "workflow_ref", QUALIFICATION_SOURCE),
+            ("api", "workflow_ref", API_WORKFLOW_SOURCE),
             ("infra", "workflow_ref", previous_source),
             ("infra", "workflow_ref", API_WORKFLOW_SOURCE),
             ("infra", "pr_gate", previous_source),

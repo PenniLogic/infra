@@ -33,6 +33,7 @@ WORKFLOW_REPOSITORY_LINE = re.compile(r'^WORKFLOW_REPOSITORY = "[^"\n]*"\n', re.
 # installs, so only reviewed telemetry opt-outs are accepted; extend by generator change.
 ENV_KEYS = {"NEXT_TELEMETRY_DISABLED"}
 DEFAULT_TIMEOUT_MINUTES = 10
+API_DATABASE_PREPARATION = "python -I -S -B scripts/prepare_database_admission.py prepare --fetch"
 PR_GATE_FILE = ".github/workflows/pr-workflow-integrity.yml"
 PR_GATE_NAME = "PR workflow integrity"
 IGNORE = [
@@ -323,9 +324,18 @@ def api_node_command(command):
 
 
 def api_ci_command(command):
+    command = api_prepared_command(command)
     if command == "python scripts/quality.py build":
-        command += ' --base "$BASE_SHA"'
+        command += ' --base "$BASE_SHA" --require-prepared'
     return api_node_command(command)
+
+
+def api_prepared_command(command):
+    if command == "python scripts/materialize_money_sources.py":
+        return command + " --verify-inputs"
+    if command == API_DATABASE_PREPARATION:
+        return command.removesuffix(" --fetch")
+    return command
 
 
 def infra_ci_command(command):
@@ -338,15 +348,37 @@ def powershell_commands(commands):
     return "\n".join(command + "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" for command in commands)
 
 
+def api_source_steps(profile, windows=False):
+    def script(commands):
+        return (powershell_commands([command.replace("/", "\\") for command in commands])
+                if windows else "\n".join(commands))
+
+    provider = profile["commands"][:profile["commands"].index(API_DATABASE_PREPARATION)]
+    token = {"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}
+    return [
+        {"name": "Check repository", "run": script(provider[:1])},
+        {"name": "Prepare pinned Money sources", "env": dict(token),
+         "run": script(["python -I -S -B scripts/materialize_money_sources.py --native-fetch"])},
+        {"name": "Prepare verified Money provider",
+         "run": script([api_prepared_command(command) for command in provider[1:]])},
+        {"name": "Prepare pinned database and interop sources", "env": dict(token),
+         "run": script([
+             API_DATABASE_PREPARATION + " --native-fetch",
+             "python -I -S -B scripts/money_client_interop.py prepare --native-fetch",
+         ])},
+    ]
+
+
 def api_windows_job(profile):
-    preparation = profile["commands"][:profile["commands"].index("python scripts/quality.py build")]
-    commands = [command.replace("/", "\\") for command in preparation]
-    commands.append("python -I -S -B scripts\\money_client_interop.py prepare")
-    commands.append("python scripts\\qualify_windows.py")
+    preparation = profile["commands"][profile["commands"].index(API_DATABASE_PREPARATION):
+                                      profile["commands"].index("python scripts/quality.py build")]
+    commands = [api_prepared_command(command).replace("/", "\\") for command in preparation]
+    commands.append("python -I -S -B scripts\\money_client_interop.py prepare --require-prepared")
+    commands.append("python scripts\\qualify_windows.py --require-prepared")
     return {
         "name": "Windows qualification", "runs-on": "windows-2025",
         "timeout-minutes": profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES),
-        "steps": [*tool_steps(profile), {
+        "steps": [*tool_steps(profile), *api_source_steps(profile, windows=True), {
             "name": "Run Windows owning suites",
             "run": powershell_commands(commands),
         }],
@@ -398,9 +430,11 @@ def workflow(repo, setup=False):
         })
     commands = ["python scripts/check_repository.py"] if setup else profile["commands"]
     if repo == "api" and not setup:
-        commands = [api_ci_command(command) for command in commands]
+        commands = [api_ci_command(command) for command in commands[commands.index(API_DATABASE_PREPARATION):]]
     if repo == "infra" and not setup:
         commands = [infra_ci_command(command) for command in commands]
+    if repo == "api" and not setup:
+        steps.extend(api_source_steps(profile))
     checks = {"name": "Verify repository" if setup else "Run checks", "run": "\n".join(commands)}
     if repo == "api" and not setup:
         checks["env"] = {"BASE_SHA": "${{ github.event.pull_request.base.sha || github.sha }}"}

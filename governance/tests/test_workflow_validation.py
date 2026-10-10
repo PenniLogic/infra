@@ -116,14 +116,21 @@ def tripwire_hits(workflow):
 
 class TripwireTests(unittest.TestCase):
     def test_every_level_of_every_generated_workflow_is_searched(self):
-        # The walk reaches every key and string; each generated workflow stays clear of the tripwire.
+        # The raw walk still flags exact native token leaves; only API's byte-bound checker admits them.
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):
                 workflow = json.loads(generator.workflow(repo, setup=setup))
                 strings = list(checker.workflow_strings(workflow))
                 self.assertIn("persist-credentials", strings)
                 self.assertIn("python scripts/check_repository.py", " ".join(strings))
-                self.assertFalse(tripwire_hits(workflow), repo)
+                expected = [
+                    (("jobs", job, "steps", index, "env", "PENNILOGIC_NATIVE_SOURCE_TOKEN"), "${{ github.token }}")
+                    for job, index in (("ci", 6), ("ci", 8), ("windows", 5), ("windows", 7))
+                ] if repo == "api" and not setup else []
+                self.assertEqual(expected, [
+                    (path, text) for path, text in checker.workflow_string_locations(workflow)
+                    if checker.WORKFLOW_SECRET_ACCESS.search(text)
+                ], repo)
         for level in LEVELS:
             with self.subTest(level=level):
                 self.assertFalse(tripwire_hits(placed(level, "plain text")))
