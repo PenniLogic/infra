@@ -303,6 +303,8 @@ def evaluate_repository(record, budget_minutes=10):
     if baseline.get("stale_files"):
         warnings.append("generated non-workflow files predate the current generator: "
                         + ", ".join(baseline["stale_files"]))
+    if baseline.get("error") or baseline.get("timed_out"):
+        failures.append("the generator drift command timed out or could not run")
     checker = record.get("repository_check") or {}
     if checker.get("exit_code") not in (0, None):
         failures.append("the repository's own scripts/check_repository.py failed")
@@ -359,11 +361,11 @@ def evaluate_repository(record, budget_minutes=10):
 
 
 def build_report(records, generator_commit, github_client, exercised, budget_minutes=10,
-                 generated_at=None, api_requests=None, rate_limit_remaining=None, not_run=None):
+                 generated_at=None, api_requests=None, rate_limit_remaining=None, not_run=None, execution=None):
     for record in records:
         evaluate_repository(record, budget_minutes)
     failures = [f"{record['repository']}: {failure}" for record in records for failure in record["failures"]]
-    return {
+    document = {
         "schema": SCHEMA,
         "generated_at": generated_at,
         "generator_commit": generator_commit,
@@ -378,6 +380,9 @@ def build_report(records, generator_commit, github_client, exercised, budget_min
         "not_run": list(not_run or []),
         "repositories": records,
     }
+    if execution is not None:
+        document["execution"] = execution
+    return document
 
 
 def to_json(report):
@@ -395,8 +400,42 @@ def _short(sha):
     return sha[:12] if isinstance(sha, str) else "-"
 
 
-def _cell(value):
-    return html.escape(str(value), quote=False).replace("|", "&#124;").replace("\r", " ").replace("\n", " ")
+def _cell(value, *, literal=False):
+    text = html.escape(str(value), quote=False).replace("|", "&#124;").replace("\r", " ").replace("\n", " ")
+    # Entity references preserve label punctuation as text, not Markdown links, code or emphasis.
+    return re.sub(r"[\\`*_\[\]~]", lambda match: f"&#{ord(match[0])};", text) if literal else text
+
+
+def _elapsed(value):
+    return "unavailable" if value is None else f"{value:.3f}"
+
+
+def render_execution(document):
+    execution = document.get("execution")
+    if execution is None:
+        return []
+    lines = [
+        "", "## Current conformance execution", "",
+        f"Serial repository inspection loop: {_elapsed(execution['elapsed_seconds'])} s; "
+        f"{execution['repository_workers']} worker. "
+        "This is this invocation, not historical main CI or native whole-job/workflow timing.",
+        "",
+        "Repository timing includes checkout, preparation, commands, restoration and metadata reads. "
+        "Checkout and command timings are parts of that inclusive interval, not additional totals. "
+        "Unavailable measurements stay unavailable; historical CI durations are not substituted.",
+    ]
+    if execution.get("unsafe_process_lifetime"):
+        lines += ["", "FAIL: " + _cell(execution["unsafe_process_lifetime"], literal=True)
+                  + "; scratch ownership is retained. No descendant-exit or cleanup success is claimed."]
+    lines += [
+        "", "| Repository | Inclusive inspection (s) | Checkout (s) |",
+        "| --- | --- | --- |",
+    ]
+    for record in document["repositories"]:
+        timing = record.get("timings") or {}
+        lines.append(f"| {_cell(record['repository'])} | {_elapsed(timing.get('elapsed_seconds'))} | "
+                     f"{_elapsed(timing.get('checkout_seconds'))} |")
+    return lines
 
 
 def render_duration_trends(records):
@@ -482,6 +521,7 @@ def render_markdown(report):
             + (f", {consumer} consumer evidence" if consumer else "")
             + f" | **{record['result'].upper()}** |"
         )
+    lines += render_execution(report)
     lines += render_duration_trends(report["repositories"])
     lines += ["", "## Findings", ""]
     if not report["failures"]:
@@ -514,13 +554,14 @@ def render_markdown(report):
         lines += [f"### {record['repository']}", "", "| Fixture | Language | Toolchain | Outcome | Probes |", "| --- | --- | --- | --- | --- |"]
         for defect in record.get("planted_defects") or []:
             probes = "; ".join(
-                f"{probe['label']} -> exit {probe['exit_code']} ({probe['outcome']}"
+                f"{_cell(probe['label'], literal=True)} -> exit {probe['exit_code']} ({probe['outcome']}"
                 + (", rule text surfaced" if probe.get("detail_surfaced") is True else
                    ", refused without rule text: checker predates PR E" if probe.get("detail_surfaced") is False else "")
                 + ")"
+                + (f"; elapsed: {_elapsed(probe['elapsed_seconds'])} s" if "elapsed_seconds" in probe else "")
                 + (f"; failure evidence: `{_cell(probe['failure_evidence'])}`" if probe.get("failure_evidence") else "")
                 for probe in defect.get("probes", [])
-            ) or (defect.get("reason") or "-")
+            ) or _cell(defect.get("reason") or "-", literal=True)
             lines.append(f"| `{defect['id']}` | {defect['language']} | {defect['toolchain']} | {OUTCOME_MARK.get(defect['outcome'], defect['outcome'])} | {probes} |")
         steps = record.get("detected_steps") or {}
         lines += ["", f"Detected steps - build: {len(steps.get('build', []))}, test: {len(steps.get('test', []))}, "

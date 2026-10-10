@@ -1,4 +1,4 @@
-"""Finite Windows process-tree regressions; every synthetic worker exits on its own as a fallback."""
+"""Finite process-lifetime regressions; native platform checks never stand in for the other OS."""
 
 import json
 import os
@@ -31,6 +31,7 @@ if mode == 'child':
     print('CHILD_COMPLETED', flush=True)
 else:
     child = subprocess.Popen([sys.executable, __file__, str(state), 'child'],
+                             start_new_session=mode == 'detached',
                              stdout=subprocess.DEVNULL if mode == 'background' else sys.stdout,
                              stderr=subprocess.DEVNULL if mode == 'background' else sys.stderr)
     if mode == 'background':
@@ -63,6 +64,11 @@ def exited(pid, timeout=0):
 
 @unittest.skipUnless(os.name == "nt", "Windows process-tree ownership")
 class WindowsProcessTests(unittest.TestCase):
+    def setUp(self):
+        retained = mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False)
+        retained.start()
+        self.addCleanup(retained.stop)
+
     def test_finite_shell_and_argv_descendants_are_terminated_before_the_runner_returns(self):
         for shell in (False, True):
             with self.subTest(shell=shell), tempfile.TemporaryDirectory(prefix="conformance-process-test-") as scratch:
@@ -208,6 +214,14 @@ class WindowsProcessTests(unittest.TestCase):
 
 
 class RunnerContractTests(unittest.TestCase):
+    def setUp(self):
+        sigchld = mock.patch.object(defects.signal, "SIGCHLD", getattr(defects.signal, "SIGCHLD", 17), create=True)
+        disposition = mock.patch.object(defects.signal, "getsignal", return_value=defects.signal.SIG_DFL)
+        sigchld.start()
+        disposition.start()
+        self.addCleanup(sigchld.stop)
+        self.addCleanup(disposition.stop)
+
     def test_missing_release_byte_never_executes_the_consumer(self):
         with tempfile.TemporaryDirectory(prefix="conformance-process-test-") as scratch:
             marker = Path(scratch) / "consumer-ran"
@@ -217,19 +231,230 @@ class RunnerContractTests(unittest.TestCase):
             self.assertEqual(2, result.returncode)
             self.assertFalse(marker.exists())
 
-    def test_posix_keeps_the_existing_subprocess_call_and_isolated_environment(self):
-        completed = subprocess.CompletedProcess("echo ok", 0, b"ok\n")
-        with mock.patch.object(defects.os, "name", "posix"), \
-                mock.patch.object(defects.subprocess, "run", return_value=completed) as run:
-            result = defects.subprocess_runner("echo ok", ".", timeout=2, replacements=(), credentials=())
+    def test_posix_uses_an_owned_session_and_the_existing_isolated_environment(self):
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b"ok\n", None)
+        with mock.patch.object(defects.subprocess, "Popen", return_value=process) as popen:
+            result = defects._posix_runner("echo ok", ".", defects.probe_environment(), 2, lambda value: value)
         self.assertEqual((0, "ok\n", False), (result.exit_code, result.output, result.timed_out))
-        options = run.call_args.kwargs
+        options = popen.call_args.kwargs
         self.assertTrue(options["shell"])
-        self.assertEqual(2, options["timeout"])
+        self.assertTrue(options["start_new_session"])
+        self.assertEqual(subprocess.DEVNULL, options["stdin"])
+        process.communicate.assert_called_once_with(timeout=2)
         self.assertEqual(subprocess.PIPE, options["stdout"])
         self.assertEqual(subprocess.STDOUT, options["stderr"])
         self.assertNotIn("GIT_CONFIG_PARAMETERS", options["env"])
         self.assertEqual("1", options["env"]["GIT_CONFIG_NOSYSTEM"])
+
+    def test_measured_result_includes_launch_failure_and_unconfirmed_timeout_time(self):
+        for outcome in (defects.Result(0, "ok"), OSError("synthetic launch refusal"),
+                        defects.Result(None, "captured", timed_out=True, restoration_safe=False,
+                                       error="synthetic teardown unconfirmed")):
+            options = {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
+            with self.subTest(outcome=outcome), \
+                    mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False), \
+                    mock.patch.object(defects, "_windows_runner", **options), \
+                    mock.patch.object(defects, "_posix_runner", **options), \
+                    mock.patch.object(defects.time, "monotonic", side_effect=[10.0, 12.75]):
+                if isinstance(outcome, defects.Result) and not outcome.restoration_safe:
+                    with self.assertRaises(defects.UnsafeProcessTreeError) as caught:
+                        defects.subprocess_runner("unused", ".", replacements=(), credentials=())
+                    result = caught.exception.result
+                    self.assertTrue(result.timed_out)
+                    self.assertFalse(result.restoration_safe)
+                    self.assertEqual("captured", result.output)
+                else:
+                    result = defects.subprocess_runner("unused", ".", replacements=(), credentials=())
+                self.assertEqual(2.75, result.elapsed_seconds)
+        self.assertIsNone(defects.Result(0, "").elapsed_seconds, "unmeasured is not a fabricated zero")
+
+    def test_posix_timeout_preserves_partial_output_even_when_group_cleanup_finishes(self):
+        process = mock.Mock(returncode=None)
+        process.communicate.side_effect = subprocess.TimeoutExpired("synthetic", 2, output=b"partial secret")
+        cleanup = {"process_group_signal": "sent", "leader_exit_confirmed": True, "pipes_released": True,
+                   "descendant_exit_confirmed": False}
+        with mock.patch.object(defects.subprocess, "Popen", return_value=process), \
+                mock.patch.object(defects, "_finish_posix_group", return_value=(b"partial secret", cleanup)) as finish:
+            with self.assertRaises(defects.UnsafeProcessTreeError) as caught:
+                defects._posix_runner("synthetic", ".", {}, 2, lambda value: value.replace("secret", "[redacted]"))
+        result = caught.exception.result
+        finish.assert_called_once_with(process, b"partial secret")
+        self.assertEqual("partial [redacted]", result.output)
+        self.assertTrue(result.timed_out)
+        self.assertFalse(result.restoration_safe, "a process group is not complete descendant containment")
+        self.assertIsNone(result.exit_code)
+        self.assertEqual(cleanup, result.process_cleanup)
+
+    def test_posix_refuses_external_child_reapers_before_starting_a_consumer(self):
+        for handler in (defects.signal.SIG_IGN, lambda *args: None):
+            with self.subTest(handler=handler), \
+                    mock.patch.object(defects.signal, "getsignal", return_value=handler), \
+                    mock.patch.object(defects.subprocess, "Popen") as popen:
+                result = defects._posix_runner("unused", ".", {}, 2, lambda value: value)
+            popen.assert_not_called()
+            self.assertIn("default SIGCHLD handler", result.error)
+            self.assertTrue(result.restoration_safe, "no consumer was started")
+
+    def test_posix_launch_and_capture_interruptions_cannot_restore_an_unconfirmed_tree(self):
+        for launch in (True, False):
+            process = mock.Mock(returncode=None)
+            process.communicate.side_effect = KeyboardInterrupt
+            options = {"side_effect": KeyboardInterrupt} if launch else {"return_value": process}
+            with self.subTest(launch=launch), \
+                    mock.patch.object(defects.subprocess, "Popen", **options), \
+                    mock.patch.object(defects, "_finish_posix_group", return_value=(b"partial", {})) as finish:
+                with self.assertRaises(defects.UnsafeProcessTreeError) as caught:
+                    defects._posix_runner("synthetic", ".", {}, 2, lambda value: value)
+            self.assertEqual(0 if launch else 1, finish.call_count)
+            result = caught.exception.result
+            self.assertIn("KeyboardInterrupt", result.error)
+            self.assertFalse(result.restoration_safe)
+            self.assertFalse(result.timed_out)
+            self.assertEqual("" if launch else "partial", result.output)
+
+    def test_posix_never_signals_a_group_after_its_leader_was_reaped(self):
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b"done", None)
+        with mock.patch.object(defects.os, "killpg", create=True) as killpg:
+            output, cleanup = defects._finish_posix_group(process)
+        killpg.assert_not_called()
+        self.assertEqual(b"done", output)
+        self.assertIn("already reaped", cleanup["process_group_signal"])
+        self.assertTrue(cleanup["leader_exit_confirmed"])
+        self.assertFalse(cleanup["descendant_exit_confirmed"])
+
+    def test_posix_unreleased_pipes_and_leader_wait_share_one_teardown_deadline(self):
+        process = mock.Mock(pid=123, returncode=None)
+        process.communicate.side_effect = subprocess.TimeoutExpired("synthetic", 5, output=b"retained partial")
+        process.wait.side_effect = subprocess.TimeoutExpired("synthetic", 0)
+        with mock.patch.object(defects.os, "killpg", create=True) as killpg, \
+                mock.patch.object(defects.signal, "SIGKILL", 9, create=True), \
+                mock.patch.object(defects.time, "monotonic", side_effect=[10.0, 10.0, 15.0]):
+            output, cleanup = defects._finish_posix_group(process, b"earlier partial")
+        killpg.assert_called_once_with(123, 9)
+        process.communicate.assert_called_once_with(timeout=5.0)
+        process.wait.assert_called_once_with(timeout=0.0)
+        self.assertEqual(b"retained partial", output)
+        self.assertFalse(cleanup["leader_exit_confirmed"])
+        self.assertFalse(cleanup["pipes_released"])
+        self.assertFalse(cleanup["descendant_exit_confirmed"])
+
+    def test_posix_refused_group_signal_is_explicit_and_only_the_owned_leader_is_retried(self):
+        process = mock.Mock(pid=123, returncode=None)
+
+        def communicate(**kwargs):
+            process.returncode = -9
+            return b"retained", None
+
+        process.communicate.side_effect = communicate
+        with mock.patch.object(defects.os, "killpg", side_effect=PermissionError("synthetic refusal"), create=True), \
+                mock.patch.object(defects.signal, "SIGKILL", 9, create=True):
+            _, cleanup = defects._finish_posix_group(process)
+        process.kill.assert_called_once_with()
+        self.assertEqual("failed: PermissionError", cleanup["process_group_signal"])
+        self.assertTrue(cleanup["leader_exit_confirmed"])
+        self.assertFalse(cleanup["descendant_exit_confirmed"])
+
+    def test_posix_interrupted_teardown_keeps_partial_output_and_unknown_exit(self):
+        process = mock.Mock(pid=123, returncode=None)
+        with mock.patch.object(defects.os, "killpg", side_effect=KeyboardInterrupt, create=True), \
+                mock.patch.object(defects.signal, "SIGKILL", 9, create=True):
+            output, cleanup = defects._finish_posix_group(process, b"original timeout output")
+        self.assertEqual(b"original timeout output", output)
+        self.assertEqual("KeyboardInterrupt", cleanup["teardown_interrupted"])
+        self.assertEqual("attempted: result unconfirmed", cleanup["process_group_signal"])
+        self.assertFalse(cleanup["leader_exit_confirmed"])
+        self.assertFalse(cleanup["pipes_released"])
+        self.assertFalse(cleanup["descendant_exit_confirmed"])
+
+    def test_unconfirmed_process_lifetime_retains_isolated_configuration(self):
+        with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", True), \
+                mock.patch.object(defects.shutil, "rmtree") as remove:
+            defects._cleanup_isolation("synthetic-owned-config")
+        remove.assert_not_called()
+
+    def test_configuration_cleanup_failure_is_explicit_without_echoing_a_path(self):
+        with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False), \
+                mock.patch.object(defects.shutil, "rmtree", side_effect=PermissionError("private/path")), \
+                mock.patch("builtins.print") as output:
+            defects._cleanup_isolation("synthetic-owned-config")
+        message = output.call_args.args[0]
+        self.assertIn("cleanup failed (PermissionError)", message)
+        self.assertNotIn("private/path", message)
+
+
+def posix_exited(pid):
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[0]
+    except FileNotFoundError:
+        return True
+    return state in ("Z", "X")
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "native Linux owned-group/escaped-descendant evidence")
+class LinuxProcessTests(unittest.TestCase):
+    def finish_finite_workers(self, pids):
+        deadline = time.monotonic() + 6
+        while not all(posix_exited(pid) for pid in pids) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(all(posix_exited(pid) for pid in pids), "finite owned workers must finish before fixture cleanup")
+
+    def test_timeout_stops_shell_and_argv_group_members_but_keeps_restoration_fail_closed(self):
+        import shlex
+        for shell in (False, True):
+            temporary = tempfile.TemporaryDirectory(prefix="conformance-posix-test-", delete=False)
+            with self.subTest(shell=shell), temporary as scratch, \
+                    mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False):
+                root = Path(scratch)
+                worker = root / "worker.py"
+                worker.write_text(WORKER, encoding="utf-8")
+                argv = [sys.executable, str(worker), str(root), "parent"]
+                started = time.monotonic()
+                with self.assertRaises(defects.UnsafeProcessTreeError) as caught:
+                    defects.subprocess_runner(shlex.join(argv) if shell else argv, root, timeout=0.8)
+                result = caught.exception.result
+                pids = [int(path.read_text()) for path in root.glob("*.pid")]
+                try:
+                    self.assertEqual(2, len(pids), "both finite workers must have started")
+                    self.assertLess(time.monotonic() - started, 0.8 + defects.POSIX_TEARDOWN_SECONDS + 1)
+                    self.assertTrue(result.timed_out)
+                    self.assertFalse(result.restoration_safe)
+                    self.assertEqual("sent", result.process_cleanup["process_group_signal"])
+                    self.assertTrue(result.process_cleanup["leader_exit_confirmed"])
+                    self.assertTrue(result.process_cleanup["pipes_released"])
+                    self.assertFalse(result.process_cleanup["descendant_exit_confirmed"])
+                    self.assertTrue(all(posix_exited(pid) for pid in pids))
+                    self.assertIn("WORKER_STARTED=", result.output)
+                finally:
+                    self.finish_finite_workers(pids)
+                    if len(pids) == 2:
+                        temporary.cleanup()
+
+    def test_an_escaped_descendant_is_not_mistaken_for_a_terminated_owned_tree(self):
+        temporary = tempfile.TemporaryDirectory(prefix="conformance-posix-test-", delete=False)
+        with temporary as scratch, \
+                mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False):
+            root = Path(scratch)
+            worker = root / "worker.py"
+            worker.write_text(WORKER, encoding="utf-8")
+            with mock.patch.object(defects, "POSIX_TEARDOWN_SECONDS", 0.2):
+                with self.assertRaises(defects.UnsafeProcessTreeError) as caught:
+                    defects.subprocess_runner([sys.executable, str(worker), str(root), "detached"], root, timeout=0.8)
+            result = caught.exception.result
+            pids = [int(path.read_text()) for path in root.glob("*.pid")]
+            try:
+                child = int((root / "child.pid").read_text())
+                self.assertFalse(posix_exited(child), "the detached finite child is outside the killed group")
+                self.assertFalse(result.restoration_safe)
+                self.assertFalse(result.process_cleanup["pipes_released"])
+                self.assertFalse(result.process_cleanup["descendant_exit_confirmed"])
+                self.assertTrue(result.process_cleanup["leader_exit_confirmed"])
+                self.assertEqual("sent", result.process_cleanup["process_group_signal"])
+            finally:
+                self.finish_finite_workers(pids)
+                if len(pids) == 2:
+                    temporary.cleanup()
 
 
 if __name__ == "__main__":
