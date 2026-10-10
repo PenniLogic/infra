@@ -585,6 +585,28 @@ rerun, hook/protection change, paid service or issue closure occurs in this sour
 unit. Rollback is a reviewed source/reference reversal and corresponding consumer
 regeneration, not a runtime success-shaped fallback.
 
+#### PR77 native test-expectation correction
+
+The prebinding state above is historical: actual source
+`6867bd8f302e5ca607063dcfeb1a12b382e948fa` and binding
+`50deeed66a5981f5e17441c9038c157b5d566984` now exist, with the two real history
+equalities green locally. Their earlier RED evidence remains unchanged.
+Draft [#77](https://github.com/PenniLogic/infra/pull/77)'s first
+[native attempt](https://github.com/PenniLogic/infra/actions/runs/38013722196)
+failed two command-binding fixtures on both Linux and Windows. Its 336-second
+whole-workflow duration is a failed-run observation, not qualification.
+
+Local reproduction on exact binding B confirmed a stale literal command count
+(49 versus 48) and a historical profile expectation missing only the Android
+composition after its existing API Node adjustment. The test-only repair retains
+an independent 48-command expectation and removal/stub cases for every command.
+It asserts the exact old Android command list from immutable `dbdf2e27144e60b11aed54ed1e576d496a928ec3`
+before applying only the intended transformation in memory. Complete profile
+equality, the original historical protected-profile refusal and an isolated
+API Node refusal remain. No source-admission implementation, generated consumer,
+reference, native gate or deadline is changed; fresh native acceptance remains
+Root-owned and pending.
+
 ## Infra-only trusted PR command-binding bootstrap
 
 This is bounded preparation for [#24](https://github.com/PenniLogic/infra/issues/24) and
