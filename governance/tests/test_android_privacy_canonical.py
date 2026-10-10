@@ -177,7 +177,7 @@ class CanonicalPrivacyTests(unittest.TestCase):
         ).stdout)
         expected = copy.deepcopy(accepted)
         android = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/android")
-        android["workflow_ref"] = "1a540182f48a492772e5230219306632528c3967"
+        android["workflow_ref"] = "6867bd8f302e5ca607063dcfeb1a12b382e948fa"
         for name, source in (("api", API_WORKFLOW_SOURCE), ("infra", QUALIFICATION_SOURCE)):
             entry = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/" + name)
             entry["workflow_ref"] = source
