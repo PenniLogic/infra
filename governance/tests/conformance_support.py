@@ -33,11 +33,20 @@ class BaselineTest(unittest.TestCase):
 
 
 def standard_workflow(renderer, name, setup=False):
-    """Exercise common single-job policy; compound API/Infra CI has exact-byte tests."""
+    """Common-policy fixture only; native jobs and credential scopes have exact-byte tests."""
     document = json.loads(renderer.workflow(name, setup=setup))
     if name in ("api", "infra") and not setup:
         document["jobs"] = {"ci": document["jobs"]["ci"]}
         document["jobs"]["ci"]["name"] = "CI"
+        if name == "api":
+            names = ["Prepare pinned Money sources", "Prepare pinned database and interop sources"]
+            native = [step for step in document["jobs"]["ci"]["steps"] if step.get("name") in names]
+            if ([step["name"] for step in native] != names
+                    or any(step.get("env") != {"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}
+                           for step in native)):
+                raise AssertionError("common-policy fixture requires the exact native acquisition environments")
+            for step in native:
+                del step["env"]
     return renderer.encoded(document)
 
 

@@ -1049,6 +1049,21 @@ requests/hour/repository, not the generic installation-token limit, and other jo
 requests share that allowance. Upstream exhaustion/outage still refuses,
 and changed-source native qualification remains a later Root-controlled operation.
 
+The first native [PR81](https://github.com/PenniLogic/infra/pull/81) run
+[38049102345](https://github.com/PenniLogic/infra/actions/runs/38049102345) on
+`73a4fa8e6a00d2abd59ba9862c1d4837c365da58` failed both complete governance
+discoveries; neither platform reached scripts qualification. Both bounded diagnostic
+packets contained 20 reports for 13 unique test IDs and were truncated, not complete
+failure inventories. Focused reproduction exposed stale test assumptions about
+the API's pre-split command layout, prepared-only argv and native token leaves in
+the common-policy fixture. The corrected fixture projects only the two exact native
+environments for generic-policy tests; it is not an emitted or executable workflow.
+Real API bytes still require the exact generated checker, and the generic checker
+still refuses their token expressions. Mutation and actual shell-argv controls
+retain the scoped-token, base-injection, combined-build and fail-fast boundaries.
+This test correction does not change policy, emitted workflows or runtime behavior,
+diagnose the original Windows I/O cause, or establish native/product acceptance.
+
 ### Native PR CI failure and required runtime repair
 
 The local results on unaccepted `c9fceee` were not native acceptance.
