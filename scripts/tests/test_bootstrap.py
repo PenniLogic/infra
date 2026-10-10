@@ -1,6 +1,7 @@
 """Docker-free tests for scripts/bootstrap.py: env generation, validation, port diagnostics, envelope,
 and the timeout regression for a `docker` command whose child outlives it (infra#37)."""
 
+import copy
 import gc
 import json
 import os
@@ -752,6 +753,203 @@ class DockerCommandTests(unittest.TestCase):
         self.assertEqual(0, len(released.unopenable), classified)
         self.assertEqual(1, released.wait(0), classified)
         released.close()  # drops the pin taken in the `handles` case
+
+
+class ProcessExitDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        from ctypes import wintypes
+
+        self.api = mock.Mock(spec=("OpenProcess", "WaitForMultipleObjects", "CloseHandle"))
+        self.error_state = mock.Mock(spec=("get_last_error",))
+        self.last_error = 0
+        self.error_state.get_last_error.side_effect = lambda: self.last_error
+        self.enterContext(mock.patch.multiple(
+            bootstrap, _kernel32=self.api, ctypes=self.error_state, wintypes=wintypes,
+            SYNCHRONIZE=0x100000, PROCESS_QUERY_LIMITED_INFORMATION=0x1000,
+            ERROR_INVALID_PARAMETER=87, WAIT_OBJECT_0=0, WAIT_FAILED=0xFFFFFFFF,
+            MAXIMUM_WAIT_OBJECTS=64, create=True,
+        ))
+        self.clock = self.enterContext(mock.patch.object(bootstrap.time, "monotonic", return_value=100.0))
+
+    def teardown_result(self, pids, waits, open_errors=None, *, strict=True, failed=True, terminated=True):
+        calls, before_close = [], []
+        pending = iter(waits)
+        exits = bootstrap.ProcessExits()
+
+        def open_process(access, inherit, pid):
+            calls.append(("open", access, inherit, pid))
+            self.last_error = (open_errors or {}).get(pid, 777)
+            return None if pid in (open_errors or {}) else pid + 1000
+
+        def wait(count, handles, all_handles, timeout):
+            calls.append(("wait", count, tuple(handles), all_handles, timeout))
+            outcome, self.last_error = next(pending)
+            return outcome
+
+        def close(handle):
+            before_close.append(copy.deepcopy(vars(exits)))
+            calls.append(("close", handle))
+            self.last_error = 999
+
+        self.api.OpenProcess.side_effect = open_process
+        self.api.WaitForMultipleObjects.side_effect = wait
+        self.api.CloseHandle.side_effect = close
+        job = mock.Mock(spec=("process_ids", "terminate", "active_processes"))
+        job.process_ids.side_effect = [pids, []]
+        job.terminate.side_effect = lambda: calls.append(("terminate",)) or terminated
+        job.active_processes.side_effect = lambda: calls.append(("active",)) or 0
+        process = mock.Mock(spec=("kill", "communicate"))
+        process.kill.side_effect = lambda: calls.append(("kill",))
+        process.communicate.side_effect = lambda **kwargs: calls.append(("pipes", kwargs["timeout"]))
+        with mock.patch.object(bootstrap, "ProcessExits", return_value=exits):
+            if strict and failed:
+                with self.assertRaises(bootstrap.ProcessTeardownError) as caught:
+                    bootstrap.terminate_tree(job, process, 105.0, require_exit=True, label="probe")
+                message = str(caught.exception)
+            else:
+                message = bootstrap.terminate_tree(job, process, 105.0, require_exit=strict, label="probe")
+        self.assertEqual(2, job.process_ids.call_count)
+        job.terminate.assert_called_once_with()
+        job.active_processes.assert_called_once_with()
+        process.communicate.assert_called_once_with(timeout=5.0)
+        if terminated:
+            process.kill.assert_not_called()
+        else:
+            process.kill.assert_called_once_with()
+        self.assertEqual([], list(pending), "every supplied wait represents exactly one original native call")
+        self.assertEqual(("active",), calls[-1], "job accounting remains after original handle closure")
+        return message, exits, calls, before_close
+
+    def test_unopenable_pid_error_survives_close_without_becoming_an_exit(self):
+        message, exits, calls, snapshots = self.teardown_result(
+            [1, 2], [(0, 777), (0, 777)], {2: 5},
+        )
+        self.assertIn("processes exited: 1 of 2; processes still active: 0", message)
+        self.assertIn("OpenProcess errors=[(2, 5)]", message)
+        self.assertEqual((1, set(), {2}), (exits.seen, exits.gone, exits.unopenable))
+        self.assertEqual({1: 1001}, snapshots[0]["handles"])
+        self.assertEqual({2: 5}, snapshots[0]["open_errors"])
+        self.assertEqual({1: (0, None)}, snapshots[0]["process_waits"])
+        self.assertEqual([
+            ("open", 0x101000, False, 1), ("open", 0x101000, False, 2), ("terminate",), ("pipes", 5.0),
+            ("wait", 1, (1001,), True, 5000), ("wait", 1, (1001,), True, 0),
+            ("close", 1001), ("active",),
+        ], calls)
+        self.assertNotIn("999", message, "CloseHandle's later error cannot replace the pin error")
+        self.assertEqual(999, self.last_error)
+        self.assertEqual(1, self.error_state.get_last_error.call_count)
+        self.assertEqual(5, self.clock.call_count)
+
+    def test_native_wait_failure_is_not_reclassified_as_an_unopenable_pid(self):
+        message, exits, calls, snapshots = self.teardown_result(
+            [1, 2], [(0xFFFFFFFF, 6), (0, 777), (0xFFFFFFFF, 6)],
+        )
+        self.assertIn("processes exited: 1 of 2; processes still active: 0", message)
+        self.assertIn("OpenProcess errors=[]", message)
+        self.assertIn("batch waits (offset,count,return,error)=[(0, 2, 4294967295, 6)]", message)
+        self.assertIn("(2, (4294967295, 6))", message)
+        self.assertEqual(set(), exits.unopenable)
+        self.assertEqual([(0, 2, 0xFFFFFFFF, 6)], snapshots[0]["batch_waits"])
+        self.assertEqual({1: (0, None), 2: (0xFFFFFFFF, 6)}, snapshots[0]["process_waits"])
+        self.assertEqual([("close", 1001), ("close", 1002)], [call for call in calls if call[0] == "close"])
+        self.assertEqual(2, self.error_state.get_last_error.call_count)
+        self.assertNotIn("999", message)
+
+    def test_unsignaled_process_still_refuses_with_zero_active_accounting(self):
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                message, exits, calls, snapshots = self.teardown_result(
+                    [1, 2], [(258, 777), (0, 777), (258, 777)], strict=strict,
+                )
+                self.assertIn("processes exited: 1 of 2; processes still active: 0", message)
+                self.assertIn("(2, (258, None))", message)
+                self.assertIn("a descendant may still be running", message)
+                self.assertEqual(set(), exits.unopenable)
+                self.assertEqual({1: (0, None), 2: (258, None)}, snapshots[0]["process_waits"])
+                self.assertNotIn("777", message, "last-error has no error meaning for WAIT_TIMEOUT")
+                self.assertEqual(3, len([call for call in calls if call[0] == "wait"]))
+        self.error_state.get_last_error.assert_not_called()
+
+    def test_complete_individual_confirmation_keeps_success_text_and_gone_classification(self):
+        for batch_return, batch_error in ((0, 777), (0xFFFFFFFF, 6)):
+            with self.subTest(batch_return=batch_return):
+                message, exits, calls, snapshots = self.teardown_result(
+                    [2, 1, 3], [(batch_return, batch_error), (0, 777), (0, 777)], {3: 87}, failed=False,
+                )
+                self.assertEqual(
+                    "Its whole process tree was terminated and has exited (3 processes, output released).", message,
+                )
+                self.assertEqual((1, {3}, set()), (exits.seen, exits.gone, exits.unopenable))
+                self.assertEqual({3: 87}, snapshots[0]["open_errors"])
+                self.assertEqual({2: (0, None), 1: (0, None)}, snapshots[0]["process_waits"])
+                self.assertEqual([("close", 1002), ("close", 1001)], [call for call in calls if call[0] == "close"])
+
+    def test_refused_job_termination_preserves_kill_then_wait_then_close(self):
+        message, exits, calls, snapshots = self.teardown_result([1], [(0, 777), (0, 777)], terminated=False)
+        self.assertIn("job termination refused", message)
+        self.assertIn("process waits (pid,(return,error))=[(1, (0, None))]", message)
+        self.assertEqual([
+            ("open", 0x101000, False, 1), ("terminate",), ("kill",), ("pipes", 5.0),
+            ("wait", 1, (1001,), True, 5000), ("wait", 1, (1001,), True, 0),
+            ("close", 1001), ("active",),
+        ], calls)
+        self.assertEqual({1: (0, None)}, snapshots[0]["process_waits"])
+
+    def test_batch_boundary_and_duplicate_pids_keep_exact_original_calls(self):
+        pids = list(range(1, 66))
+        message, exits, calls, snapshots = self.teardown_result(
+            pids + [1, 65], [(0, 777), (0xFFFFFFFF, 6)] + [(0, 777)] * 64 + [(0xFFFFFFFF, 6)],
+        )
+        self.assertIn("processes exited: 64 of 65", message)
+        self.assertIn("(65, (4294967295, 6))", message, "unconfirmed observations precede confirmed entries")
+        self.assertEqual(
+            [(0, 64, 0, None), (64, 1, 0xFFFFFFFF, 6)], snapshots[0]["batch_waits"],
+        )
+        self.assertEqual([
+            ("wait", 64, tuple(pid + 1000 for pid in pids[:64]), True, 5000),
+            ("wait", 1, (1065,), True, 5000),
+            *[("wait", 1, (pid + 1000,), True, 0) for pid in pids],
+        ], [call for call in calls if call[0] == "wait"])
+        self.assertEqual(pids, [call[3] for call in calls if call[0] == "open"])
+        self.assertEqual([pid + 1000 for pid in pids], [call[1] for call in calls if call[0] == "close"])
+        self.assertEqual(6, self.clock.call_count)
+
+    def test_empty_owned_snapshot_keeps_success_without_any_native_wait(self):
+        message, exits, calls, snapshots = self.teardown_result([], [], failed=False)
+        self.assertEqual(
+            "Its whole process tree was terminated; the job listed no process any more at the timeout,"
+            " nothing is active and the output was released.", message,
+        )
+        self.assertEqual([("terminate",), ("pipes", 5.0), ("active",)], calls)
+        self.assertEqual([], self.api.mock_calls)
+        self.error_state.get_last_error.assert_not_called()
+
+    def test_diagnostic_details_are_deterministic_bounded_and_query_free(self):
+        exits = bootstrap.ProcessExits()
+        exits.open_errors = {pid: 5 for pid in reversed(range(1000000000, 1000000080))}
+        exits.process_waits = {pid: (0xFFFFFFFF, 6) for pid in reversed(range(2000000000, 2000000080))}
+        exits.batch_waits = [(offset, 64, 0xFFFFFFFF, 6) for offset in range(0, 640, 64)]
+        first = exits.diagnostics()
+        exits.open_errors = dict(reversed(list(exits.open_errors.items())))
+        exits.process_waits = dict(reversed(list(exits.process_waits.items())))
+        self.assertEqual(first, exits.diagnostics())
+        self.assertIn("1000000000", first)
+        self.assertNotIn("1000000008", first)
+        self.assertIn("2000000000", first)
+        self.assertNotIn("2000000008", first)
+        self.assertEqual(2, first.count("(+72 omitted)"))
+        self.assertIn("(+2 omitted)", first)
+        self.assertLess(len(first), 1600)
+        exits.open_errors = {pid: 87 for pid in range(1, 10)} | {10: 5}
+        exits.process_waits = {pid: (0, None) for pid in range(1, 10)} | {10: (258, None)}
+        exits.batch_waits = [(offset, 1, 0, None) for offset in range(9)] + [(9, 1, 0xFFFFFFFF, 6)]
+        prioritized = exits.diagnostics()
+        self.assertIn("OpenProcess errors=[(10, 5)", prioritized)
+        self.assertIn("batch waits (offset,count,return,error)=[(9, 1, 4294967295, 6)", prioritized)
+        self.assertIn("process waits (pid,(return,error))=[(10, (258, None))", prioritized)
+        self.assertEqual([], self.api.mock_calls)
+        self.error_state.get_last_error.assert_not_called()
+        self.clock.assert_not_called()
 
 
 class CommandLineEnvelopeTests(unittest.TestCase):
