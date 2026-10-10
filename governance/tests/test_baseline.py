@@ -10,7 +10,8 @@ import unittest
 from unittest import mock
 
 import conformance_support as support
-from test_api_node_runtime import BUILD_COMMAND
+from conformance import steps as workflow_steps
+from test_api_node_runtime import BUILD_COMMAND, native_command
 
 
 HERE = Path(__file__).resolve().parents[1]
@@ -57,6 +58,55 @@ ANDROID_COMMANDS = [
 
 
 class BaselineTests(unittest.TestCase):
+    def test_common_policy_projection_never_admits_or_masks_native_token_drift(self):
+        actual = generator.workflow("api")
+        projected = support.standard_workflow(generator, "api")
+        with self.assertRaisesRegex(ValueError, "unreviewed workflow expression"):
+            checker.validate_workflow(".github/workflows/ci.yml", actual.encode())
+        checker.validate_workflow(".github/workflows/ci.yml", projected.encode())
+        self.assertNotIn("${{ github.token }}", checker.WORKFLOW_EXPRESSIONS)
+        namespace = {"__file__": str(HERE.parent / "scripts/check_repository.py")}
+        exec(compile(generator.checker("api"), "actual API checker", "exec"), namespace)
+        namespace["validate_workflow"](".github/workflows/ci.yml", actual.encode())
+        with self.assertRaisesRegex(ValueError, "API CI must match"):
+            namespace["validate_workflow"](".github/workflows/ci.yml", projected.encode())
+
+        expected = json.loads(actual)
+        expected["jobs"] = {"ci": expected["jobs"]["ci"]}
+        expected["jobs"]["ci"]["name"] = "CI"
+        names = ["Prepare pinned Money sources", "Prepare pinned database and interop sources"]
+        for step in expected["jobs"]["ci"]["steps"]:
+            if step["name"] in names:
+                self.assertEqual({"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}, step.pop("env"))
+        self.assertEqual(expected, json.loads(projected))
+        for mutation in ("missing", "duplicate", "renamed", "changed-environment"):
+            value = json.loads(actual)
+            steps = value["jobs"]["ci"]["steps"]
+            native = next(step for step in steps if step["name"] == names[0])
+            if mutation == "missing":
+                steps.remove(native)
+            elif mutation == "duplicate":
+                steps.append(copy.deepcopy(native))
+            elif mutation == "renamed":
+                native["name"] = "Unreviewed acquisition"
+            else:
+                native["env"]["EXTRA"] = "${{ github.token }}"
+            with self.subTest(mutation=mutation), mock.patch.object(generator, "workflow", return_value=generator.encoded(value)):
+                with self.assertRaisesRegex(AssertionError, "exact native acquisition environments"):
+                    support.standard_workflow(generator, "api")
+        for placement in ("run", "env"):
+            value = json.loads(actual)
+            step = value["jobs"]["ci"]["steps"][-1]
+            if placement == "run":
+                step["run"] += "\necho '${{ github.token }}'"
+            else:
+                step["env"]["EXTRA"] = "${{ github.token }}"
+            with self.subTest(placement=placement), mock.patch.object(generator, "workflow", return_value=generator.encoded(value)):
+                fixture = support.standard_workflow(generator, "api")
+                with self.assertRaisesRegex(ValueError, "unreviewed workflow expression"):
+                    checker.validate_workflow(".github/workflows/ci.yml", fixture.encode())
+        self.assertEqual(actual, generator.workflow("api"))
+
     def test_all_repositories_have_public_hosted_readonly_ci(self):
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
@@ -129,11 +179,14 @@ class BaselineTests(unittest.TestCase):
                 steps = json.loads(output[".github/workflows/ci.yml"])["jobs"]["ci"]["steps"]
                 run = [step for step in steps if step["name"] == "Run checks"]
                 workflow_commands = [
-                    BUILD_COMMAND if repo == "api" and command == "python scripts/quality.py build"
+                    native_command(command) if repo == "api"
                     else generator.infra_ci_command(command) if repo == "infra" else command
                     for command in commands
                 ]
-                self.assertEqual([workflow_commands], [step["run"].split("\n") for step in run])
+                self.assertEqual(1, len(run))
+                self.assertEqual(workflow_commands, workflow_steps.workflow_run_commands(
+                    output[".github/workflows/ci.yml"].encode(),
+                ))
                 self.assertEqual(commands, json.loads(output[".github/agent-policy.json"])["commands"])
                 block = "```text\npython scripts/setup.py\n" + "\n".join(commands) + "\n```"
                 for name in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
@@ -498,7 +551,8 @@ class BaselineTests(unittest.TestCase):
                     if "run" in step:
                         self.assertNotIn("${{", step["run"], msg=f"{repo} {step['name']}")
                 if repo == "api" and not setup:
-                    self.assertEqual(["Run checks"],
+                    self.assertEqual(["Prepare pinned Money sources", "Prepare pinned database and interop sources",
+                                      "Run checks"],
                                      [step["name"] for step in job["steps"] if "${{" in json.dumps(step)])
                 self.assertNotIn("${{", json.dumps(job.get("env", {})))
 
@@ -620,7 +674,7 @@ class BaselineTests(unittest.TestCase):
         checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
 
     def test_only_generator_expressions_and_no_conditions_are_accepted(self):
-        # Every expression in every generated workflow is in the checker allowlist and vice versa.
+        # Common-policy expressions equal the generic allowlist; native scopes require exact bytes.
         emitted = set()
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):

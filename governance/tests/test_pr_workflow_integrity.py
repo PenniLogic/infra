@@ -18,7 +18,7 @@ import urllib.error
 
 import conformance_support as support
 from conformance import steps
-from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT
+from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT, native_command
 
 
 gate = support.pr_gate_module()
@@ -150,7 +150,7 @@ class CommandBindingTests(unittest.TestCase):
                     self.assertLessEqual(report["requests"], 32)
             rendered_commands = steps.workflow_run_commands(support.generator.workflow(name).encode("utf-8"))
             self.assertEqual([
-                BUILD_COMMAND if name == "api" and command == "python scripts/quality.py build"
+                native_command(command) if name == "api"
                 else support.generator.infra_ci_command(command) if name == "infra"
                 else command for command in profile["commands"]
             ], rendered_commands)
@@ -160,9 +160,11 @@ class CommandBindingTests(unittest.TestCase):
                 commands += 1
                 for stub in (False, True):
                     def update(_document, job):
-                        run = next(step for step in job["steps"] if step.get("name") == "Run checks")
+                        run = next(step for step in job["steps"]
+                                   if step.get("name") in ("Check repository", "Prepare verified Money provider", "Run checks")
+                                   and command in step["run"].split("\n"))
                         lines = run["run"].split("\n")
-                        self.assertEqual(command, lines[position])
+                        position = lines.index(command)
                         if stub:
                             lines[position] = "echo " + MARKER
                         else:

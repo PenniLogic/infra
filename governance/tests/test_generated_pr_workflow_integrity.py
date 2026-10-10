@@ -12,6 +12,7 @@ from unittest import mock
 
 import conformance_support as support
 from conformance import steps
+from test_api_native_source_fetch import remove_native_steps
 from test_api_node_runtime import BUILD_COMMAND
 from test_baseline import CONTRACTS_STATE
 
@@ -146,6 +147,8 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     expected = old[relative]
                     actual = new[relative]
                     if name == "api" and relative == ".github/workflows/ci.yml":
+                        # Validate and project only the separately bound native acquisition delta.
+                        actual = remove_native_steps(self, actual, jobs=("ci",))
                         value = json.loads(expected)
                         run_checks = next(step for step in value["jobs"]["ci"]["steps"]
                                           if step["name"] == "Run checks")
@@ -173,7 +176,9 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                                 if step["name"] == "Run checks":
                                     commands = step["run"].split("\n")
                                     self.assertEqual(1, commands.count("python scripts/quality.py build"))
-                                    commands[commands.index("python scripts/quality.py build")] = BUILD_COMMAND
+                                    commands[commands.index("python scripts/quality.py build")] = BUILD_COMMAND.replace(
+                                        " --require-prepared", "",
+                                    )
                                     step["run"] = "\n".join(commands)
                             coverage = next(step for step in native_steps
                                             if step["name"] == "Coverage against explicit base")
