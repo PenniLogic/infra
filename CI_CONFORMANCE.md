@@ -1377,3 +1377,5 @@ identity/mandatory-absence gap and all independent native acceptance holds remai
   survives — an unknown spelling therefore costs a run, never a leak. A local path that is neither under
   those roots nor spelled with a drive letter (a POSIX path outside home and temp, for example) is not a
   marker the scan knows.
+
+<!-- Synthetic positive native-gate qualification fixture: stage-1 documentation marker, 2026-10-02. -->
