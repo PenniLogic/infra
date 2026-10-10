@@ -993,7 +993,9 @@ class RuntimeRepairTests(unittest.TestCase):
                     # Preparation control only: execute the plant, not the Contracts-owned source runner.
                     spec = importlib.util.spec_from_file_location(planted.stem, planted)
                     module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
+                    # Prove restoration without depending on the test host's bytecode suppression.
+                    with mock.patch.object(sys, "dont_write_bytecode", False):
+                        exec(compile(planted.read_bytes(), str(planted), "exec"), module.__dict__)
                     result = unittest.TestResult()
                     module.PlantedConformanceDefect("test_planted_defect_must_fail").run(result)
                     self.assertEqual(1, result.testsRun)
