@@ -530,7 +530,7 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
         identity = "test_diagnostic.DiagnosticCases.test_a_primary"
         real_run = subprocess.run
         with tempfile.TemporaryDirectory(prefix="windows-real-refusal-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             (root / "scripts").mkdir()
             (root / "tests").mkdir()
             (root / "scripts" / "quality.py").write_text(
@@ -780,6 +780,27 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
 
     def test_real_unittest_error_retains_safe_diagnostic_before_capture_closes(self):
         diagnostic, _ = self.real_refusal("raise RuntimeError(PAYLOAD)", 1, "error")
+        self.assertEqual({
+            "exception": "RuntimeError", "incomplete": False, "truncated": False,
+            "source_frames": [{"path_sha256": hashlib.sha256(b"tests/test_diagnostic.py").hexdigest(), "line": 9}],
+        }, diagnostic["parser"]["negative_prefix"][0]["error"])
+
+    def test_real_refusal_resolves_owned_root_alias_before_attributing_frames(self):
+        original_temporary = tempfile.TemporaryDirectory
+
+        @contextlib.contextmanager
+        def aliased_temporary(*args, **kwargs):
+            with original_temporary(*args, **kwargs) as temporary:
+                root = Path(temporary).resolve()
+                (root / "alias").mkdir()
+                alias = root / "alias" / ".."
+                self.assertNotEqual(str(root), str(alias))
+                self.assertTrue(root.samefile(alias))
+                yield str(alias)
+            self.assertFalse(root.exists())
+
+        with mock.patch.object(tempfile, "TemporaryDirectory", side_effect=aliased_temporary):
+            diagnostic, _ = self.real_refusal("raise RuntimeError(PAYLOAD)", 1, "error")
         self.assertEqual({
             "exception": "RuntimeError", "incomplete": False, "truncated": False,
             "source_frames": [{"path_sha256": hashlib.sha256(b"tests/test_diagnostic.py").hexdigest(), "line": 9}],
