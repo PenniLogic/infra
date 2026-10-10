@@ -224,6 +224,12 @@ class RealFixtureTests(unittest.TestCase):
 
 
 class FakeRunnerTests(support.ConsumerCase):
+    def setUp(self):
+        super().setUp()
+        retained = mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False)
+        retained.start()
+        self.addCleanup(retained.stop)
+
     def test_a_stubbed_command_that_always_succeeds_is_not_proved(self):
         always_green = lambda command, cwd: defects.Result(0, "everything is fine")  # noqa: E731
         record = defects.run_fixture(fixture("python-test-failing"), context_for(self), runner=always_green)
@@ -419,6 +425,72 @@ class FakeRunnerTests(support.ConsumerCase):
         self.assertEqual("error", record["outcome"])
         self.assertEqual("prepare command failed", record["reason"])
         self.assertEqual("unexpected", record["probes"][0]["outcome"])
+
+    def test_preparation_and_probe_elapsed_times_are_retained_on_success_and_failure(self):
+        for code in (0, 1):
+            plant = mock.Mock()
+            item = defects.Fixture(
+                "timed-prepare", "python", "python", "synthetic measured preparation", lambda context: True,
+                plant, lambda context: [defects.Probe("refusal", "probe")], lambda context: ["prepare"])
+            results = [defects.Result(code, "prepared" if code == 0 else "dependency unavailable", elapsed_seconds=1.5),
+                       defects.Result(1, "refused", elapsed_seconds=2.25)]
+            runner = mock.Mock(side_effect=results)
+            with self.subTest(code=code):
+                record = defects.run_fixture(item, context_for(self), runner=runner)
+                self.assertEqual("proved" if code == 0 else "error", record["outcome"])
+                self.assertEqual(1.5, record["probes"][0]["elapsed_seconds"])
+                self.assertEqual(code, record["probes"][0]["exit_code"])
+                self.assertEqual(int(code == 0), plant.call_count)
+                self.assertEqual(2 if code == 0 else 1, runner.call_count)
+                if code == 0:
+                    self.assertEqual(2.25, record["probes"][1]["elapsed_seconds"])
+
+    def test_unsafe_preparation_keeps_original_result_and_never_plants(self):
+        plant = mock.Mock()
+        item = defects.Fixture(
+            "unsafe-prepare", "python", "python", "synthetic unsafe preparation", lambda context: True,
+            plant, lambda context: [], lambda context: ["prepare"])
+        result = defects.Result(None, "partial preparation", timed_out=True, error="unconfirmed descendants",
+                                restoration_safe=False, elapsed_seconds=3.5)
+        runner = mock.Mock(side_effect=defects.UnsafeProcessTreeError(result.error, result, "prepare"))
+        record = defects.run_fixture(item, context_for(self), runner=runner)
+        self.assertEqual("error", record["outcome"])
+        self.assertTrue(record["restoration_deferred"])
+        self.assertEqual("partial preparation", record["probes"][0]["output_tail"])
+        self.assertTrue(record["probes"][0]["timed_out"])
+        self.assertFalse(record["probes"][0]["restoration_safe"])
+        self.assertEqual(3.5, record["probes"][0]["elapsed_seconds"])
+        plant.assert_not_called()
+
+    def test_unexpected_runner_exception_retains_the_fixture_and_stops_further_planting(self):
+        owned = []
+        original = (self.root / "README.md").read_bytes()
+
+        def plant(context, planter):
+            owned.append(planter)
+            planter.move_aside("README.md")
+
+        item = defects.Fixture(
+            "unexpected-runner-failure", "python", "python", "synthetic runner failure", lambda context: True,
+            plant, lambda context: [defects.Probe("refusal", "unused")])
+        runner = mock.Mock(side_effect=RuntimeError("synthetic supervisor failed"))
+        try:
+            records = defects.run_fixtures(context_for(self), fixtures=(item, item), runner=runner)
+            self.assertEqual(1, len(records))
+            self.assertEqual("error", records[0]["outcome"])
+            self.assertIn("RuntimeError: synthetic supervisor failed", records[0]["reason"])
+            self.assertTrue(records[0]["restoration_deferred"])
+            self.assertTrue(defects._UNCONFIRMED_PROCESS)
+            self.assertFalse((self.root / "README.md").exists())
+            backup, = records[0]["cleanup"]["backups"]
+            self.assertEqual({"file", "restore_to"}, set(backup))
+            self.assertEqual("README.md", backup["restore_to"])
+            self.assertRegex(backup["file"], r"^[0-9a-f]{32}$")
+            self.assertEqual(original, (Path(owned[0]._aside) / backup["file"]).read_bytes())
+            runner.assert_called_once()
+        finally:
+            for planter in owned:
+                planter.restore()
 
 
 class UnittestWitnessTests(unittest.TestCase):
@@ -741,7 +813,8 @@ class RuntimeRepairTests(unittest.TestCase):
                     return original_rmtree(path, *args, **kwargs)
 
                 try:
-                    with mock.patch.object(defects, "Planter", side_effect=planter), \
+                    with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False), \
+                            mock.patch.object(defects, "Planter", side_effect=planter), \
                             mock.patch.object(defects.shutil, "rmtree", cleanup):
                         record = defects.run_fixture(fixture("python-test-failing"), context, runner=runner)
                     self.assertEqual("error", record["outcome"], record)
@@ -756,7 +829,13 @@ class RuntimeRepairTests(unittest.TestCase):
                         self.assertNotEqual(before, support.tree_digest(root))
                     elif boundary == "timeout":
                         self.assertTrue(record["probes"][0]["timed_out"])
-                        self.assertIsNone(owned[0]._aside)
+                        if os.name == "nt":
+                            self.assertIsNone(owned[0]._aside)
+                        else:
+                            self.assertTrue(record["restoration_deferred"])
+                            self.assertTrue(record["probes"][0]["process_cleanup"]["leader_exit_confirmed"])
+                            self.assertTrue(record["probes"][0]["process_cleanup"]["pipes_released"])
+                            self.assertTrue(Path(owned[0]._aside).is_dir())
                 finally:
                     for value in owned:
                         value.restore()
@@ -1146,7 +1225,14 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(3, result.exit_code)
         self.assertIn("hello", result.output)
         self.assertEqual(None, defects.subprocess_runner(["definitely-not-a-command-8f3a"], ".").exit_code)
-        self.assertTrue(defects.subprocess_runner([sys.executable, "-c", "import time; time.sleep(5)"], ".", timeout=0.5).timed_out)
+        with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False):
+            try:
+                timed = defects.subprocess_runner([sys.executable, "-c", "import time; time.sleep(5)"], ".", timeout=0.5)
+            except defects.UnsafeProcessTreeError as error:
+                self.assertNotEqual("nt", os.name)
+                timed = error.result
+        self.assertTrue(timed.timed_out)
+        self.assertEqual(os.name == "nt", timed.restoration_safe)
 
 
 if __name__ == "__main__":

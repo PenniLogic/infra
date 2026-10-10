@@ -20,6 +20,9 @@ OPAQUE = "synthetic-opaque-cut-boundary-credential-value"
 
 class CaptureRedactionTests(unittest.TestCase):
     def setUp(self):
+        retained = mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False)
+        retained.start()
+        self.addCleanup(retained.stop)
         self.temporary = tempfile.TemporaryDirectory(prefix="conformance-cut-boundary-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -31,6 +34,16 @@ class CaptureRedactionTests(unittest.TestCase):
         return [sys.executable, "-c",
                 f"import sys,time; sys.stdout.write({payload!r}); sys.stdout.flush(); time.sleep({6 if timed_out else 0})"]
 
+    def result_or_posix_timeout(self, runner, command):
+        try:
+            return runner(command, self.root)
+        except defects.UnsafeProcessTreeError as error:
+            self.assertNotEqual("nt", os.name, "Windows must still confirm owned-tree teardown")
+            self.assertIsNotNone(error.result)
+            self.assertTrue(error.result.timed_out)
+            self.assertFalse(error.result.restoration_safe)
+            return error.result
+
     def capture(self, marker=OPAQUE, timed_out=False, wrapped=False):
         environ = {key: value for key, value in os.environ.items()
                    if key.upper() not in {"GH_TOKEN", "GITHUB_TOKEN"}}
@@ -39,11 +52,14 @@ class CaptureRedactionTests(unittest.TestCase):
             lambda command, cwd: defects.subprocess_runner(command, cwd, timeout=2)
         )
         with mock.patch.object(defects.os, "environ", environ):
-            result = runner(self.command(marker, timed_out), self.root)
+            result = self.result_or_posix_timeout(runner, self.command(marker, timed_out))
         self.assertEqual(timed_out, result.timed_out)
         self.assertEqual(None if timed_out else 0, result.exit_code)
-        self.assertTrue(result.restoration_safe)
-        self.assertIsNone(result.error)
+        self.assertEqual(os.name == "nt" or not timed_out, result.restoration_safe)
+        if result.restoration_safe:
+            self.assertIsNone(result.error)
+        else:
+            self.assertIn("POSIX timeout", result.error)
         self.assertLessEqual(len(result.output), defects.OUTPUT_TAIL)
         return result
 
@@ -83,7 +99,7 @@ class CaptureRedactionTests(unittest.TestCase):
         record = defects._probe_record(probe, result)
         self.assertEqual({
             "label", "command", "expect", "expect_text", "detail_text", "note", "exit_code",
-            "timed_out", "outcome", "detail_surfaced", "output_tail",
+            "timed_out", "outcome", "detail_surfaced", "output_tail", "elapsed_seconds",
         }, set(record))
         self.assertEqual(3000, defects.OUTPUT_TAIL)
         self.assertEqual(400, defects.RECORDED_TAIL)
@@ -108,9 +124,10 @@ class CaptureRedactionTests(unittest.TestCase):
         command = [sys.executable, "-c",
                    f"import sys,time; print({heading!r}, flush=True); "
                    f"print('x' * {defects.OUTPUT_TAIL}, flush=True); time.sleep(6)"]
-        result = defects.subprocess_runner(command, self.root, timeout=2)
+        result = self.result_or_posix_timeout(
+            lambda command, cwd: defects.subprocess_runner(command, cwd, timeout=2), command)
         self.assertTrue(result.timed_out)
-        self.assertTrue(result.restoration_safe)
+        self.assertEqual(os.name == "nt", result.restoration_safe)
         self.assertEqual("", result.failure_evidence)
         self.assertNotIn(heading, result.output)
         probe = defects.Probe("synthetic timed-out capture", command, expect_text=heading, expect_exit_code=1)
@@ -135,7 +152,7 @@ class CaptureRedactionTests(unittest.TestCase):
 
         def inspect(name, profile, generator, client, registry_document, scratch, infra_root, runner, exercise,
                     refresh=False, budget_minutes=10):
-            result = runner(command, self.root)
+            result = self.result_or_posix_timeout(runner, command)
             captured.append(result)
             probe = defects._probe_record(defects.Probe("synthetic JSON sink", "synthetic command", expect="pass"), result)
             return passing_record(

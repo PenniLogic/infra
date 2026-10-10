@@ -7,10 +7,12 @@ API with no network."""
 
 import contextlib
 import copy
+import html
 import io
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -53,6 +55,7 @@ class EvaluationTests(unittest.TestCase):
             "read-only API unavailable": {"api_error": "GET /x failed with HTTP 403"},
             "scratch checkout unavailable": {"clone_error": "git clone failed"},
             "generated workflow files differ": {"generated_baseline": {"workflow_files_identical": False, "workflow_differences": [".github/workflows/ci.yml"], "stale_files": []}},
+            "generator drift command timed out or could not run": {"generated_baseline": {"timed_out": True}},
             "own scripts/check_repository.py failed": {"repository_check": {"exit_code": 1}},
             "no test step detected": {"detected_steps": {"build": [], "test": [], "lint": [], "consumer_self_tests": []}},
             "requires no status check": {"required_checks": {"produced": ["CI"], "required": [], "missing": [], "strict_up_to_date": True}},
@@ -102,6 +105,61 @@ class EvaluationTests(unittest.TestCase):
 
 
 class DocumentTests(unittest.TestCase):
+    def test_probe_labels_are_literal_table_text_including_the_lost_placeholders(self):
+        labels = [
+            "generator drift check: generate.py --repository <profile> --root <scratch> --check",
+            "profile command: <tag> & &lt;literal&gt; | `code` *stars* _name_ [link](url) ~~strike~~ \\path",
+        ]
+        for label in labels:
+            probe = defects._probe_record(defects.Probe(label, "unused"), defects.Result(1, "refused"))
+            document = report.build_report([passing_record(planted_defects=[{
+                "id": "literal-label", "language": "workflow", "toolchain": "python",
+                "outcome": "proved", "probes": [probe],
+            }])], None, "fake", ())
+            row = next(line for line in report.render_markdown(document).splitlines()
+                       if line.startswith("| `literal-label`"))
+            cells = row.strip("| ").split(" | ")
+            encoded = cells[-1].split(" -> exit", 1)[0]
+            with self.subTest(label=label):
+                self.assertEqual(5, len(cells))
+                self.assertEqual(label, html.unescape(encoded))
+                self.assertNotIn("<", encoded)
+                self.assertNotIn("|", encoded)
+                self.assertFalse(any(character in encoded for character in "\\`*_[]~"))
+                self.assertEqual(label, document["repositories"][0]["planted_defects"][0]["probes"][0]["label"])
+                self.assertIn("exit 1 (as_expected)", row)
+                self.assertIn("elapsed: unavailable s", row)
+
+    def test_missing_probe_reason_uses_the_same_literal_table_escaping(self):
+        reason = "tool <unavailable> & [not a link](url) | `literal`"
+        record = passing_record(planted_defects=[{
+            "id": "missing-probe", "language": "python", "toolchain": "python",
+            "outcome": "error", "reason": reason, "probes": [],
+        }])
+        row = next(line for line in report.render_markdown(report.build_report([record], None, "fake", ())).splitlines()
+                   if line.startswith("| `missing-probe`"))
+        self.assertEqual(reason, html.unescape(row.strip("| ").split(" | ")[-1]))
+        self.assertIn("ERROR", row)
+
+    def test_execution_and_probe_timings_are_additive_not_historical_ci_durations(self):
+        probe = defects._probe_record(defects.Probe("measured", "unused"), defects.Result(1, "", elapsed_seconds=2.25))
+        record = passing_record(timings={"elapsed_seconds": 8.5, "checkout_seconds": 1.125},
+                                planted_defects=[{"id": "measured", "language": "python", "toolchain": "python",
+                                                  "outcome": "proved", "probes": [probe]}])
+        execution = {"repository_workers": 1, "elapsed_seconds": 9.75, "unsafe_process_lifetime": None}
+        document = report.build_report([record], None, "fake", (), execution=execution)
+        raw = json.loads(report.to_json(document))
+        self.assertEqual(execution, raw["execution"])
+        self.assertEqual(2.25, raw["repositories"][0]["planted_defects"][0]["probes"][0]["elapsed_seconds"])
+        self.assertEqual(47, raw["repositories"][0]["last_main_run"]["wall_clock_seconds"])
+        markdown = report.render_markdown(document)
+        self.assertIn("Serial repository inspection loop: 9.750 s; 1 worker.", markdown)
+        self.assertIn("| PenniLogic/example | 8.500 | 1.125 |", markdown)
+        self.assertIn("elapsed: 2.250 s", markdown)
+        self.assertIn("not additional totals", markdown)
+        self.assertNotIn("## Current conformance execution",
+                         report.render_markdown(report.build_report([passing_record()], None, "fake", ())))
+
     def test_targeted_failure_evidence_is_published_separately_from_the_output_tail(self):
         heading = ("FAIL: test_planted_defect_must_fail "
                    "(test_planted_conformance_defect_0.PlantedConformanceDefect.test_planted_defect_must_fail)")
@@ -211,6 +269,129 @@ class DocumentTests(unittest.TestCase):
         self.assertIn("path needle", report.redaction_survivors({str(Path.home()): "as a key"}, replacements))
 
 
+class OwnershipTests(unittest.TestCase):
+    def test_layout_refuses_resolved_output_overlap_with_executing_infra(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scratch, infra = root / "scratch", root / "source-area" / "infra"
+            for output in (infra, infra / "reports", infra.parent, root / "reports" / ".." / "source-area" / "infra"):
+                with self.subTest(output=output), self.assertRaisesRegex(
+                        run.OwnershipError, "report output overlaps the executing infra checkout"):
+                    run.validate_layout(["docs"], scratch, output, infra)
+            self.assertEqual([], list(root.iterdir()))
+
+    def test_main_refuses_source_output_overlap_before_ownership_or_repository_work(self):
+        for layout in ("equal", "nested", "ancestor"):
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                scratch, infra = root / "scratch", root / "source-area" / "infra"
+                output = {"equal": infra, "nested": infra / "reports", "ancestor": infra.parent}[layout]
+                client = support.FakeClient({})
+                stderr = io.StringIO()
+                with mock.patch.object(run.generator_module, "INFRA_ROOT", infra), \
+                        mock.patch.object(run.generator_module, "load", return_value=support.generator), \
+                        mock.patch.object(run.github_api, "choose_client", return_value=client), \
+                        mock.patch.object(run, "own_directories", wraps=run.own_directories) as own, \
+                        mock.patch.object(run, "run_owned", return_value=0) as execute, \
+                        contextlib.redirect_stderr(stderr):
+                    code = run.main(["--scratch", str(scratch), "--output", str(output), "--repository", "docs"])
+                self.assertEqual(2, code)
+                self.assertIn("report output overlaps the executing infra checkout", stderr.getvalue())
+                self.assertNotIn(str(root), stderr.getvalue())
+                own.assert_not_called()
+                execute.assert_not_called()
+                self.assertEqual(0, client.requests)
+                self.assertEqual([], list(root.iterdir()))
+
+    def test_disjoint_and_sibling_output_stay_at_the_requested_location(self):
+        for layout in ("disjoint", "sibling", "prefix-sibling"):
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                scratch, infra = root / "scratch", root / "source-area" / "infra"
+                infra.mkdir(parents=True)
+                output = {"disjoint": root / "reports", "sibling": infra.parent / "reports",
+                          "prefix-sibling": infra.with_name("infra-reports")}[layout]
+                with mock.patch.object(run.generator_module, "INFRA_ROOT", infra), \
+                        mock.patch.object(run.generator_module, "load", return_value=support.generator), \
+                        mock.patch.object(run.github_api, "choose_client", return_value=support.FakeClient({})), \
+                        mock.patch.object(run, "git", return_value=subprocess.CompletedProcess([], 0, b"a" * 40, b"")), \
+                        mock.patch.object(defects, "isolation_directory", return_value=str(root / "unused-isolation")), \
+                        mock.patch.object(run, "inspect_repository", return_value=passing_record(
+                            repository="PenniLogic/docs", profile="docs")) as inspect, \
+                        mock.patch.dict(run.os.environ, {"GITHUB_ACTIONS": "false"}), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    code = run.main(["--scratch", str(scratch), "--output", str(output), "--repository", "docs"])
+                self.assertEqual(0, code)
+                inspect.assert_called_once()
+                self.assertEqual({"conformance-report.json", "conformance-summary.md"},
+                                 {path.name for path in output.iterdir()})
+                self.assertEqual([], list(infra.iterdir()))
+                self.assertFalse((scratch / run.OWNERSHIP_MARKER).exists())
+
+    def test_client_and_token_errors_precede_source_output_overlap(self):
+        choose_client = run.github_api.choose_client
+        cases = (("gh", "non-empty step-scoped GH_TOKEN"), ("anonymous", "requires --github-client gh"))
+        for mode, expected in cases:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                scratch, infra = root / "scratch", root / "infra"
+                stderr = io.StringIO()
+                with mock.patch.object(run.generator_module, "INFRA_ROOT", infra), \
+                        mock.patch.object(run.generator_module, "load", return_value=support.generator), \
+                        mock.patch.object(run.github_api, "choose_client", side_effect=lambda value: choose_client(
+                            value, which=lambda name: "gh", environ={"GITHUB_ACTIONS": "true"})), \
+                        mock.patch.object(run, "validate_layout", wraps=run.validate_layout) as validate, \
+                        mock.patch.object(run, "own_directories") as own, \
+                        mock.patch.object(run, "run_owned") as execute, \
+                        contextlib.redirect_stderr(stderr):
+                    code = run.main(["--scratch", str(scratch), "--output", str(infra),
+                                     "--repository", "docs", "--github-client", mode])
+                self.assertEqual(2, code)
+                self.assertIn(expected, stderr.getvalue())
+                validate.assert_not_called()
+                own.assert_not_called()
+                execute.assert_not_called()
+                self.assertEqual([], list(root.iterdir()))
+
+    def test_layout_refuses_source_and_report_overlap_before_any_checkout_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scratch, infra = root / "scratch", root / "source"
+            for output in (scratch, scratch / "docs", scratch / "docs" / "report"):
+                with self.subTest(output=output), self.assertRaisesRegex(run.OwnershipError, "report output overlaps"):
+                    run.validate_layout(["docs"], scratch, output, infra)
+            for source in (scratch, scratch / "docs", scratch / "docs" / "source"):
+                with self.subTest(source=source), self.assertRaisesRegex(run.OwnershipError, "executing infra checkout"):
+                    run.validate_layout(["docs"], scratch, root / "out", source)
+            self.assertEqual([], list(root.iterdir()))
+
+    def test_existing_output_owner_is_not_removed_when_scratch_acquisition_unwinds(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scratch, output = root / "scratch", root / "output"
+            marker = output / run.OWNERSHIP_MARKER
+            marker.mkdir(parents=True)
+            identity = marker.stat().st_ino
+            with self.assertRaisesRegex(run.OwnershipError, "already owned"):
+                with run.own_directories(scratch, output, {"unsafe_process_lifetime": None}):
+                    self.fail("must not acquire an already-owned output")
+            self.assertEqual(identity, marker.stat().st_ino)
+            self.assertFalse((scratch / run.OWNERSHIP_MARKER).exists())
+
+    def test_replaced_ownership_marker_is_retained_not_deleted_as_our_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scratch, output = root / "scratch", root / "output"
+            marker = scratch / run.OWNERSHIP_MARKER
+            with self.assertRaisesRegex(run.OwnershipError, "marker changed"):
+                with run.own_directories(scratch, output, {"unsafe_process_lifetime": None}):
+                    marker.rename(scratch / "retained-original-marker")
+                    marker.mkdir()
+            self.assertTrue(marker.is_dir())
+            self.assertTrue((scratch / "retained-original-marker").is_dir())
+            self.assertFalse((output / run.OWNERSHIP_MARKER).exists())
+
+
 class OrchestratorTests(support.ConsumerCase):
     def test_parse_arguments_rejects_unknown_toolchains(self):
         args = run.parse_arguments(["--scratch", "s", "--output", "o", "--exercise", "python,node"])
@@ -250,6 +431,17 @@ class OrchestratorTests(support.ConsumerCase):
         root, sha, reused, error = run.prepare_checkout(self.scratch, support.ORGANIZATION, self.profile_name)
         self.assertIsNone(error)
         self.assertEqual([], defects.git_status(self.root))
+
+    def test_prepare_checkout_refuses_a_shared_git_directory_before_running_git(self):
+        marker = self.root / ".git" / "commondir"
+        marker.write_text("../shared", encoding="utf-8")
+        with mock.patch.object(run, "git") as git:
+            root, sha, reused, error = run.prepare_checkout(self.scratch, support.ORGANIZATION, self.profile_name)
+        self.assertIsNone(root)
+        self.assertIsNone(sha)
+        self.assertIn("own unlinked Git directory", error)
+        git.assert_not_called()
+        marker.unlink()
 
     def test_scratch_git_commands_run_in_the_isolated_environment(self):
         seen = []
@@ -307,6 +499,12 @@ class OrchestratorTests(support.ConsumerCase):
         self.assertEqual({"proved"}, {defect["outcome"] for defect in record["planted_defects"]})
         self.assertEqual([], defects.git_status(self.root))
         self.assertEqual(5, client.requests)  # identity, rulesets, ruleset detail, branch rules, runs
+        self.assertGreater(record["timings"]["checkout_seconds"], 0)
+        measured_parts = (record["timings"]["checkout_seconds"]
+                          + record["generated_baseline"]["elapsed_seconds"]
+                          + record["repository_check"]["elapsed_seconds"]
+                          + sum(probe["elapsed_seconds"] for item in record["planted_defects"] for probe in item["probes"]))
+        self.assertGreaterEqual(record["timings"]["elapsed_seconds"], measured_parts)
 
     def test_inspect_repository_fails_closed_on_id_mismatch_missing_producer_and_api_errors(self):
         head = support.git(self.root, "rev-parse", "HEAD").strip()
@@ -516,10 +714,160 @@ class OrchestratorTests(support.ConsumerCase):
             calls.append(command)
             raise defects.UnsafeProcessTreeError("synthetic teardown not confirmed")
 
-        with self.assertRaisesRegex(defects.UnsafeProcessTreeError, "teardown not confirmed"):
-            run.inspect_repository(self.profile_name, self.profile, support.generator, client, registry_document,
-                                   self.scratch, support.GOVERNANCE.parent, unsafe, ("python",))
+        with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False):
+            record = run.inspect_repository(self.profile_name, self.profile, support.generator, client, registry_document,
+                                            self.scratch, support.GOVERNANCE.parent, unsafe, ("python",))
+        self.assertIn("teardown not confirmed", record["job_error"])
+        self.assertTrue(record["identity"]["verified"], "keep facts collected before the interruption")
+        self.assertTrue(record["restoration_deferred"])
         self.assertEqual(1, len(calls), "do not run another checker or plant a defect after unsafe teardown")
+
+    def test_checkout_timings_cover_success_failure_and_an_unverified_not_started_checkout(self):
+        for verified, checkout_error in ((True, None), (True, "synthetic clone failure"), (False, None)):
+            identity = {"id": self.profile["id"] if verified else 42, "full_name": "synthetic", "default_branch": "main"}
+            client = support.fake_client_for(self.profile_name, self.profile["id"], "a" * 40, identity=identity)
+            values = [10.0, 11.0, 13.5, 17.0] if verified else [10.0, 17.0]
+            with self.subTest(verified=verified, error=checkout_error), \
+                    mock.patch.object(run, "prepare_checkout", return_value=(None, None, False, checkout_error)) as prepare, \
+                    mock.patch.object(run.time, "monotonic", side_effect=values):
+                record = run.inspect_repository(
+                    self.profile_name, self.profile, support.generator, client, run.registry_module.load_registry(),
+                    self.scratch, support.GOVERNANCE.parent, mock.Mock(), ())
+            self.assertEqual(7.0, record["timings"]["elapsed_seconds"])
+            self.assertEqual(2.5 if verified else None, record["timings"]["checkout_seconds"])
+            self.assertEqual(int(verified), prepare.call_count)
+            if checkout_error:
+                self.assertEqual(checkout_error, record["clone_error"])
+
+    def test_unexpected_command_runner_failure_retains_ownership_and_partial_repository_facts(self):
+        client = support.fake_client_for(self.profile_name, self.profile["id"], "a" * 40)
+        with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False), \
+                mock.patch.object(defects, "_windows_runner", side_effect=RuntimeError("synthetic runner failed")), \
+                mock.patch.object(defects, "_posix_runner", side_effect=RuntimeError("synthetic runner failed")):
+            record = run.inspect_repository(
+                self.profile_name, self.profile, support.generator, client, run.registry_module.load_registry(),
+                self.scratch, support.GOVERNANCE.parent, defects.subprocess_runner, ())
+        self.assertTrue(record["identity"]["verified"])
+        self.assertTrue(record["restoration_deferred"])
+        self.assertIn("RuntimeError: synthetic runner failed", record["job_error"])
+        self.assertEqual(1, client.requests)
+        self.assertGreater(record["timings"]["elapsed_seconds"], 0)
+
+    def test_checkout_timeout_retains_capture_and_elapsed_time_without_claiming_cleanup(self):
+        client = support.fake_client_for(self.profile_name, self.profile["id"], "a" * 40)
+        output = (str(self.scratch) + "\\partial clone output").encode()
+        stderr = (str(self.scratch) + "\\partial clone error").encode()
+        expired = subprocess.TimeoutExpired(["git", "clone"], 600, output=output, stderr=stderr)
+        with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False), \
+                mock.patch.object(run, "prepare_checkout", side_effect=expired), \
+                mock.patch.object(run.time, "monotonic", side_effect=[1.0, 2.0, 5.0, 7.0]):
+            record = run.inspect_repository(
+                self.profile_name, self.profile, support.generator, client, run.registry_module.load_registry(),
+                self.scratch, support.GOVERNANCE.parent, mock.Mock(), ())
+        self.assertEqual({"elapsed_seconds": 6.0, "checkout_seconds": 3.0}, record["timings"])
+        self.assertTrue(record["restoration_deferred"])
+        self.assertTrue(record["interrupted_checkout"]["timed_out"])
+        self.assertEqual(600, record["interrupted_checkout"]["timeout_seconds"])
+        self.assertFalse(record["interrupted_checkout"]["restoration_safe"])
+        self.assertIn("<scratch>", record["interrupted_checkout"]["output_tail"])
+        self.assertNotIn(str(self.scratch), record["interrupted_checkout"]["output_tail"])
+        self.assertEqual(["git", "clone"], record["interrupted_checkout"]["command"])
+        self.assertIn("<scratch>", record["interrupted_checkout"]["stderr_tail"])
+        self.assertIn("partial clone error", record["interrupted_checkout"]["stderr_tail"])
+        self.assertNotIn(str(self.scratch), record["interrupted_checkout"]["stderr_tail"])
+        self.assertIn("TimeoutExpired", record["job_error"])
+
+    def test_duplicate_roots_are_refused_before_repository_reads_or_execution_not_deduplicated(self):
+        client = support.FakeClient({})
+        with mock.patch.object(run.github_api, "choose_client", return_value=client) as choose, \
+                mock.patch.object(run, "inspect_repository") as inspect, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = run.main(["--scratch", str(self.scratch), "--output", str(self.scratch / "duplicate-out"),
+                             "--repository", self.profile_name, "--repository", self.profile_name])
+        self.assertEqual(2, code)
+        self.assertIn("no work was deduplicated", err.getvalue())
+        choose.assert_called_once()
+        self.assertEqual(0, client.requests)
+        inspect.assert_not_called()
+
+    def test_serial_failure_retains_requested_order_and_does_not_lose_later_rows(self):
+        names = [self.profile_name, "docs", "infra"]
+        calls = []
+        client = support.FakeClient({"/synthetic-metadata": {}})
+
+        def inspect(name, *args):
+            calls.append(name)
+            self.assertIs(client, args[2])
+            client.get("/synthetic-metadata")
+            if name == "docs":
+                raise ValueError("synthetic ordinary failure")
+            return passing_record(repository=f"PenniLogic/{name}", profile=name)
+
+        output = self.scratch / "serial-out"
+        with mock.patch.object(run.github_api, "choose_client", return_value=client) as choose, \
+                mock.patch.object(run, "inspect_repository", side_effect=inspect), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = run.main(["--scratch", str(self.scratch), "--output", str(output),
+                             *[value for name in names for value in ("--repository", name)]])
+        document = json.loads((output / "conformance-report.json").read_text())
+        self.assertEqual(1, code)
+        self.assertEqual(names, calls)
+        self.assertEqual(names, [record["profile"] for record in document["repositories"]])
+        self.assertEqual(["pass", "fail", "pass"], [record["result"] for record in document["repositories"]])
+        self.assertEqual(1, document["execution"]["repository_workers"])
+        self.assertEqual(3, document["api_requests"], "keep requests made before an inspection failed")
+        choose.assert_called_once()
+        self.assertFalse((self.scratch / run.OWNERSHIP_MARKER).exists())
+        self.assertFalse((output / run.OWNERSHIP_MARKER).exists())
+
+    def test_abrupt_invocation_failure_retains_scratch_ownership_without_claiming_safe_cleanup(self):
+        output = self.scratch / "interrupted-out"
+        with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False), \
+                mock.patch.object(run.github_api, "choose_client", return_value=support.FakeClient({})), \
+                mock.patch.object(run, "run_owned", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                run.main(["--scratch", str(self.scratch), "--output", str(output), "--repository", self.profile_name])
+            self.assertTrue(defects._UNCONFIRMED_PROCESS)
+        self.assertTrue((self.scratch / run.OWNERSHIP_MARKER).is_dir())
+        self.assertFalse((output / run.OWNERSHIP_MARKER).exists())
+
+    def test_ownership_io_failure_does_not_echo_an_unredacted_path(self):
+        err = io.StringIO()
+        with mock.patch.object(run.github_api, "choose_client", return_value=support.FakeClient({})), \
+                mock.patch.object(run, "validate_layout", side_effect=PermissionError("Z:\\private\\scratch")), \
+                contextlib.redirect_stderr(err):
+            code = run.main(["--scratch", str(self.scratch), "--output", str(self.scratch / "out"),
+                             "--repository", self.profile_name])
+        self.assertEqual(2, code)
+        self.assertIn("ownership refused: PermissionError", err.getvalue())
+        self.assertNotIn("Z:", err.getvalue())
+
+    def test_unsafe_lifetime_retains_scratch_ownership_and_refuses_later_execution_and_reuse(self):
+        output = self.scratch / "unsafe-out"
+        result = defects.Result(None, "captured timeout", timed_out=True, error="synthetic unsafe teardown",
+                                restoration_safe=False, elapsed_seconds=0.75)
+        error = defects.UnsafeProcessTreeError(result.error, result, ["synthetic command"])
+        args = ["--scratch", str(self.scratch), "--output", str(output),
+                "--repository", self.profile_name, "--repository", "docs"]
+        with mock.patch.object(defects, "_UNCONFIRMED_PROCESS", False), \
+                mock.patch.object(run.github_api, "choose_client", return_value=support.FakeClient({})), \
+                mock.patch.object(run, "inspect_repository", side_effect=error) as inspect, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = run.main(args)
+            self.assertEqual(1, inspect.call_count)
+            self.assertEqual(2, run.main(args), "an unconfirmed scratch cannot be silently reused")
+            self.assertEqual(1, inspect.call_count)
+        document = json.loads((output / "conformance-report.json").read_text())
+        self.assertEqual(1, code)
+        self.assertEqual(["fail", "fail"], [record["result"] for record in document["repositories"]])
+        probe = document["repositories"][0]["interrupted_probe"]
+        self.assertTrue(probe["timed_out"])
+        self.assertFalse(probe["restoration_safe"])
+        self.assertEqual(0.75, probe["elapsed_seconds"])
+        self.assertEqual("captured timeout", probe["output_tail"])
+        self.assertIsNone(document["repositories"][1]["timings"]["elapsed_seconds"])
+        self.assertTrue((self.scratch / run.OWNERSHIP_MARKER).is_dir())
+        self.assertFalse((output / run.OWNERSHIP_MARKER).exists())
 
 
 if __name__ == "__main__":

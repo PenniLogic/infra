@@ -69,8 +69,30 @@ If tree exit, job membership or pipe release cannot be confirmed, the probe fail
 claiming a bounded successful teardown. Repository inspection stops; a planted fixture records
 `restoration_deferred` and retains its backups rather than restoring files a consumer might still hold.
 The JSON includes the redacted failure/recovery details. Confirm process exit before recovering or
-discarding that scratch checkout. POSIX keeps the existing `subprocess.run` behavior and makes no
-Windows process-tree ownership claim.
+discarding that scratch checkout.
+
+POSIX probes now start in a new session/process group. On timeout or an interrupted capture, the
+parent sends `SIGKILL` only while its unreaped child still reserves that group's identifier, then
+shares one five-second deadline between captured-pipe release and waiting for that child. It never
+signals a group after reaping the leader, when the identifier could have been reused. A non-default
+`SIGCHLD` handler, which could reap that child independently, refuses launch. Signal refusal,
+interrupted teardown, leader exit and pipe release are separate `process_cleanup` facts. The
+original timeout, captured output and elapsed time survive in the probe record.
+
+**A process group is not complete descendant containment.** A command can detach a descendant into
+another session, including one with redirected output. Even successful group termination therefore
+does not establish safe restoration after a POSIX timeout: `restoration_safe` is false, backups and
+the planted tree are retained, and further repository execution stops. Normal successful POSIX
+commands retain the existing serial behavior; no Windows-equivalent ownership guarantee is claimed.
+Linux-native group/escape controls are authored in `test_conformance_processes.py`; running the
+Windows controls or mocked POSIX controls is not Linux execution evidence.
+
+Repository inspection remains **serial**, on every platform. This patch neither introduces a
+Windows-only scheduler nor claims a runtime speed fix. Safe Linux overlap still requires descendant
+containment that covers detachment, plus demonstrated compatibility or isolation of shared npm/uv
+caches, HOME/temp/toolchain stores and Docker/port resources. Process-group signaling and separate
+Git roots do not supply those guarantees. No cgroup privileges, service, larger runner or replacement
+supervisor are provisioned here.
 
 Every probe, and every git command on a scratch checkout, runs with `probe_environment()`
 (`governance/conformance/defects.py`): an explicit deny-list of variable names and prefixes is removed
@@ -105,7 +127,15 @@ or locally only against the organization's own repositories. The fixtures prove 
 (a removed, stubbed or skipped test step, an empty suite, a failing test that is really executed); a
 consumer whose maintainers deliberately rewrite their own test runner to fake those outputs is a review
 finding, not something a probe can prove from outside. Do not share one scratch directory between
-concurrent runs.
+concurrent runs. The invocation exclusively creates `.conformance-owner` directories in its scratch
+and output locations; a pre-existing or changed marker is a failure, not permission to take over.
+Duplicate/overlapping requested roots, linked checkout roots, shared Git directories and report output
+overlapping a checkout are refused. Successful and ordinary failed runs release their markers after
+publication. An unconfirmed process lifetime retains the scratch marker and isolated git/gh
+configuration, preventing an automatic retry into a possibly live tree. An abrupt invocation failure
+or unexpected command-runner exception also retains scratch ownership rather than assuming cleanup
+was safe. Before manual recovery, confirm all prior processes have exited and recover retained
+backups; never merely delete the marker.
 
 ### Running it
 
@@ -149,9 +179,9 @@ Quota exhaustion is observed there; a future authenticated 403 is not automatica
 as quota exhaustion. Inaccessible metadata still fails explicitly, with no grant escalation.
 
 A run that is killed while a defect is planted cannot restore the tree (the process never reaches its
-restore step); the next run refuses to plant into that clone (`scratch checkout is not clean`) and fails
-that repository. Delete the scratch directory, or the clone, and run again. The scheduled job always
-starts from an empty scratch directory.
+restore step); the next run refuses the retained ownership marker, or an unclean clone when no marker
+exists. Confirm process exit before recovering backups or discarding only that owned scratch tree.
+The scheduled job always starts from an empty scratch directory.
 
 ### Reading the report
 
@@ -164,6 +194,36 @@ bypass actors), `registry`, `last_main_run` (`wall_clock_seconds`, `within_budge
 `planted_defects`, `language_coverage`, then `failures`, `warnings` and `result`.
 Probe `error` details, fixture `cleanup` locations/recovery mappings and `restoration_deferred` are
 included when applicable; all strings pass the same whole-document redaction and final self-scan.
+An unsafe top-level checker or generator command is retained as `interrupted_probe`; a scratch Git
+timeout is retained as `interrupted_checkout`, without discarding identity or other facts already
+collected for the repository. Its stdout and stderr tails are separately redacted and capped at
+400 characters. Affected and subsequently unexecuted rows fail explicitly.
+
+### Current-execution timing, not historical CI
+
+The following optional fields are additive to schema `pennilogic.infra.conformance/1`, measured with
+`time.monotonic()` rather than wall-clock timestamps:
+
+| Field | Exact measured interval |
+| --- | --- |
+| `execution.elapsed_seconds` | Entry to exit of this invocation's serial repository loop, including failure handling; excludes argument/registry/client setup, source-head lookup and report publication |
+| `repositories[].timings.elapsed_seconds` | This repository inspection, including artifact comparison, identity and metadata reads, checkout, preparation, probes and restoration |
+| `repositories[].timings.checkout_seconds` | The complete `prepare_checkout` call, including reuse validation, clone/fetch, push-URL disabling, clean-tree check and head lookup; also recorded when it fails or raises |
+| Probe, `generated_baseline` and `repository_check` `elapsed_seconds` | Entry to the command runner through environment/capture setup, process launch, execution, bounded teardown and capture redaction; preparation commands use their existing `prepare:` probe records |
+
+Checkout and command intervals are **nested parts** of the inclusive repository interval, not extra
+phase totals to add to it. The generator-command timing excludes its preceding in-process artifact
+comparison. Missing/unexecuted measurements are JSON `null` (or absent in older artifacts), never a
+fabricated zero. JSON keeps the measured value; Markdown displays three decimal places or
+`unavailable`. `last_main_run` and `ci_duration_trend` remain historical metadata, not measurements of
+this invocation. No timing field substitutes for the required changed-source native job **and**
+whole-workflow duration strictly below 600 seconds.
+
+Probe labels and fallback reasons pass through the existing HTML/table-cell escaping helper, with
+Markdown punctuation encoded as literal text. This keeps `<profile>`, `<scratch>`, ampersands, pipes,
+backticks, backslashes, emphasis and link-like text visible without changing labels in JSON or
+reinterpreting any probe verdict. Escaping happens after redaction; capture caps and the 1 MiB
+summary-publication limit are unchanged.
 
 Failures (any one fails the repository and the job): repository id mismatch or unreadable API; scratch
 checkout unavailable; a generated workflow file that differs from the generator; the consumer's own
@@ -171,7 +231,7 @@ checker failing; no test step detected; no required status check on `main`; a re
 producing workflow job; no registry entry, a registry check name the workflow does not produce, or a
 `workflow_ref` that does not render the workflow on `main`; a planted defect `not_proved` or `error`; a
 red last `main` CI run; a run over the ten-minute budget for a profile whose reviewed timeout is the
-default ten minutes. Failed backup cleanup and unconfirmed Windows probe teardown fail the row too;
+default ten minutes. Failed backup cleanup and unconfirmed probe teardown fail the row too;
 a restored consumer tree alone is not enough to prove cleanup succeeded.
 
 Warnings (recorded, not failing): stale non-workflow generated files; a ruleset that does not require an
@@ -934,6 +994,14 @@ process/job/interruption/refusal/pipe/handle/unsafe-result/redaction and native-
 control; no 0.8/5/2.5/4 bound or assertion changes. No new skip class, Docker Desktop,
 WSL, privilege mechanism, third-party action, storage allowance or paid runner is added.
 
+The Conformance runtime follow-up also requires both existing
+`test_conformance_processes.LinuxProcessTests` methods in each platform's full inventory:
+`test_timeout_stops_shell_and_argv_group_members_but_keeps_restoration_fail_closed` and
+`test_an_escaped_descendant_is_not_mistaken_for_a_terminated_owned_tree`.
+These exact IDs must be skipped on Windows and pass on Linux. Missing IDs, unknown skips
+or any other outcome refuse; neither class matching nor observed output defines applicability.
+Their Linux-only decorator and process/ownership assertions are unchanged.
+
 Python `3.14`, Node `24.14.0`/npm `11.9.0`, uv `0.11.33`, Git/Bash and immutable
 GitHub-owned action pins remain required. Actual versions and image build metadata
 must accompany native evidence; the standard runner labels are not image-byte pins.
@@ -994,6 +1062,28 @@ required-case result, completeness, uniqueness, fresh JUnit result or qualificat
 The original refusal is re-raised; ordinary discovery and every existing success gate
 remain unchanged. This canonical observability correction does not recover the hidden
 testcase/cause from the original failed API Windows attempt or authorize consumer adoption.
+
+Infra's shared synthetic PowerShell fixture attaches a bounded exception note to its
+private unittest error report before the fixture directory is cleaned up. On nonzero
+ordinary discovery only, the existing diagnostic projection recognizes the two exact
+owning methods and their fixed command counts (API nine; Infra one or four). It validates
+the hashed method identity, actual `fail_at`, count and completed-call index prefix,
+static exception category, numeric errno, nullable actual exit, and each available
+stdout/stderr byte count and SHA256. Returned captures are complete; exception captures
+are partial; unavailable or malformed captures are explicit, never fabricated empty data.
+Elapsed monotonic seconds cover only that subprocess invocation through return or raise,
+excluding environment/script preparation, assertions and cleanup. The unchanged timeout
+argument is 15 seconds; observed elapsed time is not clipped to it. The at-most-nine
+completed-call indices denote prior returned invocations, not passed assertions.
+
+Only one schema-checked note of at most 2,048 bytes is projected per known failure report,
+within the existing 20-report/eight-source-frame bounds. Missing or invalid/duplicate notes
+are explicitly unavailable or malformed. No stream, message, path, environment value or
+ANSI text is published. These remain untrusted diagnostic hints, never outcome admission.
+Invocation exceptions still abort before `subTest`; returned-result assertions retain
+their exact exit 0/37 and stdout-prefix checks and existing subtest continuation. Original
+nonzero refusal and cleanup are unchanged. This observation path neither recovers nor
+fixes the unobserved cause of native run 38018962358 or the original API Windows failure.
 
 API adoption remains separate and atomic with its owning combined-build interface;
 the Infra extension preserves the frozen API checkpoint bytes and does not become a
