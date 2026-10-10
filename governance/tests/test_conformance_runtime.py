@@ -241,8 +241,8 @@ class RuntimeRenderingTests(unittest.TestCase):
                         previous_profile["install"] = [restore]
                         previous_profile["commands"] = [
                             previous_commands[0], restore, "python scripts/quality_gates.py ci",
-                            previous_commands[-2], "python scripts/privacy_traffic_harness.py self-test",
-                            "python scripts/check_privacy_components.py", previous_commands[-1],
+                            previous_commands[-2], "python scripts/privacy_traffic_harness.py self-test --all-scripts",
+                            "python scripts/check_privacy_components.py",
                         ]
                     if name == "api":
                         self.assertEqual([

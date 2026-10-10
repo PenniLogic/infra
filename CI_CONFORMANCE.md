@@ -581,6 +581,92 @@ not admit this composed privacy unit. The fresh corrected complete hosted job an
 must still each be strictly below 600 seconds. All real RC, signer, proxy runner, journey,
 producer and original-ticket acceptance holds remain.
 
+### Android combined script discovery: source preparation, not adoption
+
+This bounded runtime correction for [#22](https://github.com/PenniLogic/infra/issues/22)
+was first prepared on Infra `919cb46bc261977884975e9f058f702c07fa5af7`, after the
+privacy canonical [#66](https://github.com/PenniLogic/infra/pull/66) was merged.
+Its current-base continuation fast-forwards normally to accepted
+`e601c13091bf156193ba266a6f03fdbae279a69e` from [#76](https://github.com/PenniLogic/infra/pull/76).
+The prior candidate and failure evidence remain sealed history. The accepted API
+source `733c42e177d61c552e5baa9dc01d55c850e1b33f`, Infra source
+`889c5c35a1677ef33899a2e63bc528d3bac802f9` and their generator/history repairs are
+preserved. The current Free/public/no-extra-spend scope does not reinstate excluded
+stronger trusted-producer or absence-enforcement guarantees.
+
+Android's additive provider interface must support the following canonical sequence:
+
+```text
+python scripts/check_repository.py
+python -m pip install -r scripts/privacy_traffic/requirements.txt
+python scripts/quality_gates.py ci
+python scripts/quality_gates.py self-test
+python scripts/privacy_traffic_harness.py self-test --all-scripts
+python scripts/check_privacy_components.py
+```
+
+The combined command replaces the overlapping focused privacy discovery and later
+full script discovery with one complete script suite. Android owns retaining every
+original test and new regression, fresh sanitized privacy observations and a nonzero
+exit for failure in either the privacy or nonprivacy subset. The standalone focused
+`self-test` remains available and exactly recognized during migration; canonical CI
+does not fall back to it on failure or execute it a second time. No marker or cache
+can skip tests. The checker, declared requirements, grouped native CI, native negative
+self-test and separate fresh component inventory remain; neither privacy command
+counts as a replacement build or lint gate.
+
+Discovery-only evidence at Android `ead5986e98fd8b8c15d466b7abec4406486abba8` identifies
+74 unique privacy tests (49 traffic, 16 boundary, 9 snapshot) inside the complete
+224-test suite, including the real 20-second CONNECT and 5-second lock controls.
+Its [native run](https://github.com/PenniLogic/android/actions/runs/37921421045)
+succeeded but took 615 seconds for the job and 617 seconds for the workflow:
+it did not qualify. The first privacy suite's 38.033 seconds is not an isolated
+measurement of its contribution inside the later full suite, nor a promised saving.
+Both actual complete job and whole-workflow durations must still be strictly below
+600 seconds; the unchanged 30-minute hard timeout is not that acceptance criterion.
+
+Only Android's five command-derived artifacts change relative to the current
+accepted base: `AGENTS.md`, `README.md`, `CONTRIBUTING.md`,
+`.github/agent-policy.json` and `.github/workflows/ci.yml`. All other profiles,
+setup, inventory helper, checker, action pins, permissions, toolchains and deadlines
+remain unchanged. Source fixtures check exact command/argv composition, nonzero
+propagation, drift refusal and legacy classification; they neither execute Android's
+suites nor establish native parity.
+
+The source-only candidate leaves Android's registry `workflow_ref` at
+`1a540182f48a492772e5230219306632528c3967`, which renders the prior two-discovery
+sequence. Its workflow-history equality checks must remain RED until Root commits
+reviewed source A and follows with the real A reference and exact source-reference
+assertions; no future SHA or acceptance is invented here. Root owns publication,
+independent intake and coordinated Android regeneration after the paired provider
+supports this interface. Use the documented generator in the consumer's owned
+checkout, never manually patch its generated files. No consumer adoption, hosted
+rerun, hook/protection change, paid service or issue closure occurs in this source
+unit. Rollback is a reviewed source/reference reversal and corresponding consumer
+regeneration, not a runtime success-shaped fallback.
+
+#### PR77 native test-expectation correction
+
+The prebinding state above is historical: actual source
+`6867bd8f302e5ca607063dcfeb1a12b382e948fa` and binding
+`50deeed66a5981f5e17441c9038c157b5d566984` now exist, with the two real history
+equalities green locally. Their earlier RED evidence remains unchanged.
+Draft [#77](https://github.com/PenniLogic/infra/pull/77)'s first
+[native attempt](https://github.com/PenniLogic/infra/actions/runs/38013722196)
+failed two command-binding fixtures on both Linux and Windows. Its 336-second
+whole-workflow duration is a failed-run observation, not qualification.
+
+Local reproduction on exact binding B confirmed a stale literal command count
+(49 versus 48) and a historical profile expectation missing only the Android
+composition after its existing API Node adjustment. The test-only repair retains
+an independent 48-command expectation and removal/stub cases for every command.
+It asserts the exact old Android command list from immutable `dbdf2e27144e60b11aed54ed1e576d496a928ec3`
+before applying only the intended transformation in memory. Complete profile
+equality, the original historical protected-profile refusal and an isolated
+API Node refusal remain. No source-admission implementation, generated consumer,
+reference, native gate or deadline is changed; fresh native acceptance remains
+Root-owned and pending.
+
 ## Infra-only trusted PR command-binding bootstrap
 
 This is bounded preparation for [#24](https://github.com/PenniLogic/infra/issues/24) and
