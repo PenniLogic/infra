@@ -169,10 +169,20 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
                     with self.subTest(repository=name, setup=setup):
                         self.assertEqual(expected, generator.workflow(name, setup=setup))
         qualifier_source = "5795155323e7ff9899fb8cf2846ab6646fb0f141"
+        accepted_qualifier = "f85f50f41b31a32838e9d4326947bb437140446a"
         self.assertEqual(
             support.git(support.GOVERNANCE.parent, "show", f"{qualifier_source}:governance/templates/qualify_windows.py"),
+            support.git(support.GOVERNANCE.parent, "show", f"{accepted_qualifier}:governance/templates/qualify_windows.py"),
+        )
+        current_source = "f85d4cd7f7d5a1c14669d8040f282437ceb5ef7f"
+        current_qualifier = support.git(
+            support.GOVERNANCE.parent, "show", f"{current_source}:governance/templates/qualify_windows.py",
+        )
+        self.assertEqual(
+            current_qualifier,
             (support.GOVERNANCE / "templates/qualify_windows.py").read_text(encoding="utf-8"),
         )
+        self.assertEqual(current_qualifier, generator.artifacts("api")["scripts/qualify_windows.py"])
 
 
 class WindowsOutcomeTests(unittest.TestCase):
