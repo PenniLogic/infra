@@ -20,6 +20,13 @@ import qualify as qualification
 generator = support.generator
 MARKER = "PRIVATE-FIXTURE-PAYLOAD-DO-NOT-PRINT"
 SOURCE = ("a" * 40, "b" * 40, [{"path_sha256": "c" * 64, "mode": "100644", "git_blob": "d" * 40}])
+LINUX_PROCESS_IDS = frozenset({
+    "test_conformance_processes.LinuxProcessTests."
+    "test_timeout_stops_shell_and_argv_group_members_but_keeps_restoration_fail_closed",
+    "test_conformance_processes.LinuxProcessTests."
+    "test_an_escaped_descendant_is_not_mistaken_for_a_terminated_owned_tree",
+})
+LINUX_PROCESS_SKIP = "skipped 'native Linux owned-group/escaped-descendant evidence'"
 
 
 class InfraQualificationWorkflowTests(unittest.TestCase):
@@ -94,12 +101,12 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
 
 class InfraDiscoveryTests(unittest.TestCase):
     def exercise(self, system, suite, *, statuses=None, missing=False, exit_code=0, cleanup=True,
-                 changed_source=False, report=True, summary=None):
-        names = sorted(qualification.REQUIRED[suite] | {"test_fixture.Example.test_extra"})
+                 changed_source=False, report=True, summary=None, extra_names=(), omitted=()):
+        names = sorted(qualification.REQUIRED[suite] | {"test_fixture.Example.test_extra"} | set(extra_names))
         inventory = {qualification.identifier(name): name for name in names}
         allowed = qualification.SKIPS[system][suite]
         statuses = statuses or {}
-        observed = names[:-1] if missing else names
+        observed = [name for name in (names[:-1] if missing else names) if name not in omitted]
         lines = []
         for name in observed:
             status = statuses.get(name, "skipped 'platform'" if name in allowed else "ok")
@@ -152,6 +159,90 @@ class InfraDiscoveryTests(unittest.TestCase):
                     self.assertEqual(inventory, outcomes)
                     self.assertTrue(records[-1]["ok"])
                     self.assertEqual(len(qualification.SKIPS[system][suite]), records[-1]["skipped"])
+
+    def test_linux_process_ids_have_exact_platform_outcomes(self):
+        for system, status, expected in (("win32", LINUX_PROCESS_SKIP, "skipped"), ("linux", "ok", "passed")):
+            with self.subTest(system=system):
+                records = self.exercise(
+                    system, "governance", extra_names=LINUX_PROCESS_IDS,
+                    statuses=dict.fromkeys(LINUX_PROCESS_IDS, status),
+                )
+                outcomes = {row["id_sha256"]: row["outcome"] for row in records if row["event"] == "test_outcome"}
+                for name in LINUX_PROCESS_IDS:
+                    self.assertEqual(expected, outcomes[qualification.identifier(name)])
+                self.assertTrue(records[-1]["ok"])
+                if system == "win32":
+                    self.assertEqual(LINUX_PROCESS_IDS, qualification.SKIPS[system]["governance"])
+                    self.assertEqual(2, records[-1]["skipped"])
+                else:
+                    self.assertTrue(LINUX_PROCESS_IDS.isdisjoint(qualification.SKIPS[system]["governance"]))
+
+    def test_full_inventory_requires_each_linux_process_id_on_both_platforms(self):
+        class InventoryCase(unittest.TestCase):
+            def __init__(self, name):
+                super().__init__()
+                self.name = name
+
+            def id(self):
+                return self.name
+
+            def runTest(self):
+                self.fail("inventory must not execute test bodies")
+
+        names = qualification.REQUIRED["governance"] | LINUX_PROCESS_IDS
+        omissions = [set(), set(LINUX_PROCESS_IDS)] + [{name} for name in sorted(LINUX_PROCESS_IDS)]
+        for system in ("win32", "linux"):
+            for omitted in omissions:
+                loader = mock.Mock(errors=[])
+                loader.discover.return_value = unittest.TestSuite(InventoryCase(name) for name in sorted(names - omitted))
+                with self.subTest(system=system, omitted=sorted(omitted)), \
+                        mock.patch.object(qualification.sys, "platform", system), \
+                        mock.patch.object(qualification.unittest, "TestLoader", return_value=loader):
+                    if omitted:
+                        with self.assertRaisesRegex(qualification.Refused, "full-discovery-inventory-is-incomplete"):
+                            qualification.discovery_inventory(Path.cwd(), "governance")
+                    else:
+                        inventory = qualification.discovery_inventory(Path.cwd(), "governance")
+                        self.assertEqual(names, set(inventory.values()))
+
+    def test_linux_process_outcomes_cannot_be_omitted_on_either_platform(self):
+        for system, status in (("win32", LINUX_PROCESS_SKIP), ("linux", "ok")):
+            for name in sorted(LINUX_PROCESS_IDS):
+                with self.subTest(system=system, name=name), \
+                        self.assertRaisesRegex(qualification.Refused, "executed-test-ids-differ-from-full-discovery"):
+                    self.exercise(system, "governance", extra_names=LINUX_PROCESS_IDS, omitted={name},
+                                  statuses=dict.fromkeys(LINUX_PROCESS_IDS, status))
+
+    def test_linux_process_wrong_platform_outcomes_refuse_even_with_zero_exit(self):
+        for system, status, wrong in (("win32", LINUX_PROCESS_SKIP, "ok"), ("linux", "ok", LINUX_PROCESS_SKIP)):
+            for name in sorted(LINUX_PROCESS_IDS):
+                for invalid in (wrong, "FAIL", "ERROR", "expected failure", "unexpected success"):
+                    statuses = {**dict.fromkeys(LINUX_PROCESS_IDS, status), name: invalid}
+                    with self.subTest(system=system, name=name, invalid=invalid), \
+                            self.assertRaisesRegex(qualification.Refused, "test-outcome-differs-from-exact-platform-applicability"):
+                        self.exercise(system, "governance", extra_names=LINUX_PROCESS_IDS, statuses=statuses)
+
+    def test_unknown_linux_class_and_unrelated_skips_remain_refused(self):
+        for system, status in (("win32", LINUX_PROCESS_SKIP), ("linux", "ok")):
+            for name in ("test_conformance_processes.LinuxProcessTests.test_unknown", "test_fixture.Example.test_extra"):
+                with self.subTest(system=system, name=name), \
+                        self.assertRaisesRegex(qualification.Refused, "test-outcome-differs-from-exact-platform-applicability"):
+                    self.exercise(system, "governance", extra_names=LINUX_PROCESS_IDS | {name},
+                                  statuses={**dict.fromkeys(LINUX_PROCESS_IDS, status), name: LINUX_PROCESS_SKIP})
+
+    def test_linux_process_nonzero_failures_remain_primary_on_both_platforms(self):
+        for system, status in (("win32", LINUX_PROCESS_SKIP), ("linux", "ok")):
+            for name in sorted(LINUX_PROCESS_IDS):
+                for invalid, kind in (("FAIL", "failures"), ("ERROR", "errors")):
+                    with self.subTest(system=system, name=name, invalid=invalid), \
+                            mock.patch.object(qualification, "python_outcomes") as parser:
+                        with self.assertRaisesRegex(qualification.Refused, "ordinary-discovery-or-setup-teardown-failed"):
+                            self.exercise(
+                                system, "governance", extra_names=LINUX_PROCESS_IDS, exit_code=1,
+                                statuses={**dict.fromkeys(LINUX_PROCESS_IDS, status), name: invalid},
+                                summary=f"FAILED ({kind}=1)",
+                            )
+                        parser.assert_not_called()
 
     def test_missing_failed_skipped_cleanup_and_setup_teardown_results_refuse(self):
         cases = [

@@ -47,6 +47,12 @@ WINDOWS_GOVERNANCE = frozenset(
     "test_conformance_defects.FakeRunnerTests.test_a_real_locked_backup_directory_cannot_be_reported_as_proved",
     "test_conformance_defects.EnvironmentTests.test_shell_probes_do_not_resolve_commands_from_the_consumer_working_directory",
 }
+LINUX_GOVERNANCE = frozenset({
+    "test_conformance_processes.LinuxProcessTests."
+    "test_timeout_stops_shell_and_argv_group_members_but_keeps_restoration_fail_closed",
+    "test_conformance_processes.LinuxProcessTests."
+    "test_an_escaped_descendant_is_not_mistaken_for_a_terminated_owned_tree",
+})
 WINDOWS_SCRIPTS = frozenset("test_bootstrap.DockerCommandTests." + name for name in (
     "test_failed_job_assignment_fails_closed_and_stops_the_command",
     "test_refused_job_creation_fails_closed_before_anything_starts",
@@ -74,9 +80,12 @@ NATIVE_LINKS = {
     "test_money_source_materialization.MaterializationTests."
     "test_symbolic_file_input_is_refused_when_native_symlinks_are_available",
 }
-REQUIRED = {"governance": WINDOWS_GOVERNANCE | NATIVE_LINKS, "scripts": WINDOWS_SCRIPTS | STACK_TESTS | {FLOCK}}
+REQUIRED = {
+    "governance": WINDOWS_GOVERNANCE | LINUX_GOVERNANCE | NATIVE_LINKS,
+    "scripts": WINDOWS_SCRIPTS | STACK_TESTS | {FLOCK},
+}
 SKIPS = {
-    "win32": {"governance": frozenset(), "scripts": STACK_TESTS | {FLOCK}},
+    "win32": {"governance": LINUX_GOVERNANCE, "scripts": STACK_TESTS | {FLOCK}},
     "linux": {"governance": WINDOWS_GOVERNANCE, "scripts": WINDOWS_SCRIPTS},
 }
 

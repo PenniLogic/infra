@@ -994,6 +994,14 @@ process/job/interruption/refusal/pipe/handle/unsafe-result/redaction and native-
 control; no 0.8/5/2.5/4 bound or assertion changes. No new skip class, Docker Desktop,
 WSL, privilege mechanism, third-party action, storage allowance or paid runner is added.
 
+The Conformance runtime follow-up also requires both existing
+`test_conformance_processes.LinuxProcessTests` methods in each platform's full inventory:
+`test_timeout_stops_shell_and_argv_group_members_but_keeps_restoration_fail_closed` and
+`test_an_escaped_descendant_is_not_mistaken_for_a_terminated_owned_tree`.
+These exact IDs must be skipped on Windows and pass on Linux. Missing IDs, unknown skips
+or any other outcome refuse; neither class matching nor observed output defines applicability.
+Their Linux-only decorator and process/ownership assertions are unchanged.
+
 Python `3.14`, Node `24.14.0`/npm `11.9.0`, uv `0.11.33`, Git/Bash and immutable
 GitHub-owned action pins remain required. Actual versions and image build metadata
 must accompany native evidence; the standard runner labels are not image-byte pins.
