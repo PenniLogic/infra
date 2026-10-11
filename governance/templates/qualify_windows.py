@@ -29,6 +29,11 @@ DIAGNOSTIC_FRAME_LIMIT = 8
 DIAGNOSTIC_BYTE_LIMIT = 4096
 PROCESS_BUDGET_PREFIX = b"process_budget_state="
 PROCESS_BUDGET_UNAVAILABLE = {"schema": "pennilogic.process-budget-state/1", "status": "unavailable"}
+PROCESS_BUDGET_JOB_PREFIX = b"process_budget_job_state="
+PROCESS_BUDGET_JOB_UNAVAILABLE = {
+    "schema": "pennilogic.process-budget-job-state/1",
+    "accounting": {"status": "unavailable"}, "members": {"status": "unavailable"},
+}
 PYTHON_ERROR_HEADER = re.compile(
     rb"(FAIL|ERROR): (test[A-Za-z0-9_]*) \(([A-Za-z_][A-Za-z0-9_.]*)\)"
 )
@@ -165,6 +170,53 @@ def process_budget_note(line):
     return value
 
 
+def process_budget_job_note(line):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate-note-key")
+            result[key] = value
+        return result
+
+    unavailable = {key: dict(value) if isinstance(value, dict) else value
+                   for key, value in PROCESS_BUDGET_JOB_UNAVAILABLE.items()}
+    if len(line) > 512 or not line.isascii() or not line.startswith(PROCESS_BUDGET_JOB_PREFIX):
+        return unavailable
+    try:
+        value = json.loads(line[len(PROCESS_BUDGET_JOB_PREFIX):], object_pairs_hook=unique)
+    except (UnicodeError, ValueError, RecursionError):
+        return unavailable
+    if (not isinstance(value, dict) or set(value) != {"schema", "accounting", "members"}
+            or value["schema"] != unavailable["schema"]
+            or line != PROCESS_BUDGET_JOB_PREFIX + json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")):
+        return unavailable
+    accounting, members = value["accounting"], value["members"]
+    if not isinstance(accounting, dict) or not isinstance(members, dict):
+        return unavailable
+    if accounting.get("status") == "observed":
+        if (set(accounting) != {"status", "total_assigned", "active"}
+                or any(type(accounting[key]) is not int or not 0 <= accounting[key] <= 4294967295
+                       for key in ("total_assigned", "active"))
+                or accounting["active"] > accounting["total_assigned"]):
+            return unavailable
+    elif accounting not in ({"status": "unavailable"}, {"status": "unsupported"}):
+        return unavailable
+    if members.get("status") in ("observed", "partial"):
+        roles = ("bootstrap", "system_approved_shell", "other", "unclassified")
+        if (set(members) != {"status", "listed", *roles}
+                or any(type(members[key]) is not int or not 0 <= members[key] <= 16
+                       for key in ("listed", *roles))
+                or members["bootstrap"] > 1 or sum(members[key] for key in roles) != members["listed"]
+                or (members["status"] == "observed" and members["unclassified"] != 0)):
+            return unavailable
+        if accounting["status"] == "observed" and members["listed"] != accounting["active"]:
+            members["status"] = "partial"
+    elif members not in ({"status": "unavailable"}, {"status": "unsupported"}, {"status": "oversized"}):
+        return unavailable
+    return value
+
+
 def python_error_diagnostics(root, data, parser):
     selected = {record["id_sha256"]: None for record in parser["negative_prefix"] if record["outcome"] == "error"}
     if not selected:
@@ -205,16 +257,18 @@ def python_error_diagnostics(root, data, parser):
             end + 3 < len(lines) and lines[end] == divider and PYTHON_SUMMARY.fullmatch(lines[end + 1]) is not None
             and lines[end + 2] == b"" and PYTHON_TERMINAL.fullmatch(lines[end + 3]) is not None
         )
-        frames, exception, malformed, truncated, notes = [], None, False, False, []
+        frames, exception, malformed, truncated, notes, job_notes = [], None, False, False, [], []
         last_content = next((line for line in reversed(lines[start:end]) if line), b"")
-        for line in lines[start:end]:
+        for position, line in enumerate(lines[start:end], start):
             if line in (
                 traceback_header, b"During handling of the above exception, another exception occurred:",
                 b"The above exception was the direct cause of the following exception:",
             ):
                 malformed = True
             if line.startswith(PROCESS_BUDGET_PREFIX):
-                notes.append((line, exception is not None))
+                notes.append((line, exception is not None, position))
+            if line.startswith(PROCESS_BUDGET_JOB_PREFIX):
+                job_notes.append((line, exception is not None, position))
             if exception is not None:
                 continue
             if line.startswith(b"  File "):
@@ -251,6 +305,13 @@ def python_error_diagnostics(root, data, parser):
             state = process_budget_note(notes[0][0]) if valid else dict(PROCESS_BUDGET_UNAVAILABLE)
             detail["process_budget_state"] = state
             detail["incomplete"] |= state["status"] == "unavailable"
+        if job_notes:
+            valid = (len(job_notes) == 1 and job_notes[0][1] and len(notes) == 1 and notes[0][1]
+                     and notes[0][0] == last_content and job_notes[0][2] + 1 == notes[0][2]
+                     and boundary and not malformed and bool(frames))
+            state = process_budget_job_note(job_notes[0][0] if valid else b"")
+            detail["process_budget_job_state"] = state
+            detail["incomplete"] |= any(state[part]["status"] != "observed" for part in ("accounting", "members"))
         selected[digest] = detail
     remaining, records = DIAGNOSTIC_FRAME_LIMIT, []
     for record in parser["negative_prefix"]:
@@ -268,21 +329,25 @@ def python_error_diagnostics(root, data, parser):
 
 def python_diagnostic_json(diagnostic):
     encoded = json.dumps(diagnostic, sort_keys=True)
-    for replacement in (PROCESS_BUDGET_UNAVAILABLE, None):
-        for record in reversed(diagnostic["parser"]["negative_prefix"]):
-            if len(encoded.encode("utf-8")) < DIAGNOSTIC_BYTE_LIMIT:
-                return encoded
-            detail = record.get("error", {})
-            if "process_budget_state" not in detail:
-                continue
-            if replacement is None:
-                del detail["process_budget_state"]
-            elif detail["process_budget_state"] == replacement:
-                continue
-            else:
-                detail["process_budget_state"] = dict(replacement)
-            detail.update(incomplete=True, truncated=True)
-            encoded = json.dumps(diagnostic, sort_keys=True)
+    for field, unavailable in (
+        ("process_budget_job_state", PROCESS_BUDGET_JOB_UNAVAILABLE),
+        ("process_budget_state", PROCESS_BUDGET_UNAVAILABLE),
+    ):
+        for replacement in (unavailable, None):
+            for record in reversed(diagnostic["parser"]["negative_prefix"]):
+                if len(encoded.encode("utf-8")) < DIAGNOSTIC_BYTE_LIMIT:
+                    return encoded
+                detail = record.get("error", {})
+                if field not in detail:
+                    continue
+                if replacement is None:
+                    del detail[field]
+                elif detail[field] == replacement:
+                    continue
+                else:
+                    detail[field] = dict(replacement)
+                detail.update(incomplete=True, truncated=True)
+                encoded = json.dumps(diagnostic, sort_keys=True)
     return encoded
 
 
