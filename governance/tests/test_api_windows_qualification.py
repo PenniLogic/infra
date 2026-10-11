@@ -199,7 +199,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             support.git(support.GOVERNANCE.parent, "show", f"{historical_source}:governance/templates/qualify_windows.py"),
             support.git(support.GOVERNANCE.parent, "show", f"{historical_accepted}:governance/templates/qualify_windows.py"),
         )
-        current_digest = "7dd5d6fb0acf39825a360c7fa6d0f48e1bb7dd1a8927c9004d3c988f52029346"
+        current_digest = "3e5139775d2f07011a14358f1d789223084bfdabf2dcc1bb82d49360a463a9b9"
         current_template = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
         current_generated = generator.artifacts("api")["scripts/qualify_windows.py"].encode("utf-8")
         self.assertEqual(current_digest, hashlib.sha256(current_template).hexdigest())
@@ -551,7 +551,7 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
             )
         return diagnostic, captured
 
-    def real_refusal(self, body, exit_code, negative, process_state=None, job_state=None):
+    def real_refusal(self, body, exit_code, negative, process_state=None, job_state=None, capture_state=None):
         identity = "test_diagnostic.DiagnosticCases.test_a_primary"
         real_run = subprocess.run
         with tempfile.TemporaryDirectory(prefix="windows-real-refusal-") as temporary:
@@ -615,6 +615,9 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
                 if job_state is not None:
                     fields.add("process_budget_job_state")
                     self.assertEqual(job_state, detail.get("process_budget_job_state"))
+                if capture_state is not None:
+                    fields.add("process_budget_capture_state")
+                    self.assertEqual(capture_state, detail.get("process_budget_capture_state"))
                 self.assertEqual(fields, set(detail))
                 expected["error"] = detail
             self.assertEqual([expected], parser["negative_prefix"])
@@ -662,6 +665,290 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
 
     def job_note(self, state):
         return "process_budget_job_state=" + json.dumps(state, sort_keys=True, separators=(",", ":"))
+
+    def capture_state(self, mode="separate", **changes):
+        streams = {
+            name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            for name, data in (("stdout", b"inner-out"), ("stderr", b"" if mode == "merged" else b"inner-err"))
+        }
+        return {
+            "schema": "pennilogic.process-budget-capture-state/1", "status": "observed",
+            "scope": "snapshot", "complete": False, "mode": mode, **streams, **changes,
+        }
+
+    def capture_note(self, state):
+        return "process_budget_capture_state=" + json.dumps(state, sort_keys=True, separators=(",", ":"))
+
+    def test_real_capture_notes_transport_inner_snapshots_without_repairing_budget_refusal(self):
+        unavailable = {"schema": "pennilogic.process-budget-capture-state/1", "status": "unavailable"}
+        legacy, job = self.budget_state(), self.job_state()
+        for state, include_job in itertools.product(
+            (self.capture_state(), self.capture_state("merged"), unavailable), (False, True),
+        ):
+            note, final = self.capture_note(state), self.budget_note(legacy)
+            notes = [note] + ([self.job_note(job)] if include_job else []) + [final]
+            with self.subTest(state=state, job=include_job):
+                diagnostic, captured = self.real_refusal(
+                    "error = type('BudgetExceeded', (TimeoutError,), {})(PAYLOAD); "
+                    + "; ".join(f"error.add_note({value!r})" for value in notes) + "; raise error",
+                    1, "error", process_state=legacy, job_state=job if include_job else None, capture_state=state,
+                )
+                lines = captured["stderr"].splitlines()
+                for value in notes:
+                    self.assertEqual(1, lines.count(value.encode("ascii")))
+                start = lines.index(note.encode("ascii"))
+                self.assertEqual([value.encode("ascii") for value in notes], lines[start:start + len(notes)])
+                detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                self.assertEqual("unclassified", detail["exception"])
+                self.assertIs(detail["incomplete"], True)
+                self.assertIs(detail["truncated"], False)
+                self.assertNotIn("BudgetExceeded", json.dumps(diagnostic))
+                for name in ("stdout", "stderr"):
+                    if state["status"] == "observed":
+                        self.assertNotEqual(diagnostic[name], state[name])
+                self.assertNotIn("inner-out", json.dumps(diagnostic))
+                self.assertNotIn("inner-err", json.dumps(diagnostic))
+
+    def test_capture_snapshot_modes_counts_and_completeness_keep_exact_bounds(self):
+        empty = {"bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()}
+        maximum = {"bytes": 18446744073709551615, "sha256": "f" * 64}
+        unavailable = {"schema": "pennilogic.process-budget-capture-state/1", "status": "unavailable"}
+        states = [unavailable]
+        for mode in ("merged", "separate"):
+            for stdout, stderr in itertools.product((empty, maximum), repeat=2):
+                if mode == "merged" and stderr != empty:
+                    continue
+                states.append(self.capture_state(mode, stdout=stdout, stderr=stderr))
+        self.assertEqual(106, len(self.capture_note(unavailable).encode("ascii")))
+        self.assertEqual(389, len(self.capture_note(self.capture_state(stdout=maximum, stderr=maximum)).encode("ascii")))
+        name, legacy, job = "test_fixture.Cases.test_error", self.budget_state(), self.job_state()
+        with tempfile.TemporaryDirectory(prefix="windows-capture-state-counts-") as temporary:
+            root = Path(temporary)
+            for state in states:
+                with self.subTest(state=state):
+                    original = copy.deepcopy(state)
+                    note = self.capture_note(state)
+                    self.assertEqual(state, qualification.process_budget_capture_note(note.encode("ascii")))
+                    body = (f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+                            f"RuntimeError: {MARKER}\n{note}\n{self.job_note(job)}\n{self.budget_note(legacy)}\n")
+                    diagnostic = self.report_refusal(
+                        root, self.exception_report(root, [(name, "ERROR")], [(name, body)]), exit_code=0,
+                    )
+                    detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                    self.assertEqual(state, detail["process_budget_capture_state"])
+                    self.assertEqual(legacy, detail["process_budget_state"])
+                    self.assertEqual(job, detail["process_budget_job_state"])
+                    self.assertEqual(original, state)
+                    self.assertEqual("RuntimeError", detail["exception"])
+                    self.assertIs(detail["incomplete"], True)
+                    self.assertIs(detail["truncated"], False)
+                    self.assertIs(diagnostic["inventory_complete"], False)
+
+    def test_malformed_capture_notes_preserve_independently_valid_older_metadata(self):
+        state, legacy, job = self.capture_state(), self.budget_state(), self.job_state()
+        unavailable = {"schema": "pennilogic.process-budget-capture-state/1", "status": "unavailable"}
+        invalid = [None, [], True, 1, MARKER]
+        invalid.extend({key: value for key, value in state.items() if key != missing} for missing in state)
+        invalid.extend((
+            {**state, "extra": MARKER}, {**state, "schema": "pennilogic.process-budget-capture-state/2"},
+            {**state, "status": "unavailable"}, {**unavailable, "mode": "separate"},
+        ))
+        for key, values in (
+            ("complete", (True, 0, 1, None, "false", [], {})),
+            ("mode", ("", "combined", None, True, 0, [], {})),
+            ("scope", ("complete", None, True, [], {})),
+            ("status", ("partial", "unsupported", None, True, [], {})),
+        ):
+            invalid.extend({**state, key: value} for value in values)
+        for name in ("stdout", "stderr"):
+            invalid.extend({**state, name: value} for value in (None, [], True, 1, MARKER))
+            invalid.extend({**state, name: {key: value for key, value in state[name].items() if key != missing}}
+                           for missing in state[name])
+            invalid.append({**state, name: {**state[name], "extra": MARKER}})
+            invalid.extend({**state, name: {**state[name], "bytes": value}}
+                           for value in (True, False, -1, 18446744073709551616, 1.0, None, [], {}, "9"))
+            invalid.extend({**state, name: {**state[name], "sha256": value}} for value in (
+                None, [], {}, True, 64, "F" * 64, "g" * 64, "f" * 63, "f" * 65, "f" * 63 + "\n", MARKER,
+            ))
+            invalid.append({**state, name: {"bytes": 0, "sha256": "f" * 64}})
+        invalid.append({**state, "mode": "merged"})
+        note = self.capture_note(state)
+        notes = [self.capture_note(value) for value in invalid]
+        notes.extend((
+            note.replace('"bytes":9', '"bytes":9,"bytes":9', 1),
+            note.replace('"status":"observed"', '"status":"observed","status":"observed"'),
+            note.replace('"complete":false', '"complete": false'),
+            note.replace('"snapshot"', '"snap\\u0073hot"'),
+            note.replace('"bytes":9', '"bytes":NaN', 1),
+            note.replace('"bytes":9', '"bytes":Infinity', 1),
+            note.replace('"bytes":9', '"bytes":1e1000', 1),
+            "process_budget_capture_state=" + json.dumps(state, separators=(",", ":")),
+            'process_budget_capture_state={"schema":"' + MARKER + '\u00e9"}',
+            self.capture_note({**state, "schema": MARKER + "\u00e9"}),
+            "process_budget_capture_state={", note + " " * 512,
+        ))
+        name = "test_fixture.Cases.test_error"
+        with tempfile.TemporaryDirectory(prefix="windows-capture-state-invalid-") as temporary:
+            root = Path(temporary)
+            for index, candidate in enumerate(notes):
+                with self.subTest(candidate=index):
+                    body = (f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+                            f"RuntimeError: {MARKER}\n{candidate}\n{self.job_note(job)}\n{self.budget_note(legacy)}\n")
+                    diagnostic = self.report_refusal(root, self.exception_report(root, [(name, "ERROR")], [(name, body)]))
+                    detail = diagnostic["parser"]["negative_prefix"][0]["error"]
+                    self.assertEqual(unavailable, detail["process_budget_capture_state"])
+                    self.assertEqual(job, detail["process_budget_job_state"])
+                    self.assertEqual(legacy, detail["process_budget_state"])
+                    self.assertIs(detail["incomplete"], True)
+                    self.assertIs(detail["truncated"], False)
+
+    def test_capture_note_full_byte_bound_precedes_decoding(self):
+        note = self.capture_note(self.capture_state()).encode("ascii")
+        unavailable = {"schema": "pennilogic.process-budget-capture-state/1", "status": "unavailable"}
+        for length, calls in ((512, 1), (513, 0)):
+            candidate = note + b" " * (length - len(note))
+            with self.subTest(bytes=length), mock.patch.object(qualification.json, "loads", wraps=json.loads) as loads:
+                self.assertEqual(unavailable, qualification.process_budget_capture_note(candidate))
+                self.assertEqual(calls, loads.call_count)
+        for candidate in (b"", b"wrong_prefix={}", note + b"\xff"):
+            with self.subTest(candidate=candidate), mock.patch.object(qualification.json, "loads") as loads:
+                self.assertEqual(unavailable, qualification.process_budget_capture_note(candidate))
+                loads.assert_not_called()
+
+    def test_capture_note_requires_contiguous_tail_without_changing_older_note_rules(self):
+        state, legacy, job = self.capture_state(), self.budget_state(), self.job_state()
+        unavailable = {"schema": "pennilogic.process-budget-capture-state/1", "status": "unavailable"}
+        job_unavailable = self.job_state(accounting={"status": "unavailable"}, members={"status": "unavailable"})
+        legacy_unavailable = {"schema": "pennilogic.process-budget-state/1", "status": "unavailable"}
+        note, middle, final = self.capture_note(state), self.job_note(job), self.budget_note(legacy)
+        name = "test_fixture.Cases.test_error"
+        with tempfile.TemporaryDirectory(prefix="windows-capture-state-order-") as temporary:
+            root = Path(temporary)
+            frame = f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+            for label, body, expected_job, expected_legacy in (
+                ("duplicate", f"RuntimeError\n{note}\n{note}\n{middle}\n{final}\n", job, legacy),
+                ("before-exception", f"{note}\nRuntimeError\n{middle}\n{final}\n", job, legacy),
+                ("blank-before-job", f"RuntimeError\n{note}\n\n{middle}\n{final}\n", job, legacy),
+                ("content-before-job", f"RuntimeError\n{note}\n{MARKER}\n{middle}\n{final}\n", job, legacy),
+                ("blank-before-v1", f"RuntimeError\n{note}\n\n{final}\n", None, legacy),
+                ("between-job-v1", f"RuntimeError\n{middle}\n{note}\n{final}\n", job_unavailable, legacy),
+                ("after-v1", f"RuntimeError\n{middle}\n{final}\n{note}\n", job_unavailable, legacy_unavailable),
+                ("duplicate-job", f"RuntimeError\n{note}\n{middle}\n{middle}\n{final}\n", job_unavailable, legacy),
+                ("duplicate-v1", f"RuntimeError\n{note}\n{final}\n{final}\n", None, legacy_unavailable),
+                ("missing-v1", f"RuntimeError\n{note}\n{middle}\n", job_unavailable, None),
+            ):
+                with self.subTest(report=label):
+                    detail = self.report_refusal(
+                        root, self.exception_report(root, [(name, "ERROR")], [(name, frame + body)]),
+                    )["parser"]["negative_prefix"][0]["error"]
+                    self.assertEqual(unavailable, detail["process_budget_capture_state"])
+                    self.assertEqual(expected_job, detail.get("process_budget_job_state"))
+                    self.assertEqual(expected_legacy, detail.get("process_budget_state"))
+                    self.assertIs(detail["incomplete"], True)
+            for malformed_job, malformed_v1 in ((True, False), (False, True)):
+                with self.subTest(job=malformed_job, v1=malformed_v1):
+                    body = (frame + f"RuntimeError\n{note}\n"
+                            + ("process_budget_job_state={}" if malformed_job else middle) + "\n"
+                            + ("process_budget_state={}" if malformed_v1 else final) + "\n")
+                    detail = self.report_refusal(
+                        root, self.exception_report(root, [(name, "ERROR")], [(name, body)]),
+                    )["parser"]["negative_prefix"][0]["error"]
+                    self.assertEqual(state, detail["process_budget_capture_state"])
+                    self.assertEqual(job_unavailable if malformed_job else job, detail["process_budget_job_state"])
+                    self.assertEqual(legacy_unavailable if malformed_v1 else legacy, detail["process_budget_state"])
+            for suffix in ("", note + "\n"):
+                report = self.exception_report(
+                    root, [(name, "ERROR")], [(name, frame + f"RuntimeError\n{middle}\n{final}\n")],
+                )
+                detail = self.report_refusal(root, report + suffix.encode("ascii"))["parser"]["negative_prefix"][0]["error"]
+                self.assertNotIn("process_budget_capture_state", detail)
+                self.assertEqual(job, detail["process_budget_job_state"])
+                self.assertEqual(legacy, detail["process_budget_state"])
+                self.assertIs(detail["incomplete"], False)
+
+    def test_capture_notes_cannot_cross_error_identities_or_broken_reports(self):
+        first, second, passed, failed = [f"test_fixture.Cases.test_{name}" for name in ("a", "b", "c", "d")]
+        state, job, legacy = self.capture_state(), self.job_state(), self.budget_state()
+        note, middle, final = self.capture_note(state), self.job_note(job), self.budget_note(legacy)
+        with tempfile.TemporaryDirectory(prefix="windows-capture-state-identity-") as temporary:
+            root = Path(temporary)
+            frame = f'  File "{root / "tests" / "fixture.py"}", line 19, in test_error\n'
+            body = frame + f"RuntimeError\n{note}\n{middle}\n{final}\n"
+            report = self.exception_report(
+                root, [(first, "ERROR"), (second, "ERROR"), (passed, "ok"), (failed, "FAIL")],
+                [(passed, body), (second, body), (failed, body), (first, frame + f"RuntimeError\n{middle}\n{final}\n")],
+            )
+            prefix = self.report_refusal(root, report)["parser"]["negative_prefix"]
+            self.assertNotIn("process_budget_capture_state", prefix[0]["error"])
+            self.assertEqual(state, prefix[1]["error"]["process_budget_capture_state"])
+            self.assertNotIn("error", prefix[2])
+            good = self.exception_report(root, [(first, "ERROR")], [(first, body)])
+            for label, candidate in (
+                ("duplicate-error", self.exception_report(root, [(first, "ERROR")], [(first, body), (first, body)])),
+                ("unclosed", self.exception_report(root, [(first, "ERROR")], [(first, body)], terminal=False)),
+                ("missing-traceback", good.replace(b"Traceback (most recent call last):\n", b"")),
+                ("missing-frames", good.replace(frame.encode(), b"")),
+                ("missing-exception", good.replace(b"RuntimeError\n", b"")),
+                ("mismatched-method", good.replace(b"ERROR: test_a (", b"ERROR: test_wrong (")),
+                ("wrong-status", good.replace(b"ERROR: test_a (", b"FAIL: test_a (")),
+                ("chain", good.replace(body.encode(), (body + "During handling of the above exception, "
+                    "another exception occurred:\nTraceback (most recent call last):\n" + frame + "ValueError\n").encode())),
+            ):
+                with self.subTest(report=label):
+                    detail = self.report_refusal(root, candidate)["parser"]["negative_prefix"][0]["error"]
+                    self.assertNotEqual(state, detail.get("process_budget_capture_state"))
+                    self.assertIs(detail["incomplete"], True)
+            detail = self.report_refusal(root, good.replace(b"\n", b"\r\n"))["parser"]["negative_prefix"][0]["error"]
+            self.assertEqual(state, detail["process_budget_capture_state"])
+            self.assertEqual(job, detail["process_budget_job_state"])
+            self.assertEqual(legacy, detail["process_budget_state"])
+
+    def test_capture_snapshots_shed_globally_before_job_or_v1_metadata(self):
+        stream = {"bytes": 18446744073709551615, "sha256": "f" * 64}
+        state = self.capture_state(stdout=stream, stderr=stream)
+        job = self.job_state(accounting={"status": "observed", "total_assigned": 4294967295, "active": 16},
+                             members={"status": "observed", "listed": 16, "bootstrap": 1,
+                                      "system_approved_shell": 1, "other": 14, "unclassified": 0})
+        legacy = self.budget_state(process_running=False, returncode=4294967295, capture_readers=2,
+                                   capture_readers_alive=2, elapsed_ms=86400000, setup_ms=43200000, wait_ms=43200000)
+        with tempfile.TemporaryDirectory(prefix="windows-capture-state-size-") as temporary:
+            root = Path(temporary)
+            for (count, frames), include_job in itertools.product(((1, 1), (5, 1), (12, 10)), (False, True)):
+                with self.subTest(cases=count, job=include_job):
+                    names = [f"test_fixture.Cases.test_case_{index}" for index in range(count)]
+                    diagnostics = []
+                    for include_capture in (False, True):
+                        reports = [(name, "".join(
+                            f'  File "{root / "tests" / f"fixture_{line}.py"}", line {line}, in private\n'
+                            for line in range(1, frames + 1)
+                        ) + f"BudgetExceeded: {MARKER}\n"
+                            + (self.capture_note(state) + "\n" if include_capture else "")
+                            + (self.job_note(job) + "\n" if include_job else "")
+                            + self.budget_note(legacy) + "\n") for name in reversed(names)]
+                        diagnostics.append(self.report_refusal(
+                            root, self.exception_report(root, [(name, "ERROR") for name in names], reports),
+                        ))
+                    previous, current = [item["parser"]["negative_prefix"] for item in diagnostics]
+                    self.assertEqual([item["id_sha256"] for item in previous],
+                                     [item["id_sha256"] for item in current])
+                    details = [item["error"] for item in current]
+                    for field in ("source_frames", "process_budget_job_state", "process_budget_state"):
+                        self.assertEqual([item["error"].get(field) for item in previous],
+                                         [item.get(field) for item in details])
+                    if count == 1:
+                        self.assertEqual(state, details[0]["process_budget_capture_state"])
+                        self.assertIs(details[0]["truncated"], False)
+                    else:
+                        self.assertTrue(any(item.get("process_budget_capture_state") != state for item in details))
+                        self.assertTrue(all(item["incomplete"] and item["truncated"]
+                                            for item in details if item.get("process_budget_capture_state") != state))
+                    if any(item.get("process_budget_state") != legacy or
+                           (include_job and item.get("process_budget_job_state") != job) for item in details):
+                        self.assertTrue(all("process_budget_capture_state" not in item for item in details))
+                    self.assertLess(len(json.dumps(diagnostics[-1]).encode("utf-8")), 4096)
+                    self.assertEqual(count, diagnostics[-1]["parser"]["negative_prefix_count"])
+                    self.assertLessEqual(len(current), 8)
+                    self.assertLessEqual(sum(len(item["source_frames"]) for item in details), 8)
 
     def test_real_job_note_pair_retains_v1_and_unclassified_budget_refusal(self):
         legacy = self.budget_state()
