@@ -545,7 +545,15 @@ def lookup_records(data):
         raise Refused("partial-line")
     lines = data.split(b"\n")[:-1]
     if len(lines) > 4:
-        raise Refused("record-count")
+        if len(lines) != 5:
+            raise Refused("record-count")
+        # Only an explicit v2 first record can extend the historical four-record cap.
+        try:
+            first = json.loads(lines[0].decode("ascii"), object_pairs_hook=lookup_json_object)
+        except (Refused, ValueError, RecursionError):
+            raise Refused("record-count") from None
+        if type(first) is not dict or type(first.get("v")) is not int or first["v"] != 2:
+            raise Refused("record-count")
     if any(len(line) + 1 > LOOKUP_RECORD_LIMIT for line in lines):
         raise Refused("record-limit")
     if any(not line.strip() for line in lines):
@@ -567,9 +575,11 @@ def lookup_records(data):
     def milliseconds(value):
         return value is None or (type(value) is int and 0 <= value <= 600000)
 
+    version = records[0].get("v") if type(records[0]) is dict else None
     phases = []
     for record in records:
-        if (type(record) is not dict or type(record.get("v")) is not int or record["v"] != 1
+        if (type(record) is not dict or type(record.get("v")) is not int
+                or record["v"] not in (1, 2) or record["v"] != version
                 or type(record.get("phase")) is not str or type(record.get("status")) is not str):
             raise Refused("record-shape")
         phase, status = record["phase"], record["status"]
@@ -599,8 +609,8 @@ def lookup_records(data):
                 else:
                     seen[hashed] = (index, kind)
         elif phase == "observer" and status == "armed":
-            keys(record, ("v", "phase", "status"))
-        elif phase == "pre" and status == "observed":
+            keys(record, ("v", "phase", "status") + (("not_found",) if version == 2 else ()))
+        elif status == "observed" and (phase == "pre" or (version == 2 and phase == "not-found")):
             keys(record, ("v", "phase", "status", "ms"))
             if not milliseconds(record["ms"]):
                 raise Refused("timing")
@@ -616,7 +626,8 @@ def lookup_records(data):
                     or (kind not in ("pshome", "other") and hashed is not None)):
                 raise Refused("provenance")
         else:
-            keys(record, ("v", "phase", "status", "code"))
+            keys(record, ("v", "phase", "status", "code")
+                 + (("not_found",) if version == 2 and phase == "observer" else ()))
             allowed = {
                 ("roots", "refused"): ("input-limit", "encoding", "snapshot"),
                 ("observer", "unavailable"): ("roots-refused", "existing-hooks", "unsupported-api"),
@@ -626,9 +637,27 @@ def lookup_records(data):
             }
             if record["code"] not in allowed.get((phase, status), ()):
                 raise Refused("record-shape")
+        if version == 2 and phase == "observer":
+            negative = record["not_found"]
+            if type(negative) is not dict or type(negative.get("status")) is not str:
+                raise Refused("record-shape")
+            if negative["status"] == "armed":
+                keys(negative, ("status",))
+            else:
+                keys(negative, ("status", "code"))
+                allowed = {
+                    "unavailable": ("existing-hook", "unsupported-api", "observer-unavailable"),
+                    "refused": ("install",),
+                }
+                if negative["code"] not in allowed.get(negative["status"], ()):
+                    raise Refused("record-shape")
+            if (status != "armed") != (negative.get("code") == "observer-unavailable"):
+                raise Refused("record-order")
+    tails = ((), ("pre",), ("post",), ("pre", "post"))
+    if version == 2:
+        tails += (("pre", "not-found"), ("pre", "not-found", "post"))
     if (phases[:1] != ["roots"] or (len(phases) >= 2 and phases[1] != "observer")
-            or (len(phases) >= 3 and phases[2] not in ("pre", "post"))
-            or (len(phases) == 4 and phases[2:] != ["pre", "post"])):
+            or tuple(phases[2:]) not in tails):
         raise Refused("record-order")
     if len(records) >= 2:
         roots, observer = records[:2]
@@ -636,9 +665,19 @@ def lookup_records(data):
             raise Refused("record-order")
         armed = observer["status"] == "armed"
         pre = records[2] if len(records) >= 3 and phases[2] == "pre" else None
+        negative = records[3] if len(records) >= 4 and phases[3] == "not-found" else None
         post = records[-1] if phases[-1] == "post" else None
         if pre is not None and not armed:
             raise Refused("record-order")
+        if negative is not None:
+            if observer["not_found"]["status"] != "armed":
+                raise Refused("record-order")
+            samples = [pre["ms"], negative["ms"]]
+            if post is not None and post["status"] == "observed":
+                samples.append(post["ms"])
+            available = [sample for sample in samples if sample is not None]
+            if any(first > second for first, second in zip(available, available[1:])):
+                raise Refused("timing")
         if post is not None:
             code = post.get("code")
             if not armed:
