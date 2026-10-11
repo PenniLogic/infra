@@ -1062,7 +1062,8 @@ class RuntimeRepairTests(unittest.TestCase):
 
     def test_stale_api_binding_refusal_cannot_be_claimed_as_planted_step_evidence(self):
         document = json.loads(support.generator.workflow("api"))
-        step = document["jobs"]["windows"]["steps"][-1]
+        step = next(step for step in document["jobs"]["windows"]["steps"]
+                    if step["name"] == "Run Windows owning suites")
         commands = step["run"].splitlines()[::2]
         self.assertEqual("python -I -S -B scripts\\money_client_interop.py prepare --require-prepared", commands[-2])
         step["run"] = support.generator.powershell_commands(commands[:-2] + commands[-1:])

@@ -381,6 +381,67 @@ def api_windows_job(profile):
         "steps": [*tool_steps(profile), *api_source_steps(profile, windows=True), {
             "name": "Run Windows owning suites",
             "run": powershell_commands(commands),
+        }, {
+            "name": "Read approved-shell command boundary",
+            "if": "always()",
+            "shell": "pwsh",
+            "working-directory": "${{ github.workspace }}",
+            "timeout-minutes": 1,
+            "run": r"""$ErrorActionPreference = 'Stop'
+$path = Join-Path (Get-Location).Path 'build\diagnostics\api106-approved-shell-boundary.bin'
+$record = [ordered]@{
+    event = 'api106_approved_shell_command_boundary'
+    diagnostic_only = $true
+    status = 'unavailable'
+    checkpoint = $null
+    console_redirected = $null
+}
+$exitCode = 2
+$stream = $null
+try {
+    $stream = [IO.File]::OpenRead($path)
+    $bytes = [byte[]]::new(7)
+    $count = 0
+    while ($count -lt $bytes.Length) {
+        $read = $stream.Read($bytes, $count, $bytes.Length - $count)
+        if ($read -eq 0) { break }
+        $count += $read
+    }
+    if ($count -le 6) {
+        $value = [Text.Encoding]::ASCII.GetString($bytes, 0, $count)
+        if ($value -cmatch '\A(?:|E|EU|EUX|ES[01]{3}|ES[01]{3}X)\z') {
+            $record.status = 'observed-record'
+            $record.checkpoint = if ($value -eq '') { 'none-observed' }
+                elseif ($value.EndsWith('X', [StringComparison]::Ordinal)) { 'after-write-output' }
+                elseif ($value -eq 'E') { 'command-entry' }
+                else { 'before-write-output' }
+            if ($value -cmatch '\AES([01])([01])([01])X?\z') {
+                $record.console_redirected = [ordered]@{
+                    stdin = $Matches[1] -ceq '1'
+                    stdout = $Matches[2] -ceq '1'
+                    stderr = $Matches[3] -ceq '1'
+                }
+            }
+            $exitCode = 0
+        } else {
+            $record.status = 'partial-or-invalid-record'
+        }
+    } else {
+        $record.status = 'oversized-record'
+    }
+} catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {
+    $record.status = 'not-observed'
+    $exitCode = 0
+} catch [IO.IOException], [UnauthorizedAccessException], [Security.SecurityException] {
+    $record.status = 'unavailable-read'
+} finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+}
+$json = $record | ConvertTo-Json -Compress -Depth 3
+if ([Text.Encoding]::ASCII.GetByteCount($json) -gt 1024) { throw 'Boundary diagnostic exceeded its fixed output bound' }
+[Console]::Out.WriteLine($json)
+exit $exitCode
+""",
         }],
     }
 
