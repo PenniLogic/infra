@@ -3,8 +3,10 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,10 @@ PYTHON_TARGET = "test_money_mutation.ProcessBudgetTest.test_budgeted_quality_adm
 KOTLIN_CLASS = "com.pennilogic.migration.AdmissionInstallationTest"
 KOTLIN_METHOD = "a symlinked launcher cannot redirect execution()"
 JUNIT = Path("build/test-results/test")
+LOOKUP = Path("build/diagnostics/api106-approved-shell-module-lookup.jsonl")
+LOOKUP_FILE_LIMIT = 8192
+LOOKUP_RECORD_LIMIT = 6144
+LOOKUP_EVENT = "windows_shell_lookup_diagnostic"
 PYTHON_CASE = re.compile(rb"(test[A-Za-z0-9_]*) \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \.\.\. (.*))?")
 PYTHON_SUMMARY = re.compile(rb"Ran (\d+) tests? in [0-9.]+s")
 PYTHON_TERMINAL = re.compile(
@@ -27,6 +33,7 @@ STATUSES = {b"ok": "passed", b"FAIL": "failed", b"ERROR": "error",
 DIAGNOSTIC_CASE_LIMIT = 8
 DIAGNOSTIC_FRAME_LIMIT = 8
 DIAGNOSTIC_BYTE_LIMIT = 4096
+JUNIT_DIAGNOSTIC_INTEGER_LIMIT = 4294967295
 PROCESS_BUDGET_PREFIX = b"process_budget_state="
 PROCESS_BUDGET_UNAVAILABLE = {"schema": "pennilogic.process-budget-state/1", "status": "unavailable"}
 PROCESS_BUDGET_JOB_PREFIX = b"process_budget_job_state="
@@ -53,6 +60,12 @@ class Refused(ValueError):
 class _PythonOutcomeRefused(Refused):
     def __init__(self, code, diagnostic):
         super().__init__(code)
+        self.diagnostic = diagnostic
+
+
+class _JunitOutcomeRefused(Refused):
+    def __init__(self, diagnostic):
+        super().__init__("duplicate-junit-case")
         self.diagnostic = diagnostic
 
 
@@ -405,27 +418,70 @@ def python_diagnostic_json(diagnostic):
     return encoded
 
 
+def junit_diagnostic_number(value):
+    if type(value) is str and len(value) <= 32:
+        try:
+            value = int(value)
+        except ValueError:
+            return None
+    return value if type(value) is int and 0 <= value <= JUNIT_DIAGNOSTIC_INTEGER_LIMIT else None
+
+
+def junit_report_metadata(byte_count, digest, suite, case_count):
+    # Observe later counters without changing their existing admission order.
+    counts = {name: junit_diagnostic_number(suite.get(name)) for name in ("tests", "failures", "errors", "skipped")}
+    size, cases = junit_diagnostic_number(byte_count), junit_diagnostic_number(case_count)
+    return {
+        "bytes": size, "sha256": digest,
+        "testcase_count": cases, "suite_counts": counts,
+        "metadata_complete": all(value is not None for value in (size, cases, *counts.values())),
+    }
+
+
 def junit_outcomes(root):
     directory = root / JUNIT
     if directory.is_symlink() or not directory.is_dir():
         raise Refused("missing-ordinary-junit-results")
-    records, identities = [], set()
-    for path in sorted(directory.glob("TEST-*.xml")):
+    records, identities = [], {}
+    paths = sorted(directory.glob("TEST-*.xml"))
+    for report_position, path in enumerate(paths, 1):
         if path.is_symlink() or not path.is_file():
             raise Refused("invalid-junit-result-file")
-        suite = ET.parse(path).getroot()
+        digest, byte_count, parser = hashlib.sha256(), 0, ET.XMLParser()
+        with path.open("rb") as stream:
+            while chunk := stream.read(65536):
+                digest.update(chunk)
+                byte_count += len(chunk)
+                parser.feed(chunk)
+        suite = parser.close()
         cases = suite.findall("testcase")
         if suite.tag != "testsuite" or int(suite.get("tests", "-1")) != len(cases):
             raise Refused("incomplete-junit-outcomes")
+        report = junit_report_metadata(byte_count, digest.hexdigest(), suite, len(cases))
         counts = {"failure": 0, "error": 0, "skipped": 0}
-        for case in cases:
+        for case_position, case in enumerate(cases, 1):
             class_name, name = case.get("classname"), case.get("name")
             if not class_name or not name:
                 raise Refused("missing-junit-identity")
             identity = class_name + "\0" + name
             if identity in identities:
-                raise Refused("duplicate-junit-case")
-            identities.add(identity)
+                first_report, first_case, first_metadata = identities[identity]
+                raise _JunitOutcomeRefused({
+                    "code": "duplicate-junit-case",
+                    "id_sha256": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+                    "classname_sha256": hashlib.sha256(class_name.encode("utf-8")).hexdigest(),
+                    "name_sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+                    "same_report": first_report == report_position,
+                    "first": {"report_position": junit_diagnostic_number(first_report),
+                              "case_position": junit_diagnostic_number(first_case), "report": first_metadata},
+                    "current": {"report_position": junit_diagnostic_number(report_position),
+                                "case_position": junit_diagnostic_number(case_position), "report": report},
+                    "prefix": {"selected_reports": junit_diagnostic_number(len(paths)),
+                               "completed_reports": junit_diagnostic_number(report_position - 1),
+                               "completed_cases": junit_diagnostic_number(len(records)),
+                               "encountered_cases": junit_diagnostic_number(len(records) + 1)},
+                })
+            identities[identity] = (report_position, case_position, report)
             flags = [tag for tag in ("failure", "error", "skipped") if case.find(tag) is not None]
             if len(flags) > 1:
                 raise Refused("ambiguous-junit-outcome")
@@ -442,19 +498,236 @@ def junit_outcomes(root):
     return records
 
 
+def lookup_path_metadata(root):
+    path = root
+    for index, part in enumerate(("", *LOOKUP.parts)):
+        if part:
+            path = path / part
+        metadata = path.lstat()
+        # Windows junctions can report a directory mode and still be reparse points.
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
+            raise Refused("reparse-path")
+        regular = stat.S_ISREG if index == len(LOOKUP.parts) else stat.S_ISDIR
+        if not regular(metadata.st_mode):
+            raise Refused("nonregular-path")
+    return metadata
+
+
+def lookup_before(root):
+    try:
+        lookup_path_metadata(root)
+    except FileNotFoundError:
+        return "absent"
+    except Refused as error:
+        return str(error)
+    except OSError:
+        return "preflight-unavailable"
+    return "preexisting-capsule"
+
+
+def lookup_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Refused("duplicate-json-key")
+        result[key] = value
+    return result
+
+
+def lookup_records(data):
+    if len(data) > LOOKUP_FILE_LIMIT:
+        raise Refused("file-limit")
+    if not data:
+        return []
+    if not data.isascii() or b"\r" in data or b"\x1b" in data:
+        raise Refused("encoding")
+    if not data.endswith(b"\n"):
+        raise Refused("partial-line")
+    lines = data.split(b"\n")[:-1]
+    if len(lines) > 4:
+        raise Refused("record-count")
+    if any(len(line) + 1 > LOOKUP_RECORD_LIMIT for line in lines):
+        raise Refused("record-limit")
+    if any(not line.strip() for line in lines):
+        raise Refused("blank-line")
+    try:
+        records = [json.loads(line.decode("ascii"), object_pairs_hook=lookup_json_object) for line in lines]
+    except Refused:
+        raise
+    except (ValueError, RecursionError):
+        raise Refused("invalid-json") from None
+
+    def keys(value, expected):
+        if type(value) is not dict or set(value) != set(expected):
+            raise Refused("record-shape")
+
+    def digest(value):
+        return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+    def milliseconds(value):
+        return value is None or (type(value) is int and 0 <= value <= 600000)
+
+    phases = []
+    for record in records:
+        if (type(record) is not dict or type(record.get("v")) is not int or record["v"] != 1
+                or type(record.get("phase")) is not str or type(record.get("status")) is not str):
+            raise Refused("record-shape")
+        phase, status = record["phase"], record["status"]
+        phases.append(phase)
+        if phase == "roots" and status == "observed":
+            keys(record, ("v", "phase", "status", "value", "roots"))
+            roots, value = record["roots"], record["value"]
+            if (type(roots) is not list or len(roots) > 32 or value not in ("present", "absent")
+                    or (value == "absent") != (len(roots) == 0)):
+                raise Refused("roots")
+            seen = {}
+            empty = hashlib.sha256(b"").hexdigest()
+            for index, entry in enumerate(roots):
+                keys(entry, ("i", "kind", "sha256", "duplicate_of"))
+                kind, hashed, duplicate = entry["kind"], entry["sha256"], entry["duplicate_of"]
+                if (type(entry["i"]) is not int or entry["i"] != index
+                        or kind not in ("pshome", "unknown", "empty") or not digest(hashed)
+                        or (kind == "empty") != (hashed == empty)
+                        or (duplicate is not None and (type(duplicate) is not int or not 0 <= duplicate < index))):
+                    raise Refused("roots")
+                if hashed in seen:
+                    first, first_kind = seen[hashed]
+                    if duplicate != first or kind != first_kind:
+                        raise Refused("roots")
+                elif duplicate is not None:
+                    raise Refused("roots")
+                else:
+                    seen[hashed] = (index, kind)
+        elif phase == "observer" and status == "armed":
+            keys(record, ("v", "phase", "status"))
+        elif phase == "pre" and status == "observed":
+            keys(record, ("v", "phase", "status", "ms"))
+            if not milliseconds(record["ms"]):
+                raise Refused("timing")
+        elif phase == "post" and status == "observed":
+            keys(record, ("v", "phase", "status", "ms", "lookup_ms", "command_type", "module_kind", "module_sha256"))
+            if not milliseconds(record["ms"]) or not milliseconds(record["lookup_ms"]):
+                raise Refused("timing")
+            kind, hashed, command = record["module_kind"], record["module_sha256"], record["command_type"]
+            if (kind not in ("no-command", "none", "unknown", "pshome", "other")
+                    or (kind == "no-command" and command is not None)
+                    or (kind != "no-command" and (type(command) is not int or command not in (1, 2, 4, 8, 16, 32, 64, 128, 256)))
+                    or (kind in ("pshome", "other") and not digest(hashed))
+                    or (kind not in ("pshome", "other") and hashed is not None)):
+                raise Refused("provenance")
+        else:
+            keys(record, ("v", "phase", "status", "code"))
+            allowed = {
+                ("roots", "refused"): ("input-limit", "encoding", "snapshot"),
+                ("observer", "unavailable"): ("roots-refused", "existing-hooks", "unsupported-api"),
+                ("observer", "refused"): ("install",),
+                ("post", "unavailable"): ("observer-unavailable", "no-pre", "no-post", "nested-target", "post-without-pre"),
+                ("post", "refused"): ("command-type", "module-path-limit", "callback"),
+            }
+            if record["code"] not in allowed.get((phase, status), ()):
+                raise Refused("record-shape")
+    if (phases[:1] != ["roots"] or (len(phases) >= 2 and phases[1] != "observer")
+            or (len(phases) >= 3 and phases[2] not in ("pre", "post"))
+            or (len(phases) == 4 and phases[2:] != ["pre", "post"])):
+        raise Refused("record-order")
+    if len(records) >= 2:
+        roots, observer = records[:2]
+        if (roots["status"] == "refused") != (observer.get("code") == "roots-refused"):
+            raise Refused("record-order")
+        armed = observer["status"] == "armed"
+        pre = records[2] if len(records) >= 3 and phases[2] == "pre" else None
+        post = records[-1] if phases[-1] == "post" else None
+        if pre is not None and not armed:
+            raise Refused("record-order")
+        if post is not None:
+            code = post.get("code")
+            if not armed:
+                if code != "observer-unavailable":
+                    raise Refused("record-order")
+            elif post["status"] == "observed":
+                if pre is None:
+                    raise Refused("record-order")
+                start, end, elapsed = pre["ms"], post["ms"], post["lookup_ms"]
+                if start is None or end is None:
+                    if elapsed is not None:
+                        raise Refused("timing")
+                elif end < start or elapsed != end - start:
+                    raise Refused("timing")
+            elif (code == "observer-unavailable"
+                  or (code in ("no-pre", "post-without-pre") and pre is not None)
+                  or (code in ("no-post", "nested-target", "command-type", "module-path-limit") and pre is None)):
+                raise Refused("record-order")
+    return records
+
+
+def lookup_diagnostic_json(root, before):
+    base = {"event": LOOKUP_EVENT, "diagnostic_only": True, "capsule_complete": False}
+    result = dict(base)
+    try:
+        if before != "absent":
+            known = ("preexisting-capsule", "preflight-unavailable", "reparse-path", "nonregular-path")
+            raise Refused(before if type(before) is str and before in known else "freshness-unavailable")
+        metadata = lookup_path_metadata(root)
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(root / LOOKUP, flags)
+        try:
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                opened = os.fstat(stream.fileno())
+                if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(metadata, opened):
+                    raise Refused("file-changed")
+                data = stream.read(LOOKUP_FILE_LIMIT + 1)
+                after = os.fstat(stream.fileno())
+        finally:
+            os.close(descriptor)
+        current = lookup_path_metadata(root)
+        if (any(not os.path.samestat(opened, other) for other in (after, current))
+                or len({item.st_size for item in (metadata, opened, after, current)}) != 1
+                or len({item.st_mtime_ns for item in (metadata, opened, after, current)}) != 1):
+            raise Refused("file-changed")
+        if len(data) != min(current.st_size, LOOKUP_FILE_LIMIT + 1):
+            raise Refused("incomplete-read")
+        records = lookup_records(data)
+        projected = []
+        for record in records:
+            if record["phase"] == "roots" and record["status"] == "observed":
+                columns = ["i", "kind", "sha256", "duplicate_of"]
+                record = {**record, "root_columns": columns,
+                          "roots": [[entry[key] for key in columns] for entry in record["roots"]]}
+            projected.append(record)
+        complete = bool(records and records[-1]["phase"] == "post")
+        result.update(status="observed" if complete else "partial", capsule_complete=complete, records=projected)
+        if not complete:
+            result["code"] = "incomplete-prefix" if records else "empty-prefix"
+    except FileNotFoundError:
+        result.update(status="unavailable", code="not-observed")
+    except Refused as error:
+        result.update(status="refused", code=str(error))
+    except OSError:
+        result.update(status="unavailable", code="read-error")
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("ascii")) + len(os.linesep) > DIAGNOSTIC_BYTE_LIMIT:
+        return json.dumps({**base, "status": "refused", "code": "projection-limit"},
+                          sort_keys=True, separators=(",", ":"))
+    return encoded
+
+
 def qualify(root, require_prepared=False):
     if (root / JUNIT).exists() or (root / JUNIT).is_symlink():
         raise Refused("preexisting-ordinary-junit-results")
+    before = lookup_before(root)
     arguments = ["--require-prepared"] if require_prepared else []
     print("+ python scripts\\quality.py test" + (" --require-prepared" if require_prepared else ""), flush=True)
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        result = subprocess.run(
-            [sys.executable, str(root / "scripts" / "quality.py"), "test", *arguments],
-            cwd=root, stdout=stdout, stderr=stderr, check=False,
-        )
-        stdout.seek(0)
-        stderr.seek(0)
-        print(json.dumps({"event": "windows_owning_suite_command", "exit_code": result.returncode}, sort_keys=True))
+        try:
+            result = subprocess.run(
+                [sys.executable, str(root / "scripts" / "quality.py"), "test", *arguments],
+                cwd=root, stdout=stdout, stderr=stderr, check=False,
+            )
+            stdout.seek(0)
+            stderr.seek(0)
+            print(json.dumps({"event": "windows_owning_suite_command", "exit_code": result.returncode}, sort_keys=True))
+        finally:
+            print(lookup_diagnostic_json(root, before), flush=True)
         output = stdout.read()
         errors = stderr.read()
         try:
@@ -476,7 +749,14 @@ def qualify(root, require_prepared=False):
         raise Refused("ordinary-gradle-test-was-not-fresh")
     if test_tasks == [b"> Task :test FAILED"] and result.returncode == 0:
         raise Refused("inconsistent-gradle-task-result")
-    junit = junit_outcomes(root)
+    try:
+        junit = junit_outcomes(root)
+    except _JunitOutcomeRefused as error:
+        print(json.dumps({
+            "event": "windows_qualification_diagnostic", "diagnostic_only": True,
+            "inventory_complete": False, "exit_code": result.returncode, "junit": error.diagnostic,
+        }, sort_keys=True), flush=True)
+        raise
     for record in junit:
         print(json.dumps(record, sort_keys=True))
     if result.returncode != 0:
