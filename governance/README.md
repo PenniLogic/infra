@@ -138,6 +138,90 @@ printed, including non-UTF-8 child output. Raw streams stay in temporary files t
 close after collection. Missing or malformed evidence fails with static codes.
 These records are not a trusted-workflow attestation.
 
+A duplicate JUnit identity still refuses with `duplicate-junit-case`; it is never
+deduplicated or assigned a report/position-based test ID. Before that nonzero
+refusal, a failure-only `windows_qualification_diagnostic` record retains the
+first and current occurrence. It contains separate SHA-256 values for the exact
+combined identity, class name and case name; one-based positions in the existing
+sorted report selection and each report's direct `testcase` children; and a
+`same_report` flag. Each occurrence binds the bytes actually parsed through their
+size and SHA-256, direct case count and declared tests/failures/errors/skipped
+counters. Reports are read once in bounded chunks for that binding, not reread
+after parsing or retained as a second full raw buffer.
+
+The fixed-size diagnostic also counts selected reports, fully checked preceding
+reports, completed case records and encountered cases through the duplicate.
+These are observed prefixes, not a complete or accepted inventory. Positions,
+sizes and counts are bounded to unsigned 32-bit integers; unavailable, malformed
+or out-of-range metadata is `null`, never zero by default. Text counters longer
+than 32 characters are unavailable, and each report has an explicit
+`metadata_complete` flag. This projection does not move or replace the original
+counter checks: malformed later counters cannot mask an earlier duplicate.
+The fixed shape remains below the existing 4096-byte diagnostic cap regardless
+of XML/name size. No raw XML, names, messages, report filenames or local paths
+are emitted, and no JUnit positive prefix is published. The actual owning exit
+is retained separately from the qualifier's nonzero refusal.
+This is missing-evidence collection, not proof of duplicate execution, a causal
+repair or successful qualification. The canonical template owns this projection;
+consumers regenerate it rather than editing their generated qualifier.
+
+After the owning invocation settles, the qualifier also observes the fixed
+`build/diagnostics/api106-approved-shell-module-lookup.jsonl` sidecar through a
+separate `windows_shell_lookup_diagnostic` event. This observation runs on the
+owning failure path too; it does not alter the owning result or any qualification
+gate. An unrelated preflight refusal still stops before any invocation or
+collection. A pre-invocation metadata check prevents attributing a preexisting
+capsule to the current invocation; only an explicit observed-absence state
+permits reading it later. A missing freshness observation refuses instead.
+Freshness does not come from timestamps: v1 has no run identifier.
+The collector does not create, repair, remove
+or modify that sidecar, resolve commands, enumerate modules, install hooks or
+follow alias targets.
+
+The producer's v1 ASCII, LF-only NDJSON contract permits at most 8192 file bytes,
+four records, 6144 bytes per record including LF, and 32 ordered roots. The
+collector reads at most 8193 bytes to detect overflow, rejects symlink/reparse
+or nonregular paths, and checks opened-file identity, size and modification
+time before projecting a stable complete read, without claiming a hostile-
+filesystem or descendant-termination guarantee. It validates the entire bounded
+input before emitting any capsule facts: duplicate JSON keys, extra fields,
+wrong types (including booleans as integers), hashes, earliest-duplicate
+references, enumerations, phase order and transition semantics all fail closed.
+Invalid input emits only a fixed collector refusal/unavailability code, not an
+otherwise valid prefix. Missing files, empty files, valid incomplete prefixes
+and truncated lines remain distinct; missing callbacks are unknown, not evidence
+of a cached lookup.
+
+Validated records preserve every v1 field. To fit the unchanged 4096-byte public
+record cap without dropping roots, the roots record uses `root_columns` with
+`["i", "kind", "sha256", "duplicate_of"]` and ordered row arrays instead of
+repeating those keys. No root, duplicate, phase, status, timing or provenance
+fact is silently truncated. The maximum permitted fact set must fit with its envelope and platform line
+ending; a defensive `projection-limit` refusal replaces an oversized projection
+in full. `capsule_complete` means only that a validated final `post`
+record exists, including an unavailable/refused post, not that provenance,
+tests, command output delivery or process cleanup succeeded.
+
+Nullable `pre.ms`, `post.ms` and `lookup_ms` are integer milliseconds in
+0..600000 when available. With two nonnull boundary samples, post must not
+precede pre and `lookup_ms` is exactly their difference, including zero.
+If either sample is null, the interval must be null. The producer samples one
+stopwatch's integer elapsed milliseconds independently at each boundary; the
+interval includes callback and flush overhead, not isolated engine lookup
+duration or evidence that the original ten-second provider deadline was met.
+Observed post provenance requires an earlier unambiguous observed pre even
+when its time is null. Callback failure can instead produce an explicit
+refused post without a recorded pre; it supplies no command provenance.
+
+Root/module hashes describe observed strings and `pshome` is a lexical
+classification, not filesystem identity, module-byte attestation or alias
+resolution. Raw root/module paths, names, commands, messages, process IDs and
+ANSI are never emitted. The collector neither verifies the producer's raw
+environment/path-length claims from hashes nor turns its hook-support claims,
+a completed post, the separate X marker, or valid diagnostic data into causal,
+default-launch, cleanup or qualification acceptance. The existing 2105-byte
+approved-shell boundary reader remains unchanged.
+
 An optional `Read approved-shell command boundary` step follows `Run Windows owning
 suites` in that same job. Its `always()` condition retains reporting after an owning
 failure. It uses `pwsh` at `${{ github.workspace }}` and a one-minute step cap inside

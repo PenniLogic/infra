@@ -40,6 +40,15 @@ def api_checker():
     return namespace["validate_workflow"]
 
 
+def without_absent_lookup(test, records):
+    observed = [record for record in records if record["event"] == "windows_shell_lookup_diagnostic"]
+    test.assertEqual([{
+        "event": "windows_shell_lookup_diagnostic", "diagnostic_only": True,
+        "capsule_complete": False, "status": "unavailable", "code": "not-observed",
+    }], observed)
+    return [record for record in records if record["event"] != "windows_shell_lookup_diagnostic"]
+
+
 class ApiWindowsWorkflowTests(unittest.TestCase):
     def test_optional_shell_readback_preserves_the_complete_accepted_workflow(self):
         workflow = json.loads(generator.workflow("api"))
@@ -76,7 +85,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         artifacts = generator.artifacts("api")
         self.assertEqual(25, len(artifacts))
         self.assertFalse(any("read_approved_shell_boundary" in path for path in artifacts))
-        self.assertEqual("3e5139775d2f07011a14358f1d789223084bfdabf2dcc1bb82d49360a463a9b9",
+        self.assertEqual("4372d853bafe6f55022328cc44147cd9594f3e3766690c9d347ab0c7d7500be4",
                          hashlib.sha256(artifacts["scripts/qualify_windows.py"].encode("utf-8")).hexdigest())
 
     def test_optional_shell_readback_drift_is_refused_without_policy_widening(self):
@@ -342,7 +351,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             support.git(support.GOVERNANCE.parent, "show", f"{historical_source}:governance/templates/qualify_windows.py"),
             support.git(support.GOVERNANCE.parent, "show", f"{historical_accepted}:governance/templates/qualify_windows.py"),
         )
-        current_digest = "3e5139775d2f07011a14358f1d789223084bfdabf2dcc1bb82d49360a463a9b9"
+        current_digest = "4372d853bafe6f55022328cc44147cd9594f3e3766690c9d347ab0c7d7500be4"
         current_template = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
         current_generated = generator.artifacts("api")["scripts/qualify_windows.py"].encode("utf-8")
         self.assertEqual(current_digest, hashlib.sha256(current_template).hexdigest())
@@ -367,6 +376,19 @@ class WindowsOutcomeTests(unittest.TestCase):
         if status != "passed":
             ET.SubElement(case, status, message=MARKER).text = MARKER
         (directory / "TEST-fixture.xml").write_bytes(ET.tostring(suite))
+
+    def write_junit_cases(self, root, filename, identities, **attributes):
+        directory = root / qualification.JUNIT
+        directory.mkdir(parents=True, exist_ok=True)
+        suite = ET.Element("testsuite", name=MARKER, tests=str(len(identities)),
+                           failures="0", errors="0", skipped="0")
+        suite.attrib.update(attributes)
+        for class_name, name in identities:
+            ET.SubElement(suite, "testcase", classname=class_name, name=name)
+        data = ET.tostring(suite)
+        path = directory / filename
+        path.write_bytes(data)
+        return path, data
 
     def exercise(self, root, python=None, task="> Task :test", status="passed",
                  name=qualification.KOTLIN_METHOD, exit_code=0, require_prepared=False):
@@ -622,6 +644,235 @@ class WindowsOutcomeTests(unittest.TestCase):
                 with self.assertRaises(qualification.Refused):
                     qualification.junit_outcomes(root)
 
+    def test_junit_duplicate_same_report_binds_exact_bytes_positions_and_separate_identity_hashes(self):
+        identity = (MARKER + ".PrivateClass", "private case \u2603" * 8192)
+        with tempfile.TemporaryDirectory(prefix="junit-duplicate-same-") as temporary:
+            root = Path(temporary)
+            path, data = self.write_junit_cases(root, "TEST-private.xml", [identity, identity])
+            self.assertGreater(len(data), 65536)
+            native_open, observed = Path.open, {}
+
+            @contextlib.contextmanager
+            def open_report(candidate, mode):
+                with native_open(candidate, mode) as stream:
+                    observed["stream"] = stream
+                    observed["reader"] = mock.Mock(wraps=stream)
+                    yield observed["reader"]
+
+            with mock.patch.object(Path, "open", autospec=True, side_effect=open_report) as reader, \
+                    self.assertRaisesRegex(qualification.Refused, "^duplicate-junit-case$") as caught:
+                qualification.junit_outcomes(root)
+            reader.assert_called_once_with(path, "rb")
+            reads = observed["reader"].read.call_args_list
+            self.assertGreater(len(reads), 1)
+            self.assertEqual([mock.call(65536)] * len(reads), reads)
+            self.assertTrue(observed["stream"].closed)
+            diagnostic = getattr(caught.exception, "diagnostic", None)
+            self.assertIsInstance(diagnostic, dict)
+            report = {
+                "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                "testcase_count": 2, "suite_counts": {"tests": 2, "failures": 0, "errors": 0, "skipped": 0},
+                "metadata_complete": True,
+            }
+            self.assertEqual({
+                "code": "duplicate-junit-case",
+                "id_sha256": hashlib.sha256("\0".join(identity).encode("utf-8")).hexdigest(),
+                "classname_sha256": hashlib.sha256(identity[0].encode("utf-8")).hexdigest(),
+                "name_sha256": hashlib.sha256(identity[1].encode("utf-8")).hexdigest(),
+                "same_report": True,
+                "first": {"report_position": 1, "case_position": 1, "report": report},
+                "current": {"report_position": 1, "case_position": 2, "report": report},
+                "prefix": {"selected_reports": 1, "completed_reports": 0,
+                           "completed_cases": 1, "encountered_cases": 2},
+            }, diagnostic)
+            self.assertEqual(data, path.read_bytes())
+            self.assertNotIn(MARKER, json.dumps(diagnostic))
+            self.assertNotIn(str(root), json.dumps(diagnostic))
+            maximum = copy.deepcopy(diagnostic)
+            for key in ("first", "current"):
+                maximum[key].update(report_position=4294967295, case_position=4294967295)
+                maximum[key]["report"].update(bytes=4294967295, testcase_count=4294967295)
+                maximum[key]["report"]["suite_counts"] = dict.fromkeys(report["suite_counts"], 4294967295)
+            maximum["prefix"] = dict.fromkeys(maximum["prefix"], 4294967295)
+            envelope = {"event": "windows_qualification_diagnostic", "diagnostic_only": True,
+                        "inventory_complete": False, "exit_code": -2147483648, "junit": maximum}
+            self.assertLess(len(json.dumps(envelope).encode("ascii")), 4096)
+
+    def test_junit_duplicate_cross_report_preserves_first_location_and_stops_before_later_bad_xml(self):
+        duplicate = ("example.PrivateClass", MARKER)
+        with tempfile.TemporaryDirectory(prefix="junit-duplicate-cross-") as temporary:
+            root = Path(temporary)
+            last, current = self.write_junit_cases(
+                root, "TEST-z.xml", [("example.CurrentPrefix", "one"), duplicate],
+            )
+            _, first = self.write_junit_cases(root, "TEST-a.xml", [("example.FirstPrefix", "one"), duplicate])
+            self.write_junit_cases(root, "TEST-m.xml", [("example.Middle", "one")])
+            (last.parent / "TEST-zz.xml").write_bytes(b"<malformed")
+            with self.assertRaisesRegex(qualification.Refused, "^duplicate-junit-case$") as caught:
+                qualification.junit_outcomes(root)
+            diagnostic = getattr(caught.exception, "diagnostic", None)
+            self.assertIsInstance(diagnostic, dict)
+            self.assertIs(diagnostic["same_report"], False)
+            self.assertEqual((1, 2), (diagnostic["first"]["report_position"], diagnostic["first"]["case_position"]))
+            self.assertEqual((3, 2), (diagnostic["current"]["report_position"], diagnostic["current"]["case_position"]))
+            for key, data in (("first", first), ("current", current)):
+                self.assertEqual(len(data), diagnostic[key]["report"]["bytes"])
+                self.assertEqual(hashlib.sha256(data).hexdigest(), diagnostic[key]["report"]["sha256"])
+                self.assertEqual(2, diagnostic[key]["report"]["testcase_count"])
+            self.assertEqual({"selected_reports": 4, "completed_reports": 2,
+                              "completed_cases": 4, "encountered_cases": 5}, diagnostic["prefix"])
+        with tempfile.TemporaryDirectory(prefix="junit-identical-reports-") as temporary:
+            root = Path(temporary)
+            self.write_junit_cases(root, "TEST-a.xml", [duplicate])
+            self.write_junit_cases(root, "TEST-b.xml", [duplicate])
+            with self.assertRaisesRegex(qualification.Refused, "^duplicate-junit-case$") as caught:
+                qualification.junit_outcomes(root)
+            diagnostic = caught.exception.diagnostic
+            self.assertIs(diagnostic["same_report"], False)
+            self.assertEqual(1, diagnostic["first"]["report_position"])
+            self.assertEqual(2, diagnostic["current"]["report_position"])
+            self.assertEqual(diagnostic["first"]["report"], diagnostic["current"]["report"])
+
+    def test_junit_distinct_pairs_keep_original_ids_and_do_not_scan_other_tasks_or_nested_reports(self):
+        identities = [("example.First", "shared"), ("example.Second", "shared"), ("example.First", "other")]
+        with tempfile.TemporaryDirectory(prefix="junit-distinct-pairs-") as temporary:
+            root = Path(temporary)
+            self.write_junit_cases(root, "TEST-b.xml", identities[1:])
+            _, first = self.write_junit_cases(root, "TEST-a.xml", identities[:1])
+            nested = root / qualification.JUNIT / "nested"
+            nested.mkdir()
+            (nested / "TEST-hidden.xml").write_bytes(first)
+            other = root / "build/test-results/moneyTest"
+            other.mkdir()
+            (other / "TEST-private.xml").write_bytes(b"<malformed")
+            records = qualification.junit_outcomes(root)
+            expected = [
+                {"event": "test_outcome", "suite": "junit:test",
+                 "id_sha256": hashlib.sha256("\0".join(identity).encode("utf-8")).hexdigest(), "outcome": "passed"}
+                for identity in identities
+            ]
+            self.assertEqual(expected, records)
+            directory = root / qualification.JUNIT
+            (directory / "TEST-a.xml").rename(directory / "TEST-z.xml")
+            self.assertEqual({record["id_sha256"] for record in expected},
+                             {record["id_sha256"] for record in qualification.junit_outcomes(root)})
+
+    def test_junit_duplicate_main_publishes_only_bounded_private_provenance_and_preserves_nonzero(self):
+        for cross_file, exit_code in itertools.product((False, True), (0, 37)):
+            with self.subTest(cross_file=cross_file, exit_code=exit_code), \
+                    tempfile.TemporaryDirectory(prefix="junit-private-refusal-") as temporary:
+                root = Path(temporary)
+                identity = (str(root) + MARKER, MARKER + "\u2603" * 30000)
+
+                def run(command, **options):
+                    self.assertEqual([sys.executable, str(root / "scripts/quality.py"), "test"], command)
+                    self.assertEqual(root, options["cwd"])
+                    options["stdout"].write(b"> Task :test\n" + MARKER.encode() + b"\x1b[31m\n")
+                    options["stderr"].write(self.python_report().encode())
+                    required = (qualification.KOTLIN_CLASS, qualification.KOTLIN_METHOD)
+                    if cross_file:
+                        self.write_junit_cases(root, "TEST-a.xml", [required, identity])
+                        self.write_junit_cases(root, "TEST-b.xml", [identity])
+                    else:
+                        self.write_junit_cases(root, "TEST-a.xml", [required, identity, identity])
+                    return subprocess.CompletedProcess(command, exit_code)
+
+                output, errors = io.StringIO(), io.StringIO()
+                with mock.patch.object(qualification.sys, "platform", "win32"), \
+                        mock.patch.object(qualification, "ROOT", root), \
+                        mock.patch.object(qualification.subprocess, "run", side_effect=run) as child, \
+                        contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    self.assertEqual(1, qualification.main([]))
+                child.assert_called_once()
+                public = output.getvalue() + errors.getvalue()
+                for private in (MARKER, str(root), "\x1b", "\\u001b", "\u2603", "\\u2603", "<testsuite"):
+                    self.assertNotIn(private, public)
+                records = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+                records = without_absent_lookup(self, records)
+                self.assertEqual(["windows_owning_suite_command", "test_outcome", "test_outcome",
+                                  "windows_qualification_diagnostic"], [record["event"] for record in records])
+                self.assertFalse(any(record.get("suite") == "junit:test" for record in records))
+                diagnostic = records[-1]
+                self.assertIs(diagnostic["diagnostic_only"], True)
+                self.assertIs(diagnostic["inventory_complete"], False)
+                self.assertEqual(exit_code, diagnostic["exit_code"])
+                self.assertLess(len(json.dumps(diagnostic).encode("ascii")), 4096)
+                self.assertEqual("duplicate-junit-case", diagnostic["junit"]["code"])
+                self.assertEqual(not cross_file, diagnostic["junit"]["same_report"])
+                self.assertEqual({"event": "windows_qualification_refused", "code": "duplicate-junit-case"},
+                                 json.loads(errors.getvalue()))
+
+    def test_junit_duplicate_metadata_bounds_and_malformed_later_counts_do_not_change_refusal(self):
+        for value, expected in ((0, 0), (4294967295, 4294967295), ("4294967295", 4294967295),
+                                (" +1 ", 1), (False, None), (-1, None), (4294967296, None),
+                                (None, None), ("", None), (MARKER, None), ("9" * 5000, None)):
+            with self.subTest(value_type=type(value).__name__, expected=expected):
+                self.assertEqual(expected, qualification.junit_diagnostic_number(value))
+        for index, bad_count in enumerate((None, MARKER, "-1", "4294967296", "9" * 5000)):
+            with self.subTest(case=index), tempfile.TemporaryDirectory(prefix="junit-count-bound-") as temporary:
+                root = Path(temporary)
+                path, _ = self.write_junit_cases(root, "TEST-private.xml", [("example.Test", "same")] * 2)
+                suite = ET.parse(path).getroot()
+                if bad_count is None:
+                    suite.attrib.pop("failures")
+                else:
+                    suite.set("failures", bad_count)
+                path.write_bytes(ET.tostring(suite))
+                with self.assertRaisesRegex(qualification.Refused, "^duplicate-junit-case$") as caught:
+                    qualification.junit_outcomes(root)
+                diagnostic = getattr(caught.exception, "diagnostic", None)
+                self.assertIsInstance(diagnostic, dict)
+                self.assertIsNone(diagnostic["current"]["report"]["suite_counts"]["failures"])
+                self.assertIs(diagnostic["current"]["report"]["metadata_complete"], False)
+                self.assertLess(len(json.dumps(diagnostic).encode("ascii")), 4096)
+                self.assertNotIn(MARKER, json.dumps(diagnostic))
+
+    def test_junit_duplicate_does_not_override_earlier_guards_or_reorder_later_guards(self):
+        mutations = (
+            (lambda suite: suite.set("tests", "3"), "incomplete-junit-outcomes"),
+            (lambda suite: suite.find("testcase").attrib.pop("classname"), "missing-junit-identity"),
+            (lambda suite: (ET.SubElement(suite[0], "failure"), ET.SubElement(suite[0], "skipped")),
+             "ambiguous-junit-outcome"),
+            (lambda suite: (ET.SubElement(suite[1], "failure"), ET.SubElement(suite[1], "skipped")),
+             "duplicate-junit-case"),
+        )
+        for mutate, code in mutations:
+            with self.subTest(code=code), tempfile.TemporaryDirectory(prefix="junit-guard-order-") as temporary:
+                root = Path(temporary)
+                path, _ = self.write_junit_cases(root, "TEST-private.xml", [("example.Test", "same")] * 2)
+                suite = ET.parse(path).getroot()
+                mutate(suite)
+                path.write_bytes(ET.tostring(suite))
+                with self.assertRaisesRegex(qualification.Refused, "^" + code + "$") as caught:
+                    qualification.junit_outcomes(root)
+                self.assertEqual(code == "duplicate-junit-case", hasattr(caught.exception, "diagnostic"))
+        with tempfile.TemporaryDirectory(prefix="junit-earlier-count-") as temporary:
+            root = Path(temporary)
+            self.write_junit_cases(root, "TEST-a.xml", [("example.Test", "same")], failures="1")
+            self.write_junit_cases(root, "TEST-b.xml", [("example.Test", "same")])
+            with self.assertRaisesRegex(qualification.Refused, "^inconsistent-junit-outcome-counts$"):
+                qualification.junit_outcomes(root)
+
+    def test_junit_duplicate_keeps_empty_malformed_file_and_symlink_refusals(self):
+        with tempfile.TemporaryDirectory(prefix="junit-report-guards-") as temporary:
+            root = Path(temporary)
+            directory = root / qualification.JUNIT
+            with self.assertRaisesRegex(qualification.Refused, "^missing-ordinary-junit-results$"):
+                qualification.junit_outcomes(root)
+            directory.mkdir(parents=True)
+            with self.assertRaisesRegex(qualification.Refused, "^empty-ordinary-junit-results$"):
+                qualification.junit_outcomes(root)
+            path, _ = self.write_junit_cases(root, "TEST-private.xml", [("example.Test", "same")] * 2)
+            is_symlink = Path.is_symlink
+            for link, code in ((directory, "missing-ordinary-junit-results"), (path, "invalid-junit-result-file")):
+                with self.subTest(link=link.name), \
+                        mock.patch.object(Path, "is_symlink", lambda candidate: candidate == link or is_symlink(candidate)):
+                    with self.assertRaisesRegex(qualification.Refused, "^" + code + "$"):
+                        qualification.junit_outcomes(root)
+            path.write_bytes(b"<malformed")
+            with self.assertRaises(ET.ParseError):
+                qualification.junit_outcomes(root)
+
     def test_process_and_report_errors_and_non_windows_execution_fail_with_static_codes(self):
         for error in (OSError(MARKER), ValueError(MARKER), ET.ParseError(MARKER)):
             stderr = io.StringIO()
@@ -638,6 +889,438 @@ class WindowsOutcomeTests(unittest.TestCase):
             self.assertEqual(1, qualification.main([]))
             child.assert_not_called()
         self.assertEqual("windows-owning-suites-require-windows", json.loads(stderr.getvalue())["code"])
+
+
+class WindowsShellLookupDiagnosticTests(unittest.TestCase):
+    def records(self):
+        empty = hashlib.sha256(b"").hexdigest()
+        return [
+            {"v": 1, "phase": "roots", "status": "observed", "value": "present", "roots": [
+                {"i": 0, "kind": "empty", "sha256": empty, "duplicate_of": None},
+                {"i": 1, "kind": "unknown", "sha256": "a" * 64, "duplicate_of": None},
+                {"i": 2, "kind": "pshome", "sha256": "b" * 64, "duplicate_of": None},
+                {"i": 3, "kind": "empty", "sha256": empty, "duplicate_of": 0},
+                {"i": 4, "kind": "unknown", "sha256": "a" * 64, "duplicate_of": 1},
+            ]},
+            {"v": 1, "phase": "observer", "status": "armed"},
+            {"v": 1, "phase": "pre", "status": "observed", "ms": 10},
+            {"v": 1, "phase": "post", "status": "observed", "ms": 20, "lookup_ms": 10,
+             "command_type": 1, "module_kind": "pshome", "module_sha256": "c" * 64},
+        ]
+
+    def encode(self, records):
+        return b"".join(json.dumps(record, separators=(",", ":")).encode("ascii") + b"\n" for record in records)
+
+    def write_capsule(self, root, data):
+        path = root / qualification.LOOKUP
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as stream:
+            stream.write(data)
+        return path
+
+    def collect(self, data):
+        with tempfile.TemporaryDirectory(prefix="lookup-capsule-") as temporary:
+            root = Path(temporary)
+            before = qualification.lookup_before(root)
+            self.assertEqual("absent", before)
+            if data is not None:
+                self.write_capsule(root, data)
+            encoded = qualification.lookup_diagnostic_json(root, before)
+        self.assertLessEqual(len(encoded.encode("ascii")) + 1, 4096)
+        for private in (MARKER, str(root), "\x1b", "\\u001b"):
+            self.assertNotIn(private, encoded)
+        result = json.loads(encoded)
+        self.assertIs(result["diagnostic_only"], True)
+        self.assertNotIn("ok", result)
+        if result["status"] in ("refused", "unavailable"):
+            self.assertNotIn("records", result)
+            self.assertNotIn("a" * 64, encoded)
+        return result
+
+    def test_lookup_preserves_every_root_and_phase_fact_losslessly(self):
+        records = self.records()
+        result = self.collect(self.encode(records))
+        self.assertEqual("observed", result["status"])
+        self.assertIs(result["capsule_complete"], True)
+        observed = copy.deepcopy(result["records"])
+        columns = observed[0].pop("root_columns")
+        self.assertEqual(["i", "kind", "sha256", "duplicate_of"], columns)
+        observed[0]["roots"] = [dict(zip(columns, entry, strict=True)) for entry in observed[0]["roots"]]
+        self.assertEqual(records, observed)
+        for kind, command, hashed in (("no-command", None, None), ("none", 32, None),
+                                     ("unknown", 2, None), ("other", 256, "d" * 64)):
+            with self.subTest(kind=kind):
+                records[-1].update(module_kind=kind, command_type=command, module_sha256=hashed)
+                self.assertEqual(records[-1], self.collect(self.encode(records))["records"][-1])
+
+    def test_lookup_prefixes_absence_empty_and_partial_lines_remain_distinct(self):
+        self.assertEqual("not-observed", self.collect(None)["code"])
+        empty = self.collect(b"")
+        self.assertEqual(("partial", "empty-prefix", []), (empty["status"], empty["code"], empty["records"]))
+        for length in (1, 2, 3):
+            with self.subTest(length=length):
+                result = self.collect(self.encode(self.records()[:length]))
+                self.assertEqual("partial", result["status"])
+                self.assertEqual("incomplete-prefix", result["code"])
+                self.assertIs(result["capsule_complete"], False)
+                self.assertEqual(length, len(result["records"]))
+        self.assertEqual("partial-line", self.collect(self.encode(self.records())[:-1])["code"])
+        records = self.records()
+        records[0].update(value="absent", roots=[])
+        self.assertEqual("absent", self.collect(self.encode(records))["records"][0]["value"])
+
+    def test_lookup_timing_uses_exact_integer_difference_and_explicit_nulls(self):
+        for start, end, elapsed in ((0, 0, 0), (0, 600000, 600000), (600000, 600000, 0),
+                                    (None, 0, None), (0, None, None), (None, None, None)):
+            with self.subTest(start=start, end=end, elapsed=elapsed):
+                records = self.records()
+                records[2]["ms"] = start
+                records[3].update(ms=end, lookup_ms=elapsed)
+                self.assertEqual("observed", self.collect(self.encode(records))["status"])
+        for start, end, elapsed in ((10, 20, 9), (10, 20, None), (20, 10, 0), (None, 20, 10),
+                                    (10, None, 10), (None, None, 0), (True, 20, 19),
+                                    (10, False, 0), (10, 20, True), (-1, 20, 21),
+                                    (0, 600001, 600001), (0.0, 20, 20), (10, "20", 10)):
+            with self.subTest(start=start, end=end, elapsed=elapsed):
+                records = self.records()
+                records[2]["ms"] = start
+                records[3].update(ms=end, lookup_ms=elapsed)
+                self.assertEqual("timing", self.collect(self.encode(records))["code"])
+
+    def test_lookup_rejects_wrong_shapes_types_hashes_and_duplicate_relationships_before_publication(self):
+        mutations = (
+            lambda r: r[0].update(v=True),
+            lambda r: r[0].update(v=2),
+            lambda r: r[0].update(phase=MARKER),
+            lambda r: r[0].update(extra=MARKER),
+            lambda r: r[0].update(value=[]),
+            lambda r: r[0].update(value="absent"),
+            lambda r: r[0].update(roots=[]),
+            lambda r: r[0].update(roots=False),
+            lambda r: r[0]["roots"][0].update(i=False),
+            lambda r: r[0]["roots"][0].update(i=1),
+            lambda r: r[0]["roots"][0].update(kind="unknown"),
+            lambda r: r[0]["roots"][1].update(kind=MARKER),
+            lambda r: r[0]["roots"][1].update(sha256="A" * 64),
+            lambda r: r[0]["roots"][1].update(sha256="a" * 63),
+            lambda r: r[0]["roots"][1].update(sha256=MARKER + "\x1b[31m"),
+            lambda r: r[0]["roots"][1].update(duplicate_of=0),
+            lambda r: r[0]["roots"][3].update(duplicate_of=None),
+            lambda r: r[0]["roots"][3].update(duplicate_of=False),
+            lambda r: r[0]["roots"][4].update(duplicate_of=4),
+            lambda r: r[0]["roots"][4].update(kind="pshome"),
+            lambda r: r[1].update(code="unsupported-api"),
+            lambda r: r[2].update(extra=MARKER),
+            lambda r: r[3].update(command_type=True),
+            lambda r: r[3].update(command_type=3),
+            lambda r: r[3].update(module_kind="no-command"),
+            lambda r: r[3].update(module_kind="none"),
+            lambda r: r[3].update(module_kind=[]),
+            lambda r: r[3].update(module_sha256=None),
+            lambda r: r[3].update(module_sha256="c" * 65),
+            lambda r: r[3].update(status="refused", code=MARKER),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(case=index):
+                records = self.records()
+                mutate(records)
+                self.assertEqual("refused", self.collect(self.encode(records))["status"])
+        records = self.records()
+        records[0]["roots"].extend(copy.deepcopy(records[0]["roots"][1:2]) * 28)
+        self.assertEqual("roots", self.collect(self.encode(records))["code"])
+        records = self.records()
+        records[0]["roots"].append({"i": 5, "kind": "unknown", "sha256": "a" * 64, "duplicate_of": 4})
+        self.assertEqual("roots", self.collect(self.encode(records))["code"])
+
+    def test_lookup_refusal_phases_and_impossible_transitions_are_not_normalized(self):
+        roots = self.records()[0]
+        for status, code in (("unavailable", "existing-hooks"), ("unavailable", "unsupported-api"),
+                             ("refused", "install")):
+            with self.subTest(observer=code):
+                records = [roots, {"v": 1, "phase": "observer", "status": status, "code": code},
+                           {"v": 1, "phase": "post", "status": "unavailable", "code": "observer-unavailable"}]
+                self.assertEqual("observed", self.collect(self.encode(records))["status"])
+        for code in ("input-limit", "encoding", "snapshot"):
+            records = [{"v": 1, "phase": "roots", "status": "refused", "code": code},
+                       {"v": 1, "phase": "observer", "status": "unavailable", "code": "roots-refused"},
+                       {"v": 1, "phase": "post", "status": "unavailable", "code": "observer-unavailable"}]
+            self.assertEqual(records, self.collect(self.encode(records))["records"])
+        for count, status, codes in (
+            (2, "unavailable", ("no-pre", "post-without-pre")),
+            (2, "refused", ("callback",)),
+            (3, "unavailable", ("no-post", "nested-target")),
+            (3, "refused", ("command-type", "module-path-limit", "callback")),
+        ):
+            for code in codes:
+                with self.subTest(pre=count == 3, code=code):
+                    records = self.records()[:count] + [{"v": 1, "phase": "post", "status": status, "code": code}]
+                    self.assertEqual("observed", self.collect(self.encode(records))["status"])
+        invalid = [
+            self.records()[1:],
+            self.records()[:1] + self.records()[2:],
+            self.records()[:2] + self.records()[3:],
+            self.records()[:3] + self.records()[2:3],
+            self.records()[:1] * 2,
+        ]
+        for count, code in ((2, "no-post"), (2, "nested-target"), (3, "no-pre"), (3, "post-without-pre"),
+                             (3, "observer-unavailable")):
+            invalid.append(self.records()[:count] + [{"v": 1, "phase": "post", "status": "unavailable", "code": code}])
+        nonarmed = self.records()
+        nonarmed[1] = {"v": 1, "phase": "observer", "status": "unavailable", "code": "existing-hooks"}
+        invalid.append(nonarmed)
+        roots_refused = self.records()
+        roots_refused[0] = {"v": 1, "phase": "roots", "status": "refused", "code": "snapshot"}
+        invalid.append(roots_refused)
+        for index, records in enumerate(invalid):
+            with self.subTest(invalid=index):
+                self.assertEqual("record-order", self.collect(self.encode(records))["code"])
+
+    def test_lookup_enforces_ascii_json_and_each_input_cap_without_partial_projection(self):
+        valid = self.encode(self.records())
+        duplicate_nested = valid.replace(b'"i":0', b'"i":0,"i":0', 1)
+        for data, code in (
+            (valid + b"\n", "record-count"),
+            (b"\n", "blank-line"),
+            (b"\xef\xbb\xbf" + valid, "encoding"),
+            (valid.replace(b"\n", b"\r\n"), "encoding"),
+            (valid + b"\x1b[31m\n", "encoding"),
+            (b'{"v":1,"v":1}\n', "duplicate-json-key"),
+            (duplicate_nested, "duplicate-json-key"),
+            (valid[:-1] + b" " * 8192 + b"\n", "file-limit"),
+            (self.encode(self.records()[:1])[:-1] + b" " * 6144 + b"\n", "record-limit"),
+            (self.encode(self.records()[:2]) + b'{"private":"' + MARKER.encode() + b'"\n', "invalid-json"),
+            (b"[" * 2000 + b"broken" + b"]" * 2000 + b"\n", "invalid-json"),
+            ('{"v":1}'.encode("utf-16-le") + b"\n", "invalid-json"),
+            (b"null\n", "record-shape"),
+        ):
+            with self.subTest(code=code, bytes=len(data)):
+                self.assertEqual(code, self.collect(data)["code"])
+        lines = [self.encode([record]) for record in self.records()]
+        lines[0] = lines[0][:-1] + b" " * (6144 - len(lines[0])) + b"\n"
+        lines[1] = lines[1][:-1] + b" " * (8192 - sum(map(len, lines))) + b"\n"
+        self.assertEqual(8192, sum(map(len, lines)))
+        self.assertEqual("observed", self.collect(b"".join(lines))["status"])
+
+    def test_lookup_bound_read_stale_file_and_nonregular_reparse_guards(self):
+        with tempfile.TemporaryDirectory(prefix="lookup-filesystem-") as temporary:
+            root = Path(temporary)
+            before = qualification.lookup_before(root)
+            path = self.write_capsule(root, b"x" * 10000)
+            native_open, observed = qualification.os.fdopen, {}
+
+            @contextlib.contextmanager
+            def open_capsule(descriptor, mode, **options):
+                with native_open(descriptor, mode, **options) as stream:
+                    observed["reader"] = mock.Mock(wraps=stream)
+                    observed["stream"] = stream
+                    yield observed["reader"]
+
+            with mock.patch.object(qualification.os, "fdopen", side_effect=open_capsule), \
+                    mock.patch.object(qualification.os, "open", wraps=qualification.os.open) as reader:
+                result = json.loads(qualification.lookup_diagnostic_json(root, before))
+            self.assertEqual("file-limit", result["code"])
+            reader.assert_called_once()
+            self.assertEqual(path, reader.call_args.args[0])
+            flags = reader.call_args.args[1]
+            for name in ("O_BINARY", "O_NOFOLLOW", "O_NONBLOCK"):
+                required = getattr(qualification.os, name, 0)
+                self.assertEqual(required, flags & required)
+            observed["reader"].read.assert_called_once_with(8193)
+            self.assertTrue(observed["stream"].closed)
+            stale = qualification.lookup_before(root)
+            with mock.patch.object(qualification.os, "open") as reader:
+                self.assertEqual("preexisting-capsule", json.loads(qualification.lookup_diagnostic_json(root, stale))["code"])
+                reader.assert_not_called()
+            for missing in (None, False, MARKER):
+                with self.subTest(freshness=type(missing).__name__), \
+                        mock.patch.object(qualification.os, "open") as reader:
+                    encoded = qualification.lookup_diagnostic_json(root, missing)
+                    self.assertEqual("freshness-unavailable", json.loads(encoded)["code"])
+                    self.assertNotIn(MARKER, encoded)
+                    self.assertNotIn("records", json.loads(encoded))
+                    reader.assert_not_called()
+            native_lstat = Path.lstat
+            for guarded in (root, root / "build", path.parent, path):
+                for mode, attributes in ((qualification.stat.S_IFLNK, 0), (qualification.stat.S_IFREG, 0x400)):
+                    def lstat(candidate):
+                        if candidate == guarded:
+                            return mock.Mock(st_mode=mode, st_file_attributes=attributes)
+                        return native_lstat(candidate)
+                    with self.subTest(part=guarded.name, mode=mode), \
+                            mock.patch.object(Path, "lstat", autospec=True, side_effect=lstat), \
+                            mock.patch.object(qualification.os, "open") as reader:
+                        self.assertEqual("reparse-path", json.loads(qualification.lookup_diagnostic_json(root, before))["code"])
+                        reader.assert_not_called()
+            path.unlink()
+            path.mkdir()
+            self.assertEqual("nonregular-path", json.loads(qualification.lookup_diagnostic_json(root, before))["code"])
+
+    def test_lookup_io_and_short_read_failures_do_not_publish_valid_prefixes(self):
+        with tempfile.TemporaryDirectory(prefix="lookup-read-errors-") as temporary:
+            root = Path(temporary)
+            before = qualification.lookup_before(root)
+            self.write_capsule(root, self.encode(self.records()))
+            with mock.patch.object(qualification.os, "open", side_effect=PermissionError(MARKER)):
+                encoded = qualification.lookup_diagnostic_json(root, before)
+            self.assertEqual("read-error", json.loads(encoded)["code"])
+            self.assertNotIn(MARKER, encoded)
+            native_open = qualification.os.fdopen
+
+            @contextlib.contextmanager
+            def short_read(descriptor, mode, **options):
+                with native_open(descriptor, mode, **options) as stream:
+                    reader = mock.Mock(wraps=stream)
+                    reader.read.return_value = self.encode(self.records()[:1])
+                    yield reader
+
+            with mock.patch.object(qualification.os, "fdopen", side_effect=short_read):
+                self.assertEqual("incomplete-read", json.loads(qualification.lookup_diagnostic_json(root, before))["code"])
+            with mock.patch.object(qualification.os, "fdopen", side_effect=OSError(MARKER)) as wrap:
+                self.assertEqual("read-error", json.loads(qualification.lookup_diagnostic_json(root, before))["code"])
+            with self.assertRaises(OSError):
+                qualification.os.fstat(wrap.call_args.args[0])
+            with mock.patch.object(Path, "lstat", side_effect=PermissionError(MARKER)):
+                self.assertEqual("preflight-unavailable", qualification.lookup_before(root))
+            native_fstat = qualification.os.fstat
+            for field in ("st_ino", "st_size", "st_mtime_ns"):
+                calls = []
+
+                def fstat(descriptor):
+                    metadata = native_fstat(descriptor)
+                    calls.append(metadata)
+                    if len(calls) == (1 if field == "st_ino" else 2):
+                        values = {key: getattr(metadata, key)
+                                  for key in ("st_mode", "st_dev", "st_ino", "st_size", "st_mtime_ns")}
+                        values[field] += 1
+                        return mock.Mock(**values)
+                    return metadata
+
+                with self.subTest(changed=field), mock.patch.object(qualification.os, "fstat", side_effect=fstat):
+                    encoded = qualification.lookup_diagnostic_json(root, before)
+                self.assertEqual("file-changed", json.loads(encoded)["code"])
+                self.assertNotIn("a" * 64, encoded)
+
+    def test_lookup_worst_case_lossless_projection_fits_and_overflow_refuses_without_truncation(self):
+        records = self.records()
+        records[0]["roots"] = [
+            {"i": index, "kind": "unknown", "sha256": hashlib.sha256(str(index).encode("ascii")).hexdigest(),
+             "duplicate_of": None} for index in range(32)
+        ]
+        records[2]["ms"] = 100000
+        records[3].update(ms=600000, lookup_ms=500000, command_type=256)
+        encoded_input = self.encode(records)
+        self.assertLessEqual(len(encoded_input), 8192)
+        self.assertTrue(all(len(line) + 1 <= 6144 for line in encoded_input.splitlines()))
+        result = self.collect(encoded_input)
+        self.assertEqual("observed", result["status"])
+        self.assertEqual(32, len(result["records"][0]["roots"]))
+        size = len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode("ascii")) + len(os.linesep)
+        self.assertLessEqual(size, 4096)
+        with mock.patch.object(qualification, "DIAGNOSTIC_BYTE_LIMIT", size - 1):
+            refused = self.collect(encoded_input)
+        self.assertEqual("projection-limit", refused["code"])
+        self.assertNotIn("records", refused)
+
+    def test_lookup_collection_settles_after_child_and_cannot_mask_owning_or_qualification_failure(self):
+        fixtures = WindowsOutcomeTests()
+        for data in (None, b"", self.encode(self.records()[:3]), self.encode(self.records()), b"invalid\n"):
+            for failure in ("none", "owning", "python", "duplicate"):
+                with self.subTest(capsule_bytes=None if data is None else len(data), failure=failure), \
+                        tempfile.TemporaryDirectory(prefix="lookup-owning-flow-") as temporary:
+                    root = Path(temporary)
+                    output, errors = io.StringIO(), io.StringIO()
+
+                    def run(command, **options):
+                        self.assertEqual([sys.executable, str(root / "scripts" / "quality.py"), "test"], command)
+                        self.assertEqual(root, options["cwd"])
+                        self.assertNotIn("windows_shell_lookup_diagnostic", output.getvalue())
+                        options["stdout"].write(b"> Task :test\n")
+                        options["stderr"].write((b"invalid\n" if failure == "python" else fixtures.python_report().encode()))
+                        if failure == "duplicate":
+                            fixtures.write_junit_cases(root, "TEST-fixture.xml", [("example.Class", "same")] * 2)
+                        else:
+                            fixtures.write_junit(root)
+                        if data is not None:
+                            self.write_capsule(root, data)
+                        return subprocess.CompletedProcess(command, 37 if failure == "owning" else 0)
+
+                    with mock.patch.object(qualification.sys, "platform", "win32"), \
+                            mock.patch.object(qualification, "ROOT", root), \
+                            mock.patch.object(qualification.subprocess, "run", side_effect=run) as child, \
+                            contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                        self.assertEqual(0 if failure == "none" else 1, qualification.main([]))
+                    child.assert_called_once()
+                    records = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+                    self.assertEqual("windows_owning_suite_command", records[0]["event"])
+                    self.assertEqual("windows_shell_lookup_diagnostic", records[1]["event"])
+                    self.assertEqual(1, sum(record["event"] == "windows_shell_lookup_diagnostic" for record in records))
+                    if failure == "none":
+                        self.assertEqual("windows_qualification", records[-1]["event"])
+                        self.assertIs(records[-1]["ok"], True)
+                    else:
+                        code = {"owning": "owning-suite-command-failed", "python": "incomplete-python-outcomes",
+                                "duplicate": "duplicate-junit-case"}[failure]
+                        self.assertEqual(code, json.loads(errors.getvalue())["code"])
+                        self.assertFalse(any(record["event"] == "windows_qualification" for record in records))
+                        if failure == "duplicate":
+                            self.assertFalse(any(record.get("suite") == "junit:test" for record in records))
+
+    def test_lookup_observation_does_not_bypass_preflight_and_retains_spawn_failure(self):
+        fixtures = WindowsOutcomeTests()
+        with tempfile.TemporaryDirectory(prefix="lookup-preflight-") as temporary:
+            root = Path(temporary)
+            fixtures.write_junit(root)
+            with mock.patch.object(qualification, "lookup_before") as before, \
+                    mock.patch.object(qualification, "lookup_diagnostic_json") as read, \
+                    mock.patch.object(qualification.subprocess, "run") as child:
+                with self.assertRaisesRegex(qualification.Refused, "^preexisting-ordinary-junit-results$"):
+                    qualification.qualify(root)
+                before.assert_not_called()
+                read.assert_not_called()
+                child.assert_not_called()
+        with tempfile.TemporaryDirectory(prefix="lookup-spawn-failure-") as temporary:
+            output, errors = io.StringIO(), io.StringIO()
+            with mock.patch.object(qualification.sys, "platform", "win32"), \
+                    mock.patch.object(qualification, "ROOT", Path(temporary)), \
+                    mock.patch.object(qualification.subprocess, "run", side_effect=OSError(MARKER)), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                self.assertEqual(1, qualification.main([]))
+            self.assertEqual("process-or-report-error", json.loads(errors.getvalue())["code"])
+            self.assertNotIn(MARKER, output.getvalue() + errors.getvalue())
+            records = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+            self.assertEqual(["windows_shell_lookup_diagnostic"], [record["event"] for record in records])
+            self.assertEqual("not-observed", records[0]["code"])
+
+    def test_lookup_preexisting_capsule_is_not_read_after_owning_failure(self):
+        fixtures = WindowsOutcomeTests()
+        with tempfile.TemporaryDirectory(prefix="lookup-stale-owning-failure-") as temporary:
+            root = Path(temporary)
+            data = self.encode(self.records())
+            path = self.write_capsule(root, data)
+            output, errors = io.StringIO(), io.StringIO()
+
+            def run(command, **options):
+                options["stdout"].write(b"> Task :test\n")
+                options["stderr"].write(fixtures.python_report().encode())
+                fixtures.write_junit(root)
+                return subprocess.CompletedProcess(command, 37)
+
+            with mock.patch.object(qualification.sys, "platform", "win32"), \
+                    mock.patch.object(qualification, "ROOT", root), \
+                    mock.patch.object(qualification.subprocess, "run", side_effect=run) as child, \
+                    mock.patch.object(qualification, "lookup_records") as parse, \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                self.assertEqual(1, qualification.main([]))
+                child.assert_called_once()
+                parse.assert_not_called()
+            self.assertEqual(data, path.read_bytes())
+            records = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+            self.assertEqual(37, records[0]["exit_code"])
+            self.assertEqual({"event": "windows_shell_lookup_diagnostic", "diagnostic_only": True,
+                              "capsule_complete": False, "status": "refused", "code": "preexisting-capsule"}, records[1])
+            self.assertEqual("owning-suite-command-failed", json.loads(errors.getvalue())["code"])
+            self.assertNotIn("a" * 64, output.getvalue())
+            self.assertFalse(any(record["event"] == "windows_qualification" for record in records))
 
 
 class WindowsRefusalDiagnosticTests(unittest.TestCase):
@@ -675,6 +1358,7 @@ class WindowsRefusalDiagnosticTests(unittest.TestCase):
         self.assertNotIn(str(root), public)
         self.assertTrue(all(stream.closed for stream in streams.values()))
         records = [json.loads(line) for line in public.splitlines() if line.startswith("{")]
+        records = without_absent_lookup(self, records)
         self.assertEqual(expected_exit, records[0]["exit_code"])
         self.assertEqual(
             ["windows_owning_suite_command", "windows_qualification_diagnostic"],
