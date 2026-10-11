@@ -135,11 +135,10 @@ def make_consumer(root, name, extra_files=None):
     generator.generate(name, root)
     (root / "migration-source.json").write_text("{}\n", encoding="utf-8")
     profile = generator.PROFILES["repositories"][name]
-    for command in profile["commands"]:
-        if command.startswith("python -m unittest discover -s "):
-            directory = root / command.split("-s ", 1)[1].split()[0]
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / "test_baseline_ok.py").write_text(PASSING_TEST, encoding="utf-8")
+    for start in defects.unittest_directories(profile):
+        directory = root / start
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "test_baseline_ok.py").write_text(PASSING_TEST, encoding="utf-8")
     for relative, content in (extra_files or {}).items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)

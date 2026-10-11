@@ -19,6 +19,7 @@ import urllib.error
 import conformance_support as support
 from conformance import steps
 from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT, native_command
+from test_baseline import CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND
 
 
 gate = support.pr_gate_module()
@@ -236,9 +237,18 @@ class CommandBindingTests(unittest.TestCase):
         self.assertNotIn("node", expected["repositories"]["api"])
         android_only = encoded(expected)
         expected["repositories"]["api"]["node"] = "24.14.0"
+        android_and_api = encoded(expected)
+        contracts_commands = expected["repositories"]["contracts"]["commands"]
+        self.assertEqual(CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, contracts_commands[-1])
+        contracts_commands[-1] = CONTRACTS_SOURCE_TEST_COMMAND
+        android_and_contracts = copy.deepcopy(expected)
+        del android_and_contracts["repositories"]["api"]["node"]
         self.assertEqual(expected, support.generator.PROFILES)
-        for composed_android, source in ((False, accepted), (True, android_only)):
-            with self.subTest(composed_android=composed_android):
+        for composition, source in (
+            ("accepted", accepted), ("android", android_only), ("android-api", android_and_api),
+            ("android-contracts", encoded(android_and_contracts)),
+        ):
+            with self.subTest(composition=composition):
                 fixture = support.PRMetadata("infra")
                 fixture.base_files[gate.PROFILES] = source
                 fixture.snapshot(fixture.base_files, fixture.source_sha)

@@ -21,6 +21,7 @@ import conformance_support as support
 from conformance import generator as generator_module
 import qualify as infra_qualification
 from test_api_native_source_fetch import native_owning_script, remove_native_steps
+from test_baseline import CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND
 
 
 generator = support.generator
@@ -169,6 +170,9 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             ], android_commands)
             android_commands[4] = "python scripts/privacy_traffic_harness.py self-test --all-scripts"
             android_commands.pop()
+            contracts_commands = previous.PROFILES["repositories"]["contracts"]["commands"]
+            self.assertEqual(CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, contracts_commands[-1])
+            contracts_commands[-1] = CONTRACTS_SOURCE_TEST_COMMAND
             self.assertEqual(previous.PROFILES, generator.PROFILES)
             for name in generator.PROFILES["repositories"]:
                 for setup in (False, True):
