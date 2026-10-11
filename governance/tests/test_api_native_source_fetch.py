@@ -3,6 +3,7 @@
 import contextlib
 import copy
 from email.message import Message
+import hashlib
 import io
 import json
 import os
@@ -54,7 +55,9 @@ def native_step(windows=False, phase=0):
 
 def native_owning_script(workflow, windows=False):
     steps = json.loads(workflow)["jobs"]["windows" if windows else "ci"]["steps"]
-    return "\n".join(steps[index]["run"] for index in (-5, -3, -1))
+    name = "Run Windows owning suites" if windows else "Run checks"
+    owning = next(index for index, step in enumerate(steps) if step.get("name") == name)
+    return "\n".join(steps[index]["run"] for index in (owning - 4, owning - 2, owning))
 
 
 def remove_native_steps(case, workflow, jobs=("ci", "windows")):
@@ -62,6 +65,17 @@ def remove_native_steps(case, workflow, jobs=("ci", "windows")):
     for job in jobs:
         steps = value["jobs"][job]["steps"]
         windows = job == "windows"
+        if windows:
+            readback = steps.pop()
+            case.assertEqual({
+                "name": "Read approved-shell command boundary",
+                "if": "always()",
+                "shell": "pwsh",
+                "working-directory": "${{ github.workspace }}",
+                "timeout-minutes": 1,
+            }, {key: value for key, value in readback.items() if key != "run"})
+            case.assertEqual("ae4694d83532deda918500fb7b5d4ec85a61b65d6eb94c428fbcac2af9b9656a",
+                             hashlib.sha256(readback["run"].encode("ascii")).hexdigest())
         case.assertEqual([native_step(windows), native_step(windows, phase=1)],
                          [step for step in steps if step.get("name") in STEP_NAMES])
         case.assertEqual(native_step(windows), steps[-4])
@@ -108,10 +122,15 @@ class NativeWorkflowTests(unittest.TestCase):
         commands = json.loads(current)["jobs"]["ci"]["steps"][-1]["run"]
         self.assertIn('python scripts/quality.py build --base "$BASE_SHA" --require-prepared ', commands)
         self.assertNotIn("--fetch", commands)
-        windows = json.loads(current)["jobs"]["windows"]["steps"][-1]["run"]
+        windows_steps = json.loads(current)["jobs"]["windows"]["steps"]
+        windows = next(step["run"] for step in windows_steps if step["name"] == "Run Windows owning suites")
         self.assertIn("money_client_interop.py prepare --require-prepared", windows)
         self.assertIn("qualify_windows.py --require-prepared", windows)
         self.assertNotIn("--fetch", windows)
+        self.assertEqual(12, sum(
+            step.get("run", "").splitlines().count("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }")
+            for step in windows_steps
+        ))
 
     def test_native_step_drift_is_refused_without_widening_the_expression_allowlist(self):
         checker = {"__name__": "native_source_checker", "__file__": str(support.GOVERNANCE.parent / "scripts/check_repository.py")}
@@ -119,16 +138,20 @@ class NativeWorkflowTests(unittest.TestCase):
         original = json.loads(support.generator.workflow("api"))
         checker["validate_workflow"](".github/workflows/ci.yml", support.generator.encoded(original).encode())
         for job in ("ci", "windows"):
-            for index in (-4, -2):
+            steps = original["jobs"][job]["steps"]
+            owning_name = "Run Windows owning suites" if job == "windows" else "Run checks"
+            owning = next(index for index, step in enumerate(steps) if step.get("name") == owning_name)
+            provider = next(index for index, step in enumerate(steps) if step.get("name") == PROVIDER_STEP)
+            for index in (owning - 3, owning - 1):
                 for label, mutation in (
                     ("missing", lambda steps: steps.pop(index)),
                     ("duplicate", lambda steps: steps.insert(index, copy.deepcopy(steps[index]))),
                     ("changed-command", lambda steps: steps[index].update(run="echo accepted")),
                     ("ambient-name", lambda steps: steps[index].update(env={"GH_TOKEN": "${{ github.token }}"})),
                     ("extra-command", lambda steps: steps[index].update(run=steps[index]["run"] + "\npython scripts/quality.py build")),
-                    ("test-token", lambda steps: steps[-1].setdefault("env", {}).update({TOKEN_NAME: "${{ github.token }}"})),
-                    ("provider-token", lambda steps: steps[-3].update(env={TOKEN_NAME: "${{ github.token }}"})),
-                    ("offline-flag-removed", lambda steps: steps[-1].update(run=steps[-1]["run"].replace(" --require-prepared", ""))),
+                    ("test-token", lambda steps: steps[owning].setdefault("env", {}).update({TOKEN_NAME: "${{ github.token }}"})),
+                    ("provider-token", lambda steps: steps[provider].update(env={TOKEN_NAME: "${{ github.token }}"})),
+                    ("offline-flag-removed", lambda steps: steps[owning].update(run=steps[owning]["run"].replace(" --require-prepared", ""))),
                 ):
                     value = copy.deepcopy(original)
                     mutation(value["jobs"][job]["steps"])
@@ -143,7 +166,9 @@ class NativeWorkflowTests(unittest.TestCase):
             support.assert_powershell_failure_boundaries(self, native_step(windows=True, phase=phase)["run"], count)
 
     def test_complete_windows_native_order_retains_all_twelve_fail_fast_boundaries(self):
-        steps = json.loads(support.generator.workflow("api"))["jobs"]["windows"]["steps"][-5:]
+        steps = json.loads(support.generator.workflow("api"))["jobs"]["windows"]["steps"]
+        owning = next(index for index, step in enumerate(steps) if step.get("name") == "Run Windows owning suites")
+        steps = steps[owning - 4:owning + 1]
         combined = "\n".join(step["run"] for step in steps)
         profile = support.generator.profile_for("api")["commands"]
         expected = [

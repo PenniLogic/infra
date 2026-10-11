@@ -138,6 +138,34 @@ printed, including non-UTF-8 child output. Raw streams stay in temporary files t
 close after collection. Missing or malformed evidence fails with static codes.
 These records are not a trusted-workflow attestation.
 
+An optional `Read approved-shell command boundary` step follows `Run Windows owning
+suites` in that same job. Its `always()` condition retains reporting after an owning
+failure. It uses `pwsh` at `${{ github.workspace }}` and a one-minute step cap inside
+the unchanged job cap. The reader is embedded in the generator, keeping historical
+CI rendering self-contained in the existing generator/profile pair. There is no
+`hashFiles` expression or extra helper: file hashing would read the whole marker
+before the step, outside the reader's bound. The owning result, all twelve native
+fail-fast guards and the required CI result remain unchanged; there is no
+`continue-on-error`, upload action or qualifier/parser change.
+
+The reader consumes at most seven bytes, accepts only the finite zero-to-six-byte
+checkpoint protocol, and emits a fixed JSON record bounded to 1024 ASCII bytes.
+An empty existing record is `none-observed`. Only `FileNotFoundException` and
+`DirectoryNotFoundException` report `not-observed`, null checkpoint/redirected-I/O
+flags, `diagnostic_only: true`, and exit zero because instrumentation is optional.
+This is explicit absence, not successful probe execution, proof of nonexecution or
+acceptance. An expected experiment without an observation remains inconclusive.
+Other unreadable, malformed, partial or oversized data still exits two without
+publishing arbitrary bytes. Same-job console output bypasses the qualifier's capture,
+but does not export raw stream or sidecar-byte custody. The original reader's CRLF
+endings normalize to LF in the embedded JSON-syntax YAML string; the only logical
+reader delta is the three-line narrow absence catch. This is not a claim of executed
+byte identity. Instrumented checkpoints perturb the command and its timing.
+Neither a checkpoint, redirected-I/O flag nor collector success proves the blocking
+cause, pipe identity, shell exit, EOF, cleanup or qualification. Runner loss or a
+hard timeout may prevent any readback. Instrumentation, fresh same-job custody,
+independent review, publication and any one-shot hosted use require separate release.
+
 The shared unittest parser accepts an outcome only on its case line or the
 immediately following docstring line. Interleaved diagnostics, orphaned status
 lines and incomplete records refuse the entire outcome stream; they cannot be

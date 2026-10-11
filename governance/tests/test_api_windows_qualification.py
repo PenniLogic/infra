@@ -18,7 +18,7 @@ from unittest import mock
 import xml.etree.ElementTree as ET
 
 import conformance_support as support
-from conformance import generator as generator_module
+from conformance import generator as generator_module, registry as registry_module
 import qualify as infra_qualification
 from test_api_native_source_fetch import native_owning_script, remove_native_steps
 from test_baseline import CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND
@@ -41,6 +41,141 @@ def api_checker():
 
 
 class ApiWindowsWorkflowTests(unittest.TestCase):
+    def test_optional_shell_readback_preserves_the_complete_accepted_workflow(self):
+        workflow = json.loads(generator.workflow("api"))
+        steps = workflow["jobs"]["windows"]["steps"]
+        name = "Read approved-shell command boundary"
+        self.assertEqual(1, sum(step.get("name") == name for step in steps))
+        self.assertEqual(["Run Windows owning suites", name], [step["name"] for step in steps[-2:]])
+        reader = steps[-1]
+        source = reader["run"]
+        self.assertEqual({
+            "name": name,
+            "if": "always()",
+            "shell": "pwsh",
+            "working-directory": "${{ github.workspace }}",
+            "timeout-minutes": 1,
+            "run": source,
+        }, reader)
+        self.assertEqual(2105, len(source.encode("ascii")))
+        self.assertEqual("ae4694d83532deda918500fb7b5d4ec85a61b65d6eb94c428fbcac2af9b9656a",
+                         hashlib.sha256(source.encode("ascii")).hexdigest())
+        absence = ("} catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {\n"
+                   "    $record.status = 'not-observed'\n    $exitCode = 0\n")
+        self.assertEqual(1, source.count(absence))
+        self.assertEqual("aef8bf30c81bf0a9b14409f949c2d94428ce695c8520fac1af38e7476237eda4",
+                         hashlib.sha256(source.replace(absence, "", 1).encode("ascii")).hexdigest())
+        self.assertNotIn("hashFiles", generator.workflow("api"))
+        self.assertNotIn("\r", source)
+        self.assertEqual(30, workflow["jobs"]["windows"]["timeout-minutes"])
+        self.assertEqual({"contents": "read"}, workflow["permissions"])
+        self.assertNotIn("continue-on-error", steps[-2])
+        steps.pop()
+        self.assertEqual("fa3a89940050ebbee9b7ddb4942c5e3dfd021c181f84f10e5c64253d21c0148c",
+                         hashlib.sha256(generator.encoded(workflow).encode("utf-8")).hexdigest())
+        artifacts = generator.artifacts("api")
+        self.assertEqual(25, len(artifacts))
+        self.assertFalse(any("read_approved_shell_boundary" in path for path in artifacts))
+        self.assertEqual("3e5139775d2f07011a14358f1d789223084bfdabf2dcc1bb82d49360a463a9b9",
+                         hashlib.sha256(artifacts["scripts/qualify_windows.py"].encode("utf-8")).hexdigest())
+
+    def test_optional_shell_readback_drift_is_refused_without_policy_widening(self):
+        original = json.loads(generator.workflow("api"))
+        self.assertEqual("Read approved-shell command boundary", original["jobs"]["windows"]["steps"][-1]["name"])
+        self.assertIn("$record.status = 'not-observed'", original["jobs"]["windows"]["steps"][-1]["run"])
+        validate = api_checker()
+        validate(CI, generator.encoded(original).encode("utf-8"))
+        mutations = (
+            ("absent-step", lambda job: job["steps"].pop()),
+            ("unconditional", lambda job: job["steps"][-1].pop("if")),
+            ("hash-files", lambda job: job["steps"][-1].update(
+                {"if": "always() && hashFiles('build/diagnostics/api106-approved-shell-boundary.bin') != ''"})),
+            ("success-only", lambda job: job["steps"][-1].update(
+                {"if": "hashFiles('build/diagnostics/api106-approved-shell-boundary.bin') != ''"})),
+            ("broad-path", lambda job: job["steps"][-1].update(
+                {"if": "always() && hashFiles('build/diagnostics/*') != ''"})),
+            ("wrong-marker", lambda job: job["steps"][-1].update(
+                {"if": "always() && hashFiles('build/diagnostics/other.bin') != ''"})),
+            ("empty-gate", lambda job: job["steps"][-1].update({"if": ""})),
+            ("shell", lambda job: job["steps"][-1].update(shell="powershell")),
+            ("cwd", lambda job: job["steps"][-1].update({"working-directory": "scripts"})),
+            ("step-cap", lambda job: job["steps"][-1].update({"timeout-minutes": 2})),
+            ("job-cap", lambda job: job.update({"timeout-minutes": 31})),
+            ("collector-soft-failure", lambda job: job["steps"][-1].update({"continue-on-error": True})),
+            ("owner-soft-failure", lambda job: job["steps"][-2].update({"continue-on-error": True})),
+            ("reader", lambda job: job["steps"][-1].update(run="exit 0")),
+            ("read-bound", lambda job: job["steps"][-1].update(
+                run=job["steps"][-1]["run"].replace("[byte[]]::new(7)", "[byte[]]::new(4096)"))),
+            ("output-bound", lambda job: job["steps"][-1].update(
+                run=job["steps"][-1]["run"].replace("-gt 1024", "-gt 4096"))),
+            ("failure-exit", lambda job: job["steps"][-1].update(
+                run=job["steps"][-1]["run"].replace("$exitCode = 2", "$exitCode = 0"))),
+            ("absence-fails", lambda job: job["steps"][-1].update(run=job["steps"][-1]["run"].replace(
+                "$record.status = 'not-observed'\n    $exitCode = 0",
+                "$record.status = 'not-observed'\n    $exitCode = 2"))),
+            ("broad-absence-catch", lambda job: job["steps"][-1].update(run=job["steps"][-1]["run"].replace(
+                "[IO.FileNotFoundException], [IO.DirectoryNotFoundException]", "[IO.IOException]"))),
+            ("missing-parent-fails", lambda job: job["steps"][-1].update(run=job["steps"][-1]["run"].replace(
+                ", [IO.DirectoryNotFoundException]", ""))),
+            ("absence-checkpoint", lambda job: job["steps"][-1].update(run=job["steps"][-1]["run"].replace(
+                "$record.status = 'not-observed'", "$record.status = 'not-observed'\n    $record.checkpoint = 'command-entry'"))),
+            ("absence-flags", lambda job: job["steps"][-1].update(run=job["steps"][-1]["run"].replace(
+                "$record.status = 'not-observed'", "$record.status = 'not-observed'\n    $record.console_redirected = $false"))),
+            ("raw-output", lambda job: job["steps"][-1].update(
+                run=job["steps"][-1]["run"] + "\nGet-Content $path")),
+            ("reordered", lambda job: job["steps"].insert(-1, job["steps"].pop())),
+            ("duplicate", lambda job: job["steps"].append(copy.deepcopy(job["steps"][-1]))),
+            ("credential", lambda job: job["steps"][-1].update(env={"GH_TOKEN": "${{ github.token }}"})),
+        )
+        with tempfile.TemporaryDirectory(prefix="api-shell-readback-drift-") as temporary:
+            root = Path(temporary)
+            generator.generate("api", root)
+            for label, mutation in mutations:
+                changed = copy.deepcopy(original)
+                mutation(changed["jobs"]["windows"])
+                content = generator.encoded(changed).encode("utf-8")
+                self.assertNotEqual(generator.encoded(original).encode("utf-8"), content, label)
+                (root / CI).write_bytes(content)
+                with self.subTest(mutation=label):
+                    with self.assertRaisesRegex(ValueError, "API CI must match"):
+                        validate(CI, content)
+                    with self.assertRaisesRegex(ValueError, "Generated setup differs"):
+                        generator.generate("api", root, check=True)
+            (root / CI).write_bytes(generator.encoded(original).encode("utf-8"))
+            generator.generate("api", root, check=True)
+        namespace = {"__file__": str(support.GOVERNANCE.parent / "scripts/check_repository.py")}
+        exec(compile(generator.standard_checker("api"), "standard API checker", "exec"), namespace)
+        with self.assertRaisesRegex(ValueError, "unreviewed workflow expression"):
+            namespace["validate_expressions"]({"working-directory": "${{ github.workspace }}"})
+        with self.assertRaisesRegex(ValueError, "conditions are not part"):
+            namespace["validate_mappings"]({"if": original["jobs"]["windows"]["steps"][-1]["if"]})
+        for name in generator.PROFILES["repositories"]:
+            for setup in (False, True):
+                if name != "api" or setup:
+                    self.assertNotIn("api106-approved-shell-boundary", generator.workflow(name, setup=setup))
+
+    def test_shell_readback_keeps_two_file_historical_workflow_rendering(self):
+        sources = {
+            "governance/generate.py": (support.GOVERNANCE / "generate.py").read_bytes(),
+            "governance/repository-profiles.json": (support.GOVERNANCE / "repository-profiles.json").read_bytes(),
+        }
+        reads = []
+        ref = "a" * 40
+
+        def read_source(command, **options):
+            self.assertEqual(["git", "-C", str(support.GOVERNANCE.parent), "show"], command[:-1])
+            self.assertTrue(command[-1].startswith(ref + ":"))
+            name = command[-1].split(":", 1)[1]
+            self.assertIn(name, sources)
+            reads.append(name)
+            return subprocess.CompletedProcess(command, 0, sources[name], b"")
+
+        rendered = registry_module.render_workflow_at(
+            support.GOVERNANCE.parent, ref, "api", run=read_source,
+        )
+        self.assertEqual(generator.workflow("api").encode("utf-8"), rendered)
+        self.assertEqual(list(sources), reads)
+
     def test_parallel_owning_suites_and_always_running_required_native_result(self):
         workflow = json.loads(generator.workflow("api"))
         jobs = workflow["jobs"]
@@ -83,7 +218,8 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             lambda value: value["jobs"]["ci-result"].update(needs=["ci"]),
             lambda value: value["jobs"]["ci-result"]["steps"][0].update(run="true"),
             lambda value: value["jobs"]["windows"].update({"runs-on": "windows-latest"}),
-            lambda value: value["jobs"]["windows"]["steps"][-1].update(run="echo skipped"),
+            lambda value: next(step for step in value["jobs"]["windows"]["steps"]
+                               if step["name"] == "Run Windows owning suites").update(run="echo skipped"),
             lambda value: value["jobs"]["windows"]["steps"][0].update(uses="actions/checkout@" + "a" * 40),
             lambda value: value.update(permissions={"contents": "write"}),
             lambda value: value["jobs"]["ci"]["steps"][-1].pop("env"),
@@ -129,7 +265,9 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
     def test_input_preparation_omission_stub_reordering_and_missing_guard_are_refused(self):
         validate = api_checker()
         original = json.loads(generator.workflow("api"))
-        commands = original["jobs"]["windows"]["steps"][-1]["run"].splitlines()[::2]
+        owning = next(step for step in original["jobs"]["windows"]["steps"]
+                      if step["name"] == "Run Windows owning suites")
+        commands = owning["run"].splitlines()[::2]
         self.assertEqual(INPUT_PREPARATION + " --require-prepared", commands[-2])
         changed_commands = (
             commands[:-2] + commands[-1:],
@@ -139,12 +277,13 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             commands[:-2] + [INPUT_PREPARATION + " --node ignored", commands[-1]],
         )
         scripts = [generator.powershell_commands(changed) for changed in changed_commands]
-        scripts.append(original["jobs"]["windows"]["steps"][-1]["run"].replace(
+        scripts.append(owning["run"].replace(
             commands[-2] + "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", commands[-2],
         ))
         for script in scripts:
             changed = copy.deepcopy(original)
-            changed["jobs"]["windows"]["steps"][-1]["run"] = script
+            next(step for step in changed["jobs"]["windows"]["steps"]
+                 if step["name"] == "Run Windows owning suites")["run"] = script
             with self.subTest(script=script), self.assertRaisesRegex(ValueError, "API CI must match"):
                 validate(CI, generator.encoded(changed).encode("utf-8"))
 
