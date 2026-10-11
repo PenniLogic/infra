@@ -30,6 +30,27 @@ class ClassificationTests(unittest.TestCase):
         detected = steps.detect_steps(["python scripts/check_repository.py", "echo ok"])
         self.assertEqual(["test"], steps.missing_categories(detected))
 
+    def test_only_the_exact_contracts_source_test_command_counts_as_a_test(self):
+        command = "python scripts/run_source_tests.py"
+        self.assertEqual(["test"], steps.classify(command))
+        self.assertEqual([], steps.detect_steps([command])["consumer_self_tests"])
+        for unknown in (
+            f"echo {command}", f"{command} --module test_fast", f"{command} --pattern test_fast.py",
+            f"{command} && true", f"{command}; true", f"{command} # skipped",
+            f" {command}", f"{command} ", f"{command}\n", f"{command}\r\n",
+            "python3 scripts/run_source_tests.py", "python -u scripts/run_source_tests.py",
+            "python scripts/run_source_tests.py-stub", "python scripts/RUN_SOURCE_TESTS.py",
+            "python scripts\\run_source_tests.py",
+        ):
+            with self.subTest(command=unknown):
+                self.assertEqual(["other"], steps.classify(unknown))
+        detected = steps.detect_steps(support.generator.profile_for("contracts")["commands"])
+        self.assertEqual([
+            "python scripts/smoke.py python", "python scripts/smoke.py typescript",
+            "python scripts/smoke.py kotlin", command,
+        ], detected["test"])
+        self.assertEqual([], detected["other"])
+
     def test_only_the_exact_android_ci_command_counts_as_build_test_and_lint(self):
         self.assertEqual(["build", "lint", "test"], steps.classify("python scripts/quality_gates.py ci"))
         unknown = [

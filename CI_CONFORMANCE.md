@@ -69,7 +69,11 @@ If tree exit, job membership or pipe release cannot be confirmed, the probe fail
 claiming a bounded successful teardown. Repository inspection stops; a planted fixture records
 `restoration_deferred` and retains its backups rather than restoring files a consumer might still hold.
 The JSON includes the redacted failure/recovery details. Confirm process exit before recovering or
-discarding that scratch checkout.
+discarding that scratch checkout. Unconfirmed Windows teardown diagnostics retain bounded numeric
+pin/wait observations from the original calls, not additional process queries or exit evidence.
+The finite-worker fixture's receipt-count failure also retains receipt names, elapsed time and the
+runner's already bounded/redacted `Result`, distinguishing a timeout from an early worker failure.
+Neither diagnostic changes the assertions, deadlines or fail-closed decisions.
 
 POSIX probes now start in a new session/process group. On timeout or an interrupted capture, the
 parent sends `SIGKILL` only while its unreaped child still reserves that group's identifier, then
@@ -344,8 +348,8 @@ security acceptance.
 | `workflow-unpinned-action` | workflow | python | every profile | drift check; consumer checker refuses `actions/checkout@v4` (pinned-action rule) |
 | `workflow-reusable-workflow-job` | workflow | python | every profile | drift check; consumer checker refuses `jobs.reuse.uses` |
 | `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current profile-rendered checker refuses with its existing exact CI-binding diagnostic for Infra/API, or the step-key rule for the other profiles |
-| `python-tests-removed` | python | python | profiles with `unittest discover` | the exact profile command exits 5, `NO TESTS RAN` |
-| `python-test-failing` | python | python | profiles with `unittest discover` | each exact profile command exits 1 and its actual `TestResult` records its own indexed planted case as a failure |
+| `python-tests-removed` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | the exact profile command exits 5, `NO TESTS RAN` |
+| `python-test-failing` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | each exact profile command exits 1 and its actual `TestResult` records its own indexed planted case as a failure |
 | `python-pytest-failing` / `python-pytest-removed` | python | uv | ai-service | `uv sync --locked` then `uv run --locked pytest` exits 1 / 5 |
 | `documentation-index-link-broken` | documentation | python | docs | `check_docs.py` fails: `generated slot ADR-001 differs` |
 | `documentation-dangling-supersedes` | documentation | python | docs | `check_docs.py` fails: `supersedes ADR-099, which has no source record` |

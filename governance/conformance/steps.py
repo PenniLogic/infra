@@ -22,6 +22,7 @@ STEP_PATTERNS = (
     (r"\bpip install\b", {"install"}),
     (r"\btoolchain\.py install\b", {"install"}),
     (r"\bunittest\b", {"test"}),
+    (r"\Apython scripts/run_source_tests\.py\Z", {"test"}),
     (r"\bpytest\b", {"test"}),
     (r"^npm test\b", {"test"}),
     (r"\bnpm run smoke\b", {"test"}),

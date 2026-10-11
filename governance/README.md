@@ -26,6 +26,25 @@ python governance/generate.py --root <scratch>                                # 
 python -m unittest discover -s governance/tests
 ```
 
+## Contracts source-test entry point (producer preparation)
+
+The Contracts profile replaces only its final `unittest discover` command with
+`python scripts/run_source_tests.py`. Contracts owns that stdlib runner: complete
+`scripts/tests/test_*.py` discovery and the exact discovered/executed method-ID union
+remain required, with at most two isolated Python process lanes for source-CLI-safe
+modules and serialized global-patched, generation and canonical-output work.
+Missing/duplicate IDs, discovery, child and receipt failures must fail the command;
+this is not a selector or a reduced suite. Conformance recognizes only the exact
+entry point and retains both existing source-test defect probes, including the
+accepted exit codes and private indexed `TestResult` witness.
+
+Only Contracts' five command-derived artifacts change; all other generated files
+remain byte-identical to the accepted base. Setup, lint, breaking checks, real double-generation, all three
+target smokes, native `CI` identity/platform and timing limits are unchanged.
+This prepares [infra#22](https://github.com/PenniLogic/infra/issues/22) /
+[PenniLogic/contracts#1](https://github.com/PenniLogic/contracts/issues/1); it does not
+implement or activate the companion runner or prove a sub-600-second native envelope.
+
 ## API combined build and coverage (consumer adoption held)
 
 Native API CI now passes the comparison base to its one normal build rather than
