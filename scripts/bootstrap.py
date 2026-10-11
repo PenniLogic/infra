@@ -344,7 +344,7 @@ if os.name == "nt":
     JobObjectBasicAccountingInformation, JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation = 1, 3, 9
     PROCESS_TERMINATE, PROCESS_SET_QUOTA, PROCESS_QUERY_LIMITED_INFORMATION = 0x0001, 0x0100, 0x1000
     SYNCHRONIZE = 0x100000
-    WAIT_OBJECT_0, WAIT_TIMEOUT, MAXIMUM_WAIT_OBJECTS = 0x0, 0x102, 64
+    WAIT_OBJECT_0, WAIT_TIMEOUT, WAIT_FAILED, MAXIMUM_WAIT_OBJECTS = 0x0, 0x102, 0xFFFFFFFF, 64
     ERROR_INVALID_PARAMETER, ERROR_MORE_DATA = 87, 234
 
     class _IO_COUNTERS(ctypes.Structure):
@@ -504,15 +504,19 @@ class ProcessExits:
 
     def __init__(self):
         self.handles, self.gone, self.unopenable = {}, set(), set()
+        self.open_errors, self.batch_waits, self.process_waits = {}, [], {}
 
     def add(self, pids):
         for pid in pids:
             if pid in self.handles or pid in self.gone or pid in self.unopenable:
                 continue
             handle = _kernel32.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            error = ctypes.get_last_error() if not handle else None
+            if error is not None:
+                self.open_errors[pid] = error
             if handle:
                 self.handles[pid] = handle
-            elif ctypes.get_last_error() == ERROR_INVALID_PARAMETER:
+            elif error == ERROR_INVALID_PARAMETER:
                 self.gone.add(pid)
             else:
                 self.unopenable.add(pid)
@@ -523,17 +527,39 @@ class ProcessExits:
 
     def wait(self, timeout):
         """Wait up to ``timeout`` seconds for every pinned process object; returns how many are signaled."""
-        handles, deadline = list(self.handles.values()), time.monotonic() + timeout
+        processes = list(self.handles.items())
+        handles, deadline = [handle for _, handle in processes], time.monotonic() + timeout
+        self.batch_waits, self.process_waits = [], {}
         for start in range(0, len(handles), MAXIMUM_WAIT_OBJECTS):
             batch = handles[start:start + MAXIMUM_WAIT_OBJECTS]
             array = (wintypes.HANDLE * len(batch))(*batch)
             remaining = max(0, int((deadline - time.monotonic()) * 1000))
-            _kernel32.WaitForMultipleObjects(len(batch), array, True, remaining)
+            result = _kernel32.WaitForMultipleObjects(len(batch), array, True, remaining)
+            error = ctypes.get_last_error() if result == WAIT_FAILED else None
+            self.batch_waits.append((start, len(batch), result, error))
         signaled = 0
-        for handle in handles:
+        for pid, handle in processes:
             array = (wintypes.HANDLE * 1)(handle)
-            signaled += _kernel32.WaitForMultipleObjects(1, array, True, 0) == WAIT_OBJECT_0
+            result = _kernel32.WaitForMultipleObjects(1, array, True, 0)
+            error = ctypes.get_last_error() if result == WAIT_FAILED else None
+            self.process_waits[pid] = (result, error)
+            signaled += result == WAIT_OBJECT_0
         return signaled + len(self.gone)
+
+    def diagnostics(self):
+        """Bounded numeric observations from pinning and the latest wait; no process queries."""
+        sections = (
+            ("OpenProcess errors", sorted(self.open_errors.items(),
+                                          key=lambda item: (item[1] == ERROR_INVALID_PARAMETER, item[0]))),
+            ("batch waits (offset,count,return,error)", sorted(self.batch_waits,
+                                                             key=lambda item: (item[2] == WAIT_OBJECT_0, item[0]))),
+            ("process waits (pid,(return,error))", sorted(self.process_waits.items(),
+                                                        key=lambda item: (item[1][0] == WAIT_OBJECT_0, item[0]))),
+        )
+        return "; ".join(
+            f"{name}={items[:8]!r}" + (f" (+{len(items) - 8} omitted)" if len(items) > 8 else "")
+            for name, items in sections
+        )
 
     def close(self):
         for handle in self.handles.values():
@@ -607,6 +633,7 @@ def terminate_tree(job, process, deadline, *, require_exit=False, label="docker"
         f" processes exited: {awaited}; processes still active: {'unknown' if active is None else active});"
         + ("" if observed else " process list unavailable;")
         + " a descendant may still be running."
+        + f" Process observations: {exits.diagnostics()}."
     )
     if require_exit:
         raise ProcessTeardownError(message)

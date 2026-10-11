@@ -18,7 +18,8 @@ import urllib.error
 
 import conformance_support as support
 from conformance import steps
-from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT
+from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT, native_command
+from test_baseline import CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND
 
 
 gate = support.pr_gate_module()
@@ -150,7 +151,7 @@ class CommandBindingTests(unittest.TestCase):
                     self.assertLessEqual(report["requests"], 32)
             rendered_commands = steps.workflow_run_commands(support.generator.workflow(name).encode("utf-8"))
             self.assertEqual([
-                BUILD_COMMAND if name == "api" and command == "python scripts/quality.py build"
+                native_command(command) if name == "api"
                 else support.generator.infra_ci_command(command) if name == "infra"
                 else command for command in profile["commands"]
             ], rendered_commands)
@@ -160,9 +161,11 @@ class CommandBindingTests(unittest.TestCase):
                 commands += 1
                 for stub in (False, True):
                     def update(_document, job):
-                        run = next(step for step in job["steps"] if step.get("name") == "Run checks")
+                        run = next(step for step in job["steps"]
+                                   if step.get("name") in ("Check repository", "Prepare verified Money provider", "Run checks")
+                                   and command in step["run"].split("\n"))
                         lines = run["run"].split("\n")
-                        self.assertEqual(command, lines[position])
+                        position = lines.index(command)
                         if stub:
                             lines[position] = "echo " + MARKER
                         else:
@@ -178,7 +181,7 @@ class CommandBindingTests(unittest.TestCase):
                         self.assertIn({"path": CI, "matches": False}, report["bindings"])
                         if name == "api" and command == BUILD_COMMAND:
                             api_build_cases += 1
-        self.assertEqual(49, commands)
+        self.assertEqual(48, commands)
         self.assertEqual(2, api_build_cases)
 
     def test_api_combined_handoff_mutations_fail_exact_workflow_binding(self):
@@ -219,15 +222,40 @@ class CommandBindingTests(unittest.TestCase):
             "show", "dbdf2e27144e60b11aed54ed1e576d496a928ec3:governance/repository-profiles.json",
         ).encode("utf-8")
         expected = json.loads(accepted)
+        android_commands = expected["repositories"]["android"]["commands"]
+        self.assertEqual([
+            "python scripts/check_repository.py",
+            "python -m pip install -r scripts/privacy_traffic/requirements.txt",
+            "python scripts/quality_gates.py ci",
+            "python scripts/quality_gates.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test",
+            "python scripts/check_privacy_components.py",
+            'python -m unittest discover -s scripts/tests -p "test_*.py"',
+        ], android_commands)
+        android_commands[4] = "python scripts/privacy_traffic_harness.py self-test --all-scripts"
+        android_commands.pop()
+        self.assertNotIn("node", expected["repositories"]["api"])
+        android_only = encoded(expected)
         expected["repositories"]["api"]["node"] = "24.14.0"
+        android_and_api = encoded(expected)
+        contracts_commands = expected["repositories"]["contracts"]["commands"]
+        self.assertEqual(CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, contracts_commands[-1])
+        contracts_commands[-1] = CONTRACTS_SOURCE_TEST_COMMAND
+        android_and_contracts = copy.deepcopy(expected)
+        del android_and_contracts["repositories"]["api"]["node"]
         self.assertEqual(expected, support.generator.PROFILES)
-        fixture = support.PRMetadata("infra")
-        fixture.base_files[gate.PROFILES] = accepted
-        fixture.snapshot(fixture.base_files, fixture.source_sha)
-        report = fixture.evaluate(gate)
-        self.assertEqual("fail", report["result"])
-        self.assertEqual(["protected-profile-binding"], report["violations"])
-        self.assertEqual(1, gate.exit_code(report))
+        for composition, source in (
+            ("accepted", accepted), ("android", android_only), ("android-api", android_and_api),
+            ("android-contracts", encoded(android_and_contracts)),
+        ):
+            with self.subTest(composition=composition):
+                fixture = support.PRMetadata("infra")
+                fixture.base_files[gate.PROFILES] = source
+                fixture.snapshot(fixture.base_files, fixture.source_sha)
+                report = fixture.evaluate(gate)
+                self.assertEqual("fail", report["result"])
+                self.assertEqual(["protected-profile-binding"], report["violations"])
+                self.assertEqual(1, gate.exit_code(report))
 
     def test_whole_step_job_filters_skips_masking_and_wrong_names_all_fail(self):
         for name in support.generator.PROFILES["repositories"]:

@@ -19,7 +19,8 @@ from unittest import mock
 
 import conformance_support as support
 from conformance import defects, github_api, registry, report, run
-from test_baseline import CONTRACTS_STATE
+from test_baseline import CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND, CONTRACTS_STATE
+from test_api_native_source_fetch import remove_native_steps
 
 
 BASE = "e96eb757beeb02b0a802e7545ca781669e85deb8"
@@ -241,8 +242,8 @@ class RuntimeRenderingTests(unittest.TestCase):
                         previous_profile["install"] = [restore]
                         previous_profile["commands"] = [
                             previous_commands[0], restore, "python scripts/quality_gates.py ci",
-                            previous_commands[-2], "python scripts/privacy_traffic_harness.py self-test",
-                            "python scripts/check_privacy_components.py", previous_commands[-1],
+                            previous_commands[-2], "python scripts/privacy_traffic_harness.py self-test --all-scripts",
+                            "python scripts/check_privacy_components.py",
                         ]
                     if name == "api":
                         self.assertEqual([
@@ -254,6 +255,8 @@ class RuntimeRenderingTests(unittest.TestCase):
                         previous_profile["node"] = "24.14.0"
                     if name == "contracts":
                         previous_profile["state"] = CONTRACTS_STATE
+                        self.assertEqual(CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, previous_profile["commands"][-1])
+                        previous_profile["commands"][-1] = CONTRACTS_SOURCE_TEST_COMMAND
                     for setup in (False, True):
                         expected = old.workflow(name, setup=setup)
                         if name == "android" and not setup:
@@ -276,13 +279,15 @@ class RuntimeRenderingTests(unittest.TestCase):
                                 ], run_checks["run"].split("\n"))
                                 run_checks["run"] = "\n".join(previous_profile["commands"])
                             expected = old.encoded(document)
-                        if name == "api" and not setup:
+                        if name in ("api", "contracts") and not setup:
                             value = json.loads(expected)
                             run_checks = next(step for step in value["jobs"]["ci"]["steps"]
                                               if step["name"] == "Run checks")
                             run_checks["run"] = "\n".join(previous_profile["commands"])
                             expected = json.dumps(value, indent=2) + "\n"
                         actual = support.generator.workflow(name, setup=setup)
+                        if name == "api" and not setup:
+                            actual = remove_native_steps(self, actual, jobs=("ci",))
                         if name == "api":
                             value = json.loads(actual)
                             native_steps = next(iter(value["jobs"].values()))["steps"]

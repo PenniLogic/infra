@@ -226,7 +226,7 @@ class CatalogAndRendererTests(unittest.TestCase):
         self.assertEqual("Linux qualification", workflow["jobs"]["ci"]["name"])
         self.assertEqual("CI", workflow["jobs"]["ci-result"]["name"])
         self.assertEqual([BUILD_COMMAND, "python -m unittest discover -s scripts/tests"],
-                         workflow["jobs"]["ci"]["steps"][-1]["run"].splitlines()[7:])
+                         workflow["jobs"]["ci"]["steps"][-1]["run"].splitlines()[-2:])
         self.assertNotIn("python scripts/quality.py coverage", json.dumps(workflow))
         self.assertNotIn("GH_TOKEN", json.dumps(workflow))
         self.assertNotIn("authenticated-local", json.dumps(workflow))

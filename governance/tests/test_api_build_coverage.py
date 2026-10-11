@@ -8,7 +8,8 @@ import tempfile
 import unittest
 
 import conformance_support as support
-from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT, shell_path
+from conformance import steps as workflow_steps
+from test_api_node_runtime import BASE_ARGUMENT, BUILD_COMMAND, NODE_ARGUMENT, native_command, shell_path
 
 
 generator = support.generator
@@ -25,11 +26,12 @@ class ApiBuildCoverageTests(unittest.TestCase):
         self.assertEqual([BUILD_COMMAND], commands)
         self.assertEqual("Run checks", steps[-1]["name"])
         self.assertEqual([
-            "Checkout", "Python", "Node", "JDK", "Prepare API Node SDK", "Run checks",
+            "Checkout", "Python", "Node", "JDK", "Prepare API Node SDK",
+            "Check repository", "Prepare pinned Money sources", "Prepare verified Money provider",
+            "Prepare pinned database and interop sources", "Run checks",
         ], [step["name"] for step in steps])
-        expected = list(generator.profile_for("api")["commands"])
-        expected[expected.index("python scripts/quality.py build")] = BUILD_COMMAND
-        self.assertEqual(expected, steps[-1]["run"].splitlines())
+        expected = [native_command(command) for command in generator.profile_for("api")["commands"]]
+        self.assertEqual(expected, workflow_steps.workflow_run_commands(generator.workflow("api").encode()))
         self.assertEqual({"contents": "read"}, workflow["permissions"])
         self.assertEqual(30, workflow["jobs"]["ci"]["timeout-minutes"])
         self.assertEqual({"persist-credentials": False, "fetch-depth": 0}, steps[0]["with"])
@@ -41,7 +43,11 @@ class ApiBuildCoverageTests(unittest.TestCase):
             "pull_request": {"branches": ["main"]},
         }, workflow["on"])
         steps = workflow["jobs"]["ci"]["steps"]
-        self.assertEqual([BASE_ENV], [step["env"] for step in steps if "env" in step])
+        self.assertEqual([
+            ("Prepare pinned Money sources", {"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}),
+            ("Prepare pinned database and interop sources", {"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}),
+            ("Run checks", BASE_ENV),
+        ], [(step["name"], step["env"]) for step in steps if "env" in step])
         self.assertEqual(BASE_ENV, steps[-1]["env"])
         self.assertNotIn("env", workflow["jobs"]["ci"])
         self.assertNotIn("${{", steps[-1]["run"])
@@ -81,8 +87,8 @@ class ApiCombinedArgvTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="api-combined-argv-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        steps = json.loads(generator.workflow("api"))["jobs"]["ci"]["steps"]
-        self.checks = next(step for step in steps if step["name"] == "Run checks")["run"]
+        self.checks = "\n".join(workflow_steps.workflow_run_commands(generator.workflow("api").encode()))
+        self.assertNotIn("--native-fetch", self.checks)
         self.build = next(line for line in self.checks.splitlines()
                           if line.startswith("python scripts/quality.py build"))
         self.node = shell_path(self.root / "SDK with spaces $literal 'quote';literal" / "node")
@@ -117,7 +123,7 @@ class ApiCombinedArgvTests(unittest.TestCase):
                          for record in self.argv_file.read_bytes().splitlines()]
                 quality = [call for call in calls if call[:1] == ["scripts/quality.py"]]
                 self.assertEqual([[
-                    "scripts/quality.py", "build", "--base", "b" * 40,
+                    "scripts/quality.py", "build", "--base", "b" * 40, "--require-prepared",
                     "--money-client-interop-node", self.node,
                 ]], quality)
                 self.assertEqual(9 if exit_code == 0 else 8, len(calls))
@@ -136,7 +142,7 @@ class ApiCombinedArgvTests(unittest.TestCase):
                 result = self.run_script(recorder + self.build)
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual([
-                    "scripts/quality.py", "build", "--base", "" if base is None else base,
+                    "scripts/quality.py", "build", "--base", "" if base is None else base, "--require-prepared",
                     "--money-client-interop-node", self.node,
                 ], self.argv_file.read_text(encoding="utf-8").split("\0")[:-1])
                 self.assertFalse((self.root / "injected-base").exists())

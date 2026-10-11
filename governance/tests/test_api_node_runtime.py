@@ -11,19 +11,29 @@ import unittest
 from unittest import mock
 
 import conformance_support as support
+from conformance import steps as conformance_steps
 
 
 generator = support.generator
 CI = ".github/workflows/ci.yml"
 NODE_ARGUMENT = ' --money-client-interop-node "${MONEY_CLIENT_INTEROP_NODE:?API Node SDK was not prepared}"'
 BASE_ARGUMENT = ' --base "$BASE_SHA"'
-BUILD_COMMAND = "python scripts/quality.py build" + BASE_ARGUMENT + NODE_ARGUMENT
+BUILD_COMMAND = "python scripts/quality.py build" + BASE_ARGUMENT + " --require-prepared" + NODE_ARGUMENT
 STARTUP_ERROR = b"::error::API Node SDK startup environment check failed.\n"
 PRELOAD_OPTION = '--require "./owned preload.cjs"'
 
 
 def api_steps():
     return json.loads(generator.workflow("api"))["jobs"]["ci"]["steps"]
+
+
+def native_command(command):
+    return {
+        "python scripts/materialize_money_sources.py": "python scripts/materialize_money_sources.py --verify-inputs",
+        "python -I -S -B scripts/prepare_database_admission.py prepare --fetch":
+            "python -I -S -B scripts/prepare_database_admission.py prepare",
+        "python scripts/quality.py build": BUILD_COMMAND,
+    }.get(command, command)
 
 
 def shell_path(path):
@@ -39,6 +49,8 @@ class ApiNodeRuntimeTests(unittest.TestCase):
         self.assertEqual("24.14.0\n", generator.artifacts("api")[".nvmrc"])
         self.assertEqual([
             "Checkout", "Python", "Node", "JDK", "Prepare API Node SDK",
+            "Check repository", "Prepare pinned Money sources", "Prepare verified Money provider",
+            "Prepare pinned database and interop sources",
             "Run checks",
         ], [step["name"] for step in steps])
         self.assertEqual({
@@ -48,11 +60,10 @@ class ApiNodeRuntimeTests(unittest.TestCase):
         }, steps[2])
         self.assertIn('/node/24.14.0/x64"', steps[4]["run"])
         self.assertIn('"11.9.0"', steps[4]["run"])
-        commands = list(generator.profile_for("api")["commands"])
-        commands[commands.index("python scripts/quality.py build")] = BUILD_COMMAND
-        self.assertEqual("\n".join(commands), steps[5]["run"])
+        commands = [native_command(command) for command in generator.profile_for("api")["commands"]]
+        self.assertEqual(commands, conformance_steps.workflow_run_commands(generator.workflow("api").encode("utf-8")))
         self.assertEqual({"BASE_SHA": "${{ github.event.pull_request.base.sha || github.sha }}"},
-                         steps[5]["env"])
+                         steps[-1]["env"])
         self.assertEqual({"contents": "read"}, workflow["permissions"])
         self.assertEqual(30, workflow["jobs"]["ci"]["timeout-minutes"])
         self.assertNotIn("env", workflow["jobs"]["ci"])
@@ -273,13 +284,14 @@ class ApiNodeStepTests(unittest.TestCase):
         recorder = 'python() { printf "%s\\0" "$@" >> "$FIXTURE_ARGV"; printf "\\n" >> "$FIXTURE_ARGV"; }\n'
         coverage = generator.api_node_command('python scripts/quality.py coverage --base "$BASE_SHA"')
         self_test = generator.api_node_command('python scripts/quality.py gate-self-test --artifact-dir "$RUNNER_TEMP"')
-        result = self.run_script(recorder + self.steps["Run checks"]["run"] + "\n"
+        owning = "\n".join(conformance_steps.workflow_run_commands(generator.workflow("api").encode("utf-8")))
+        result = self.run_script(recorder + owning + "\n"
                                  + coverage + "\n" + self_test)
         self.assertEqual(0, result.returncode, result.stderr)
         calls = self.arguments("argv")
         quality = [call for call in calls if call[:1] == ["scripts/quality.py"]]
         self.assertEqual([
-            ["scripts/quality.py", "build", "--base", "b" * 40, "--money-client-interop-node", node],
+            ["scripts/quality.py", "build", "--base", "b" * 40, "--require-prepared", "--money-client-interop-node", node],
             ["scripts/quality.py", "coverage", "--base", "b" * 40, "--money-client-interop-node", node],
             ["scripts/quality.py", "gate-self-test", "--artifact-dir", self.environment["RUNNER_TEMP"],
              "--money-client-interop-node", node],

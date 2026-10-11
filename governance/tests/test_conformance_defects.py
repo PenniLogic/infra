@@ -5,6 +5,7 @@ pass (a runner that always exits 0 is reported not_proved), an unrestored tree f
 toolchains are recorded as not exercised, and probe processes never inherit credential variables."""
 
 import dataclasses
+import importlib.util
 import json
 import os
 import shutil
@@ -47,12 +48,40 @@ class FixtureCatalogueTests(unittest.TestCase):
             with self.subTest(profile=name):
                 self.assertTrue({"workflow-test-step-removed", "workflow-unpinned-action"} <= applicable)
                 self.assertEqual("check_docs.py" in " ".join(profile["commands"]), "documentation-index-link-broken" in applicable)
-                self.assertEqual(any("unittest" in c for c in profile["commands"]), "python-test-failing" in applicable)
+                python_tests = any("unittest" in c or c == "python scripts/run_source_tests.py"
+                                   for c in profile["commands"])
+                self.assertEqual(python_tests, "python-test-failing" in applicable)
+                self.assertEqual(python_tests, "python-tests-removed" in applicable)
                 self.assertEqual(any(c.startswith("npm test") for c in profile["commands"]), "typescript-test-failing" in applicable)
                 self.assertEqual(any("pytest" in c for c in profile["commands"]), "python-pytest-failing" in applicable)
                 self.assertEqual("quality.py build" in " ".join(profile["commands"]), "kotlin-test-failing" in applicable)
                 self.assertEqual("self-test" in " ".join(profile["commands"]), "kotlin-android-self-test" in applicable)
         self.assertEqual("kotlin-android-self-test", [item.id for item in defects.FIXTURES if item.toolchain == "android"][0])
+
+    def test_source_test_entrypoint_keeps_fixed_discovery_and_existing_required_probes(self):
+        command = "python scripts/run_source_tests.py"
+        profile = {"commands": [command]}
+        context = defects.Context("contracts", profile, None, None)
+        self.assertEqual(["scripts/tests"], defects.unittest_directories(profile))
+        self.assertEqual([command], defects.unittest_commands(profile))
+        applicable = {item.id for item in defects.applicable_fixtures(context)}
+        for name, text, exit_code in (
+            ("python-tests-removed", "NO TESTS RAN", 5),
+            ("python-test-failing", "FAIL: test_planted_defect_must_fail "
+             "(test_planted_conformance_defect_0.PlantedConformanceDefect.test_planted_defect_must_fail)", 1),
+        ):
+            with self.subTest(fixture=name):
+                self.assertIn(name, applicable)
+                probes = fixture(name).probes(context)
+                self.assertEqual([(command, "fail", text, exit_code)],
+                                 [(probe.command, probe.expect, probe.expect_text, probe.expect_exit_code)
+                                  for probe in probes])
+        for unknown in (f"echo {command}", f"{command} --module test_fast", f"{command} && true",
+                        f"{command} ", f"{command}\n", "python3 scripts/run_source_tests.py"):
+            with self.subTest(command=unknown):
+                profile = {"commands": [unknown]}
+                self.assertEqual([], defects.unittest_directories(profile))
+                self.assertEqual([], defects.unittest_commands(profile))
 
 
 class PlanterTests(support.ConsumerCase):
@@ -961,7 +990,18 @@ class RuntimeRepairTests(unittest.TestCase):
                         return defects.Result(code, "synthetic dependency refusal" if code else "prepared")
                     self.assertTrue(planted.exists())
                     self.assertEqual(probe.command, command)
-                    return defects.subprocess_runner(command, cwd)
+                    # Preparation control only: execute the plant, not the Contracts-owned source runner.
+                    spec = importlib.util.spec_from_file_location(planted.stem, planted)
+                    module = importlib.util.module_from_spec(spec)
+                    # Prove restoration without depending on the test host's bytecode suppression.
+                    with mock.patch.object(sys, "dont_write_bytecode", False):
+                        exec(compile(planted.read_bytes(), str(planted), "exec"), module.__dict__)
+                    result = unittest.TestResult()
+                    module.PlantedConformanceDefect("test_planted_defect_must_fail").run(result)
+                    self.assertEqual(1, result.testsRun)
+                    self.assertEqual(1, len(result.failures))
+                    self.assertEqual([], result.errors)
+                    return defects.Result(1, "")
 
                 record = defects.run_fixture(fixture("python-test-failing"), context, runner=runner)
                 if failure_at is None:
@@ -1024,7 +1064,7 @@ class RuntimeRepairTests(unittest.TestCase):
         document = json.loads(support.generator.workflow("api"))
         step = document["jobs"]["windows"]["steps"][-1]
         commands = step["run"].splitlines()[::2]
-        self.assertEqual("python -I -S -B scripts\\money_client_interop.py prepare", commands[-2])
+        self.assertEqual("python -I -S -B scripts\\money_client_interop.py prepare --require-prepared", commands[-2])
         step["run"] = support.generator.powershell_commands(commands[:-2] + commands[-1:])
         root, context = self.consumer("api", {".github/workflows/ci.yml": support.generator.encoded(document)})
         before = support.tree_digest(root)

@@ -16,13 +16,13 @@
     {
       "repo": "PenniLogic/contracts",
       "check_name": "CI",
-      "workflow_ref": "4e6e749fd849ae58f2b13c21215022c1bc410b9f",
+      "workflow_ref": "68a59601b4f24986dbc66cf23d8b58c0913327bc",
       "language": "openapi"
     },
     {
       "repo": "PenniLogic/api",
       "check_name": "CI",
-      "workflow_ref": "733c42e177d61c552e5baa9dc01d55c850e1b33f",
+      "workflow_ref": "bd431d48c065d3bf7f03adab3efa261f52640314",
       "language": "kotlin"
     },
     {
@@ -34,7 +34,7 @@
     {
       "repo": "PenniLogic/android",
       "check_name": "CI",
-      "workflow_ref": "1a540182f48a492772e5230219306632528c3967",
+      "workflow_ref": "6867bd8f302e5ca607063dcfeb1a12b382e948fa",
       "language": "kotlin"
     },
     {

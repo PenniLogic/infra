@@ -10,7 +10,7 @@ import unittest
 
 import conformance_support as support
 from conformance import defects, github_api, run, steps
-from test_api_node_runtime import BUILD_COMMAND
+from test_api_node_runtime import BUILD_COMMAND, native_command
 
 
 class ClassificationTests(unittest.TestCase):
@@ -29,6 +29,27 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(["other"], steps.classify("true"))
         detected = steps.detect_steps(["python scripts/check_repository.py", "echo ok"])
         self.assertEqual(["test"], steps.missing_categories(detected))
+
+    def test_only_the_exact_contracts_source_test_command_counts_as_a_test(self):
+        command = "python scripts/run_source_tests.py"
+        self.assertEqual(["test"], steps.classify(command))
+        self.assertEqual([], steps.detect_steps([command])["consumer_self_tests"])
+        for unknown in (
+            f"echo {command}", f"{command} --module test_fast", f"{command} --pattern test_fast.py",
+            f"{command} && true", f"{command}; true", f"{command} # skipped",
+            f" {command}", f"{command} ", f"{command}\n", f"{command}\r\n",
+            "python3 scripts/run_source_tests.py", "python -u scripts/run_source_tests.py",
+            "python scripts/run_source_tests.py-stub", "python scripts/RUN_SOURCE_TESTS.py",
+            "python scripts\\run_source_tests.py",
+        ):
+            with self.subTest(command=unknown):
+                self.assertEqual(["other"], steps.classify(unknown))
+        detected = steps.detect_steps(support.generator.profile_for("contracts")["commands"])
+        self.assertEqual([
+            "python scripts/smoke.py python", "python scripts/smoke.py typescript",
+            "python scripts/smoke.py kotlin", command,
+        ], detected["test"])
+        self.assertEqual([], detected["other"])
 
     def test_only_the_exact_android_ci_command_counts_as_build_test_and_lint(self):
         self.assertEqual(["build", "lint", "test"], steps.classify("python scripts/quality_gates.py ci"))
@@ -70,7 +91,7 @@ class ClassificationTests(unittest.TestCase):
                 self.assertEqual(["build", "lint"], steps.missing_categories(detected, ("build", "test", "lint")))
                 self.assertEqual([
                     "python scripts/quality_gates.py self-test",
-                    "python scripts/privacy_traffic_harness.py self-test",
+                    "python scripts/privacy_traffic_harness.py self-test --all-scripts",
                 ], detected["consumer_self_tests"])
 
     def test_known_profiles_classify_as_reviewed(self):
@@ -84,7 +105,7 @@ class ClassificationTests(unittest.TestCase):
         android = steps.detect_steps(support.generator.PROFILES["repositories"]["android"]["commands"])
         self.assertEqual([
             "python scripts/quality_gates.py self-test",
-            "python scripts/privacy_traffic_harness.py self-test",
+            "python scripts/privacy_traffic_harness.py self-test --all-scripts",
         ], android["consumer_self_tests"])
         ci = "python scripts/quality_gates.py ci"
         self.assertEqual([ci], android["build"])
@@ -92,13 +113,30 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(["python scripts/check_repository.py", "python scripts/check_privacy_components.py"],
                          android["checker"])
         self.assertEqual([ci, "python scripts/quality_gates.py self-test",
-                          "python scripts/privacy_traffic_harness.py self-test",
-                          'python -m unittest discover -s scripts/tests -p "test_*.py"'], android["test"])
+                          "python scripts/privacy_traffic_harness.py self-test --all-scripts"], android["test"])
         self.assertEqual(["python -m pip install -r scripts/privacy_traffic/requirements.txt"], android["install"])
         self.assertEqual([], android["other"])
 
 
 class ProducedCheckTests(unittest.TestCase):
+    def test_split_owning_steps_preserve_order_and_do_not_count_or_borrow_removed_commands(self):
+        document = {"jobs": {
+            "ci": {"steps": [
+                {"name": "Check repository", "run": ""},
+                {"name": "Prepare pinned Money sources", "run": "acquisition"},
+                {"name": "Prepare verified Money provider", "run": "verify inputs\nrun provider"},
+                {"name": "Run checks", "run": "owning suite\n"},
+            ]},
+            "windows": {"steps": [{"name": "Check repository", "run": "unrelated job"}]},
+        }}
+        encoded = lambda: json.dumps(document).encode("utf-8")
+        self.assertEqual(["verify inputs", "run provider", "owning suite"], steps.workflow_run_commands(encoded()))
+        self.assertEqual(["acquisition"], steps.workflow_run_commands(encoded(), step_name="Prepare pinned Money sources"))
+        for step in document["jobs"]["ci"]["steps"]:
+            if step["name"] != "Prepare pinned Money sources":
+                step["run"] = ""
+        self.assertEqual([], steps.workflow_run_commands(encoded()))
+
     def test_every_rendered_workflow_produces_exactly_the_required_native_check(self):
         for name in support.generator.PROFILES["repositories"]:
             with self.subTest(profile=name):
@@ -110,7 +148,7 @@ class ProducedCheckTests(unittest.TestCase):
                 self.assertEqual(expected_checks, steps.produced_check_names(workflow))
                 manual = support.generator.PROFILES["repositories"][name]["commands"]
                 expected = [
-                    BUILD_COMMAND if name == "api" and command == "python scripts/quality.py build"
+                    native_command(command) if name == "api"
                     else support.generator.infra_ci_command(command) if name == "infra"
                     else command for command in manual
                 ]
@@ -142,8 +180,10 @@ class ProducedCheckTests(unittest.TestCase):
                     mutated = support.generator.encoded(document).encode("utf-8")
                     actual = steps.workflow_run_commands(mutated)
                     self.assertNotIn(BUILD_COMMAND, actual)
-                    self.assertEqual(profile["commands"][:7] if transform is defects._remove_test_lines
-                                     else ["echo tests skipped"], actual)
+                    preparation = [native_command(command) for command in profile["commands"][:7]]
+                    self.assertEqual(preparation if transform is defects._remove_test_lines
+                                     else [*preparation[:5], "echo tests skipped"], actual)
+                    self.assertEqual([], steps.detect_steps(actual)["test"])
                     path.write_bytes(mutated)
                     refused = run.generated_baseline(
                         support.generator, "api", root, support.GOVERNANCE.parent, runner,

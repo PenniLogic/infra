@@ -33,11 +33,20 @@ class BaselineTest(unittest.TestCase):
 
 
 def standard_workflow(renderer, name, setup=False):
-    """Exercise common single-job policy; compound API/Infra CI has exact-byte tests."""
+    """Common-policy fixture only; native jobs and credential scopes have exact-byte tests."""
     document = json.loads(renderer.workflow(name, setup=setup))
     if name in ("api", "infra") and not setup:
         document["jobs"] = {"ci": document["jobs"]["ci"]}
         document["jobs"]["ci"]["name"] = "CI"
+        if name == "api":
+            names = ["Prepare pinned Money sources", "Prepare pinned database and interop sources"]
+            native = [step for step in document["jobs"]["ci"]["steps"] if step.get("name") in names]
+            if ([step["name"] for step in native] != names
+                    or any(step.get("env") != {"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}
+                           for step in native)):
+                raise AssertionError("common-policy fixture requires the exact native acquisition environments")
+            for step in native:
+                del step["env"]
     return renderer.encoded(document)
 
 
@@ -126,11 +135,10 @@ def make_consumer(root, name, extra_files=None):
     generator.generate(name, root)
     (root / "migration-source.json").write_text("{}\n", encoding="utf-8")
     profile = generator.PROFILES["repositories"][name]
-    for command in profile["commands"]:
-        if command.startswith("python -m unittest discover -s "):
-            directory = root / command.split("-s ", 1)[1].split()[0]
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / "test_baseline_ok.py").write_text(PASSING_TEST, encoding="utf-8")
+    for start in defects.unittest_directories(profile):
+        directory = root / start
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "test_baseline_ok.py").write_text(PASSING_TEST, encoding="utf-8")
     for relative, content in (extra_files or {}).items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)

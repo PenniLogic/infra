@@ -1,5 +1,6 @@
 """Run the ordinary Windows owning suites and emit only safe, fresh per-test outcomes."""
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -24,6 +25,25 @@ PYTHON_TERMINAL = re.compile(
 STATUSES = {b"ok": "passed", b"FAIL": "failed", b"ERROR": "error",
             b"expected failure": "expected_failure", b"unexpected success": "unexpected_success"}
 DIAGNOSTIC_CASE_LIMIT = 8
+DIAGNOSTIC_FRAME_LIMIT = 8
+DIAGNOSTIC_BYTE_LIMIT = 4096
+PROCESS_BUDGET_PREFIX = b"process_budget_state="
+PROCESS_BUDGET_UNAVAILABLE = {"schema": "pennilogic.process-budget-state/1", "status": "unavailable"}
+PROCESS_BUDGET_JOB_PREFIX = b"process_budget_job_state="
+PROCESS_BUDGET_JOB_UNAVAILABLE = {
+    "schema": "pennilogic.process-budget-job-state/1",
+    "accounting": {"status": "unavailable"}, "members": {"status": "unavailable"},
+}
+PROCESS_BUDGET_CAPTURE_PREFIX = b"process_budget_capture_state="
+PROCESS_BUDGET_CAPTURE_UNAVAILABLE = {"schema": "pennilogic.process-budget-capture-state/1", "status": "unavailable"}
+PYTHON_ERROR_HEADER = re.compile(
+    rb"(FAIL|ERROR): (test[A-Za-z0-9_]*) \(([A-Za-z_][A-Za-z0-9_.]*)\)"
+)
+PYTHON_FRAME = re.compile(rb'  File "([^"\x00-\x1f\x7f]+)", line ([1-9][0-9]{0,7}), in [^\r\n]+')
+PYTHON_EXCEPTIONS = (
+    "OSError", "FileNotFoundError", "PermissionError", "TimeoutError", "RuntimeError", "ValueError",
+    "subprocess.SubprocessError", "subprocess.TimeoutExpired", "subprocess.CalledProcessError",
+)
 
 
 class Refused(ValueError):
@@ -112,6 +132,279 @@ def python_outcomes(data):
     return records
 
 
+def process_budget_note(line):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate-note-key")
+            result[key] = value
+        return result
+
+    unavailable = dict(PROCESS_BUDGET_UNAVAILABLE)
+    if len(line) > 384 or not line.isascii() or not line.startswith(PROCESS_BUDGET_PREFIX):
+        return unavailable
+    try:
+        value = json.loads(line[len(PROCESS_BUDGET_PREFIX):], object_pairs_hook=unique)
+    except (UnicodeError, ValueError, RecursionError):
+        return unavailable
+    if (not isinstance(value, dict) or value.get("schema") != unavailable["schema"]
+            or line != PROCESS_BUDGET_PREFIX + json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")):
+        return unavailable
+    if value == unavailable:
+        return value
+    fields = {"schema", "status", "process_running", "returncode", "capture_readers",
+              "capture_readers_alive", "setup_ms", "wait_ms", "elapsed_ms"}
+    if set(value) != fields or value["status"] != "observed" or type(value["process_running"]) is not bool:
+        return unavailable
+    code = value["returncode"]
+    if (value["process_running"] and code is not None) or (
+        not value["process_running"] and (type(code) is not int or not -2147483648 <= code <= 4294967295)
+    ):
+        return unavailable
+    for key, limit in (("capture_readers", 2), ("capture_readers_alive", 2),
+                       ("setup_ms", 86400000), ("wait_ms", 86400000), ("elapsed_ms", 86400000)):
+        if type(value[key]) is not int or not 0 <= value[key] <= limit:
+            return unavailable
+    if (value["capture_readers_alive"] > value["capture_readers"]
+            or value["setup_ms"] + value["wait_ms"] != value["elapsed_ms"]):
+        return unavailable
+    return value
+
+
+def process_budget_job_note(line):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate-note-key")
+            result[key] = value
+        return result
+
+    unavailable = {key: dict(value) if isinstance(value, dict) else value
+                   for key, value in PROCESS_BUDGET_JOB_UNAVAILABLE.items()}
+    if len(line) > 512 or not line.isascii() or not line.startswith(PROCESS_BUDGET_JOB_PREFIX):
+        return unavailable
+    try:
+        value = json.loads(line[len(PROCESS_BUDGET_JOB_PREFIX):], object_pairs_hook=unique)
+    except (UnicodeError, ValueError, RecursionError):
+        return unavailable
+    if (not isinstance(value, dict) or set(value) != {"schema", "accounting", "members"}
+            or value["schema"] != unavailable["schema"]
+            or line != PROCESS_BUDGET_JOB_PREFIX + json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")):
+        return unavailable
+    accounting, members = value["accounting"], value["members"]
+    if not isinstance(accounting, dict) or not isinstance(members, dict):
+        return unavailable
+    if accounting.get("status") == "observed":
+        if (set(accounting) != {"status", "total_assigned", "active"}
+                or any(type(accounting[key]) is not int or not 0 <= accounting[key] <= 4294967295
+                       for key in ("total_assigned", "active"))
+                or accounting["active"] > accounting["total_assigned"]):
+            return unavailable
+    elif accounting not in ({"status": "unavailable"}, {"status": "unsupported"}):
+        return unavailable
+    if members.get("status") in ("observed", "partial"):
+        roles = ("bootstrap", "system_approved_shell", "other", "unclassified")
+        if (set(members) != {"status", "listed", *roles}
+                or any(type(members[key]) is not int or not 0 <= members[key] <= 16
+                       for key in ("listed", *roles))
+                or members["bootstrap"] > 1 or sum(members[key] for key in roles) != members["listed"]
+                or (members["status"] == "observed" and members["unclassified"] != 0)):
+            return unavailable
+        if accounting["status"] == "observed" and members["listed"] != accounting["active"]:
+            members["status"] = "partial"
+    elif members not in ({"status": "unavailable"}, {"status": "unsupported"}, {"status": "oversized"}):
+        return unavailable
+    return value
+
+
+def process_budget_capture_note(line):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate-note-key")
+            result[key] = value
+        return result
+
+    unavailable = dict(PROCESS_BUDGET_CAPTURE_UNAVAILABLE)
+    if len(line) > 512 or not line.isascii() or not line.startswith(PROCESS_BUDGET_CAPTURE_PREFIX):
+        return unavailable
+    try:
+        value = json.loads(line[len(PROCESS_BUDGET_CAPTURE_PREFIX):], object_pairs_hook=unique)
+    except (UnicodeError, ValueError, RecursionError):
+        return unavailable
+    if (not isinstance(value, dict) or value.get("schema") != unavailable["schema"]
+            or line != PROCESS_BUDGET_CAPTURE_PREFIX + json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")):
+        return unavailable
+    if value == unavailable:
+        return value
+    if (set(value) != {"schema", "status", "scope", "complete", "mode", "stdout", "stderr"}
+            or value["status"] != "observed" or value["scope"] != "snapshot" or value["complete"] is not False
+            or value["mode"] not in ("merged", "separate")):
+        return unavailable
+    empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    for name in ("stdout", "stderr"):
+        stream = value[name]
+        if (not isinstance(stream, dict) or set(stream) != {"bytes", "sha256"}
+                or type(stream["bytes"]) is not int or not 0 <= stream["bytes"] <= 18446744073709551615
+                or not isinstance(stream["sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", stream["sha256"]) is None
+                or (stream["bytes"] == 0 and stream["sha256"] != empty)):
+            return unavailable
+    if value["mode"] == "merged" and value["stderr"] != {"bytes": 0, "sha256": empty}:
+        return unavailable
+    return value
+
+
+def python_error_diagnostics(root, data, parser):
+    selected = {record["id_sha256"]: None for record in parser["negative_prefix"] if record["outcome"] == "error"}
+    if not selected:
+        return parser["negative_prefix"]
+    prefix = (str(root).replace("\\", "/").rstrip("/") + "/").encode("utf-8", "surrogatepass")
+    lines, seen = data.splitlines(), set()
+    separator, divider = b"=" * 70, b"-" * 70
+    traceback_header = b"Traceback (most recent call last):"
+    for index in range(parser["line"] - 1, len(lines) - 3):
+        if lines[index] != separator:
+            continue
+        header = PYTHON_ERROR_HEADER.fullmatch(lines[index + 1])
+        if header is None:
+            continue
+        digest = hashlib.sha256(header.group(3)).hexdigest()
+        if digest not in selected:
+            continue
+        if digest in seen:
+            selected[digest] = None
+            continue
+        seen.add(digest)
+        if header.group(1) != b"ERROR" or not header.group(3).endswith(b"." + header.group(2)):
+            continue
+        start = index + 2
+        if lines[start] != divider:
+            start += 1  # unittest may include one short-description line.
+        if start + 1 >= len(lines) or lines[start:start + 2] != [divider, traceback_header]:
+            continue
+        start += 2
+        end = start
+        while end < len(lines) and lines[end] not in (separator, divider):
+            end += 1
+        boundary = (
+            end + 2 < len(lines) and lines[end] == separator
+            and PYTHON_ERROR_HEADER.fullmatch(lines[end + 1]) is not None
+            and (lines[end + 2] == divider or (end + 3 < len(lines) and lines[end + 3] == divider))
+        ) or (
+            end + 3 < len(lines) and lines[end] == divider and PYTHON_SUMMARY.fullmatch(lines[end + 1]) is not None
+            and lines[end + 2] == b"" and PYTHON_TERMINAL.fullmatch(lines[end + 3]) is not None
+        )
+        frames, exception, malformed, truncated = [], None, False, False
+        notes, job_notes, capture_notes = [], [], []
+        last_content = next((line for line in reversed(lines[start:end]) if line), b"")
+        for position, line in enumerate(lines[start:end], start):
+            if line in (
+                traceback_header, b"During handling of the above exception, another exception occurred:",
+                b"The above exception was the direct cause of the following exception:",
+            ):
+                malformed = True
+            if line.startswith(PROCESS_BUDGET_PREFIX):
+                notes.append((line, exception is not None, position))
+            if line.startswith(PROCESS_BUDGET_JOB_PREFIX):
+                job_notes.append((line, exception is not None, position))
+            if line.startswith(PROCESS_BUDGET_CAPTURE_PREFIX):
+                capture_notes.append((line, exception is not None, position))
+            if exception is not None:
+                continue
+            if line.startswith(b"  File "):
+                frame = PYTHON_FRAME.fullmatch(line)
+                if frame is None:
+                    malformed = True
+                    continue
+                path = frame.group(1).replace(b"\\", b"/")
+                if not path.startswith(prefix):
+                    continue
+                relative = path[len(prefix):]
+                if any(part in (b"", b".", b"..") for part in relative.split(b"/")):
+                    malformed = True
+                    continue
+                location = {"path_sha256": hashlib.sha256(relative).hexdigest(), "line": int(frame.group(2))}
+                if location not in frames:
+                    if len(frames) == DIAGNOSTIC_FRAME_LIMIT:
+                        truncated = True
+                    else:
+                        frames.append(location)
+            elif line and not line.startswith(b" "):
+                exception = next((name for name in PYTHON_EXCEPTIONS
+                                  if line == name.encode("ascii") or line.startswith(name.encode("ascii") + b": ")),
+                                 "unclassified")
+        if malformed:
+            frames = []
+        if malformed or not boundary or not frames or exception is None:
+            exception = "unclassified"
+        detail = {"exception": exception, "source_frames": frames,
+                  "incomplete": exception == "unclassified" or truncated, "truncated": truncated}
+        if notes:
+            valid = (len(notes) == 1 and notes[0][1] and notes[0][0] == last_content
+                     and boundary and not malformed and bool(frames))
+            state = process_budget_note(notes[0][0]) if valid else dict(PROCESS_BUDGET_UNAVAILABLE)
+            detail["process_budget_state"] = state
+            detail["incomplete"] |= state["status"] == "unavailable"
+        if job_notes:
+            valid = (len(job_notes) == 1 and job_notes[0][1] and len(notes) == 1 and notes[0][1]
+                     and notes[0][0] == last_content and job_notes[0][2] + 1 == notes[0][2]
+                     and boundary and not malformed and bool(frames))
+            state = process_budget_job_note(job_notes[0][0] if valid else b"")
+            detail["process_budget_job_state"] = state
+            detail["incomplete"] |= any(state[part]["status"] != "observed" for part in ("accounting", "members"))
+        if capture_notes:
+            valid = (len(capture_notes) == 1 and capture_notes[0][1] and len(notes) == 1 and notes[0][1]
+                     and notes[0][0] == last_content and boundary and not malformed and bool(frames))
+            if job_notes:
+                valid = (valid and len(job_notes) == 1 and job_notes[0][1]
+                         and capture_notes[0][2] + 1 == job_notes[0][2] and job_notes[0][2] + 1 == notes[0][2])
+            else:
+                valid = valid and capture_notes[0][2] + 1 == notes[0][2]
+            detail["process_budget_capture_state"] = process_budget_capture_note(capture_notes[0][0] if valid else b"")
+            detail["incomplete"] = True  # Snapshot completeness is unestablished, not observed truncation.
+        selected[digest] = detail
+    remaining, records = DIAGNOSTIC_FRAME_LIMIT, []
+    for record in parser["negative_prefix"]:
+        if record["outcome"] == "error":
+            detail = selected[record["id_sha256"]] or {
+                "exception": "unclassified", "source_frames": [], "incomplete": True, "truncated": False,
+            }
+            if len(detail["source_frames"]) > remaining:
+                detail.update(source_frames=detail["source_frames"][:remaining], incomplete=True, truncated=True)
+            remaining -= len(detail["source_frames"])
+            record = {**record, "error": detail}
+        records.append(record)
+    return records
+
+
+def python_diagnostic_json(diagnostic):
+    encoded = json.dumps(diagnostic, sort_keys=True)
+    for field, unavailable in (
+        ("process_budget_capture_state", PROCESS_BUDGET_CAPTURE_UNAVAILABLE),
+        ("process_budget_job_state", PROCESS_BUDGET_JOB_UNAVAILABLE),
+        ("process_budget_state", PROCESS_BUDGET_UNAVAILABLE),
+    ):
+        for replacement in (unavailable, None):
+            for record in reversed(diagnostic["parser"]["negative_prefix"]):
+                if len(encoded.encode("utf-8")) < DIAGNOSTIC_BYTE_LIMIT:
+                    return encoded
+                detail = record.get("error", {})
+                if field not in detail:
+                    continue
+                if replacement is None:
+                    del detail[field]
+                elif detail[field] == replacement:
+                    continue
+                else:
+                    detail[field] = dict(replacement)
+                detail.update(incomplete=True, truncated=True)
+                encoded = json.dumps(diagnostic, sort_keys=True)
+    return encoded
+
+
 def junit_outcomes(root):
     directory = root / JUNIT
     if directory.is_symlink() or not directory.is_dir():
@@ -149,13 +442,14 @@ def junit_outcomes(root):
     return records
 
 
-def qualify(root):
+def qualify(root, require_prepared=False):
     if (root / JUNIT).exists() or (root / JUNIT).is_symlink():
         raise Refused("preexisting-ordinary-junit-results")
-    print("+ python scripts\\quality.py test", flush=True)
+    arguments = ["--require-prepared"] if require_prepared else []
+    print("+ python scripts\\quality.py test" + (" --require-prepared" if require_prepared else ""), flush=True)
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         result = subprocess.run(
-            [sys.executable, str(root / "scripts" / "quality.py"), "test"],
+            [sys.executable, str(root / "scripts" / "quality.py"), "test", *arguments],
             cwd=root, stdout=stdout, stderr=stderr, check=False,
         )
         stdout.seek(0)
@@ -166,13 +460,14 @@ def qualify(root):
         try:
             records = python_outcomes(errors)
         except _PythonOutcomeRefused as error:
-            print(json.dumps({
+            print(python_diagnostic_json({
                 "event": "windows_qualification_diagnostic", "diagnostic_only": True,
                 "inventory_complete": False, "exit_code": result.returncode,
                 "stdout": {"bytes": len(output), "sha256": hashlib.sha256(output).hexdigest()},
                 "stderr": {"bytes": len(errors), "sha256": hashlib.sha256(errors).hexdigest()},
-                "parser": error.diagnostic,
-            }, sort_keys=True), flush=True)
+                "parser": {**error.diagnostic,
+                           "negative_prefix": python_error_diagnostics(root, errors, error.diagnostic)},
+            }), flush=True)
             raise
     for record in records:
         print(json.dumps(record, sort_keys=True))
@@ -198,11 +493,14 @@ def qualify(root):
                       "python_tests": len(records), "junit_tests": len(junit)}, sort_keys=True))
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-prepared", action="store_true", help="Require existing verified interop inputs; never acquire")
+    args = parser.parse_args(argv)
     try:
         if sys.platform != "win32":
             raise Refused("windows-owning-suites-require-windows")
-        qualify(ROOT)
+        qualify(ROOT, require_prepared=args.require_prepared)
         return 0
     except Refused as error:
         print(json.dumps({"event": "windows_qualification_refused", "code": str(error)}), file=sys.stderr)

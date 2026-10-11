@@ -1,7 +1,7 @@
 """Detect the build, test and lint steps a profile runs and the check names its workflow produces.
 
 Classification is a reviewed table of command patterns, evaluated against the exact command lines
-of ``repository-profiles.json`` (the same lines the generator renders into the ``Run checks`` step).
+of ``repository-profiles.json`` (the generator preserves their gates across native run steps).
 A command may carry several categories: ``python scripts/quality.py build`` runs Gradle ``build``,
 which executes the test and spotless tasks, so it is build, test and lint at once. Anything the
 table does not know is ``other`` and never counts as a test. Android's CI-only grouped command
@@ -22,6 +22,7 @@ STEP_PATTERNS = (
     (r"\bpip install\b", {"install"}),
     (r"\btoolchain\.py install\b", {"install"}),
     (r"\bunittest\b", {"test"}),
+    (r"\Apython scripts/run_source_tests\.py\Z", {"test"}),
     (r"\bpytest\b", {"test"}),
     (r"^npm test\b", {"test"}),
     (r"\bnpm run smoke\b", {"test"}),
@@ -32,7 +33,7 @@ STEP_PATTERNS = (
     (r"\bquality_gates\.py self-test\b", {"test"}),
     (r"\bquality_gates\.py build\b", {"build"}),
     (r"\bquality_gates\.py lint\b", {"lint"}),
-    (r"\Apython scripts/privacy_traffic_harness\.py self-test\Z", {"test"}),
+    (r"\Apython scripts/privacy_traffic_harness\.py self-test(?: --all-scripts)?\Z", {"test"}),
     (r"\Apython scripts/check_privacy_components\.py\Z", {"checker"}),
     (r"\bquality\.py build\b", {"build", "test", "lint"}),
     (r"\bquality\.py coverage\b", {"test"}),
@@ -57,7 +58,7 @@ STEP_PATTERNS = (
 # Consumer-owned planted-defect commands: the repository proves its own gates bite on every CI run.
 CONSUMER_SELF_TESTS = (
     r"\bquality_gates\.py self-test\b",
-    r"\Apython scripts/privacy_traffic_harness\.py self-test\Z",
+    r"\Apython scripts/privacy_traffic_harness\.py self-test(?: --all-scripts)?\Z",
     r"\bnpm run check:bundle:planted\b",
 )
 
@@ -116,10 +117,14 @@ def produced_pr_check_names(workflows):
 
 
 def workflow_run_commands(workflow_bytes, step_name="Run checks"):
-    """The command lines of the named run step (the generator joins profile commands with newlines)."""
+    """The named owning step plus API's preceding credential-free provider gates, in job order."""
     document = json.loads(workflow_bytes.decode("utf-8"))
+    names = {step_name}
+    if step_name == "Run checks":
+        names.update(("Check repository", "Prepare verified Money provider"))
     for job in document.get("jobs", {}).values():
-        for step in job.get("steps", []):
-            if step.get("name") == step_name and isinstance(step.get("run"), str):
-                return step["run"].split("\n")
+        scripts = [step["run"] for step in job.get("steps", [])
+                   if step.get("name") in names and isinstance(step.get("run"), str)]
+        if scripts:
+            return [line for script in scripts for line in script.splitlines()]
     return []

@@ -69,7 +69,11 @@ If tree exit, job membership or pipe release cannot be confirmed, the probe fail
 claiming a bounded successful teardown. Repository inspection stops; a planted fixture records
 `restoration_deferred` and retains its backups rather than restoring files a consumer might still hold.
 The JSON includes the redacted failure/recovery details. Confirm process exit before recovering or
-discarding that scratch checkout.
+discarding that scratch checkout. Unconfirmed Windows teardown diagnostics retain bounded numeric
+pin/wait observations from the original calls, not additional process queries or exit evidence.
+The finite-worker fixture's receipt-count failure also retains receipt names, elapsed time and the
+runner's already bounded/redacted `Result`, distinguishing a timeout from an early worker failure.
+Neither diagnostic changes the assertions, deadlines or fail-closed decisions.
 
 POSIX probes now start in a new session/process group. On timeout or an interrupted capture, the
 parent sends `SIGKILL` only while its unreaped child still reserves that group's identifier, then
@@ -344,8 +348,8 @@ security acceptance.
 | `workflow-unpinned-action` | workflow | python | every profile | drift check; consumer checker refuses `actions/checkout@v4` (pinned-action rule) |
 | `workflow-reusable-workflow-job` | workflow | python | every profile | drift check; consumer checker refuses `jobs.reuse.uses` |
 | `workflow-step-continue-on-error` | workflow | python | every profile | drift check; the current profile-rendered checker refuses with its existing exact CI-binding diagnostic for Infra/API, or the step-key rule for the other profiles |
-| `python-tests-removed` | python | python | profiles with `unittest discover` | the exact profile command exits 5, `NO TESTS RAN` |
-| `python-test-failing` | python | python | profiles with `unittest discover` | each exact profile command exits 1 and its actual `TestResult` records its own indexed planted case as a failure |
+| `python-tests-removed` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | the exact profile command exits 5, `NO TESTS RAN` |
+| `python-test-failing` | python | python | profiles with `unittest discover` or exact `python scripts/run_source_tests.py` | each exact profile command exits 1 and its actual `TestResult` records its own indexed planted case as a failure |
 | `python-pytest-failing` / `python-pytest-removed` | python | uv | ai-service | `uv sync --locked` then `uv run --locked pytest` exits 1 / 5 |
 | `documentation-index-link-broken` | documentation | python | docs | `check_docs.py` fails: `generated slot ADR-001 differs` |
 | `documentation-dangling-supersedes` | documentation | python | docs | `check_docs.py` fails: `supersedes ADR-099, which has no source record` |
@@ -580,6 +584,92 @@ contract nor protections are changed, and the API unit's exact maintenance admis
 not admit this composed privacy unit. The fresh corrected complete hosted job and workflow
 must still each be strictly below 600 seconds. All real RC, signer, proxy runner, journey,
 producer and original-ticket acceptance holds remain.
+
+### Android combined script discovery: source preparation, not adoption
+
+This bounded runtime correction for [#22](https://github.com/PenniLogic/infra/issues/22)
+was first prepared on Infra `919cb46bc261977884975e9f058f702c07fa5af7`, after the
+privacy canonical [#66](https://github.com/PenniLogic/infra/pull/66) was merged.
+Its current-base continuation fast-forwards normally to accepted
+`e601c13091bf156193ba266a6f03fdbae279a69e` from [#76](https://github.com/PenniLogic/infra/pull/76).
+The prior candidate and failure evidence remain sealed history. The accepted API
+source `733c42e177d61c552e5baa9dc01d55c850e1b33f`, Infra source
+`889c5c35a1677ef33899a2e63bc528d3bac802f9` and their generator/history repairs are
+preserved. The current Free/public/no-extra-spend scope does not reinstate excluded
+stronger trusted-producer or absence-enforcement guarantees.
+
+Android's additive provider interface must support the following canonical sequence:
+
+```text
+python scripts/check_repository.py
+python -m pip install -r scripts/privacy_traffic/requirements.txt
+python scripts/quality_gates.py ci
+python scripts/quality_gates.py self-test
+python scripts/privacy_traffic_harness.py self-test --all-scripts
+python scripts/check_privacy_components.py
+```
+
+The combined command replaces the overlapping focused privacy discovery and later
+full script discovery with one complete script suite. Android owns retaining every
+original test and new regression, fresh sanitized privacy observations and a nonzero
+exit for failure in either the privacy or nonprivacy subset. The standalone focused
+`self-test` remains available and exactly recognized during migration; canonical CI
+does not fall back to it on failure or execute it a second time. No marker or cache
+can skip tests. The checker, declared requirements, grouped native CI, native negative
+self-test and separate fresh component inventory remain; neither privacy command
+counts as a replacement build or lint gate.
+
+Discovery-only evidence at Android `ead5986e98fd8b8c15d466b7abec4406486abba8` identifies
+74 unique privacy tests (49 traffic, 16 boundary, 9 snapshot) inside the complete
+224-test suite, including the real 20-second CONNECT and 5-second lock controls.
+Its [native run](https://github.com/PenniLogic/android/actions/runs/37921421045)
+succeeded but took 615 seconds for the job and 617 seconds for the workflow:
+it did not qualify. The first privacy suite's 38.033 seconds is not an isolated
+measurement of its contribution inside the later full suite, nor a promised saving.
+Both actual complete job and whole-workflow durations must still be strictly below
+600 seconds; the unchanged 30-minute hard timeout is not that acceptance criterion.
+
+Only Android's five command-derived artifacts change relative to the current
+accepted base: `AGENTS.md`, `README.md`, `CONTRIBUTING.md`,
+`.github/agent-policy.json` and `.github/workflows/ci.yml`. All other profiles,
+setup, inventory helper, checker, action pins, permissions, toolchains and deadlines
+remain unchanged. Source fixtures check exact command/argv composition, nonzero
+propagation, drift refusal and legacy classification; they neither execute Android's
+suites nor establish native parity.
+
+The source-only candidate leaves Android's registry `workflow_ref` at
+`1a540182f48a492772e5230219306632528c3967`, which renders the prior two-discovery
+sequence. Its workflow-history equality checks must remain RED until Root commits
+reviewed source A and follows with the real A reference and exact source-reference
+assertions; no future SHA or acceptance is invented here. Root owns publication,
+independent intake and coordinated Android regeneration after the paired provider
+supports this interface. Use the documented generator in the consumer's owned
+checkout, never manually patch its generated files. No consumer adoption, hosted
+rerun, hook/protection change, paid service or issue closure occurs in this source
+unit. Rollback is a reviewed source/reference reversal and corresponding consumer
+regeneration, not a runtime success-shaped fallback.
+
+#### PR77 native test-expectation correction
+
+The prebinding state above is historical: actual source
+`6867bd8f302e5ca607063dcfeb1a12b382e948fa` and binding
+`50deeed66a5981f5e17441c9038c157b5d566984` now exist, with the two real history
+equalities green locally. Their earlier RED evidence remains unchanged.
+Draft [#77](https://github.com/PenniLogic/infra/pull/77)'s first
+[native attempt](https://github.com/PenniLogic/infra/actions/runs/38013722196)
+failed two command-binding fixtures on both Linux and Windows. Its 336-second
+whole-workflow duration is a failed-run observation, not qualification.
+
+Local reproduction on exact binding B confirmed a stale literal command count
+(49 versus 48) and a historical profile expectation missing only the Android
+composition after its existing API Node adjustment. The test-only repair retains
+an independent 48-command expectation and removal/stub cases for every command.
+It asserts the exact old Android command list from immutable `dbdf2e27144e60b11aed54ed1e576d496a928ec3`
+before applying only the intended transformation in memory. Complete profile
+equality, the original historical protected-profile refusal and an isolated
+API Node refusal remain. No source-admission implementation, generated consumer,
+reference, native gate or deadline is changed; fresh native acceptance remains
+Root-owned and pending.
 
 ## Infra-only trusted PR command-binding bootstrap
 
@@ -859,12 +949,14 @@ without it.
 ## Bounded runtime expansion after accepted PR 58
 
 The hosted quota failure makes dependable authenticated read-only metadata necessary. The canonical
-generator now emits one intentional exception: only the infra profile's exact
+generator introduced one intentional exception: only the infra profile's exact
 `.github/workflows/conformance.yml`, sole `conformance` job and unique plain `Run conformance` step
 may receive `env` exactly `{"GH_TOKEN": "${{ github.token }}"}`. The expression is not added to
 the global allowlist. Keys and every other string still pass the expression and secret tripwires;
 whole/computed/bracket contexts, renamed/duplicate/action harnesses, other token variables, extra
-environments, consumer CI/setup workflows and reusable/default-input action channels remain refused.
+environments, consumer CI/setup workflows and reusable/default-input action channels remain refused
+by that exception. The later, separately proposed API-native exception below does not
+widen its scope or the global expression allowlist.
 The source-bound ordered refusal table and generated artifact-count/shape assertions are updated
 with it (`governance/README.md`, 33 rules, 22 infra files versus 20 per consumer).
 
@@ -902,6 +994,79 @@ request a reviewed decision; do not add personal credentials, permissions or sil
 Rollback is a reviewed revert/regeneration to accepted `e96eb757` (remove the new generated
 `.nvmrc` explicitly), restoring the anonymous/Python-only workflow and its known quota limit.
 The original failure artifact remains evidence either way.
+
+### Proposed API-native pinned-source acquisition policy
+
+The [PenniLogic/api#106](https://github.com/PenniLogic/api/pull/106) failure at
+published `4d0957a3e310f86528d822663622cecaf0144810`
+included a proven `source-rate-exhausted` refusal: HTTP 403 with the singleton
+`X-RateLimit-Remaining: 0`, not exhaustion of the preparer's local 32-request cap.
+The database authority requires 28 GETs. This proposal uses the platform's existing
+ephemeral read-only job token for all three API public REST preparation phases,
+rather than promising that a one-request identity optimization fixes upstream quota.
+It is a review-required change to the prior anonymous-only consumer policy.
+Protected source remains authoritative until separate Core/QA/Security review and
+ordinary integration; no token acquisition, new grant, extra spending, protection
+change, native dispatch or owner waiver is authorized by these source changes.
+
+Only exact generated API CI bytes admit two step-local environments, each exactly
+`{"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}`, with unchanged minimum
+`contents: read`. The first follows the repository check and performs only Money
+source fetch. Credential-free Money input verification, existing provider execution,
+provider verification and full Money verification follow. The second acquisition
+step performs database fetch then interop fetch, retaining the verified-provider
+prerequisite. Every original owning gate and PowerShell fail-fast boundary remains.
+The common checker expression allowlist, other workflows/profiles and real
+credential-free Conformance exerciser are unchanged.
+
+Only explicit `--native-fetch` / `ReadOnlyClient(..., native_fetch=True)` selects
+this mode. The client consumes `PENNILOGIC_NATIVE_SOURCE_TOKEN`, checks exact API
+numeric/native context and token syntax even for cached preparation, and refuses
+missing/invalid values. It never discovers or reuses ambient PAT/keyring/local
+credentials, enables local-auth-in-Actions, retries, or falls back. That context is
+not cryptographic provenance: the reviewed workflow supplies the intended ephemeral
+credential. Authorization goes only to the already approved first-party GitHub API
+pinned public GET endpoints. No token goes in URLs, arguments, logs or artifacts,
+or into archive redirects, clones, provider execution, tests, builds or child tools.
+The independent archive reader remains credential-free; all redirects/proxies and
+unapproved endpoints remain refused.
+
+Later native commands are credential-free and cannot silently reacquire: Money
+`--verify-inputs` validates complete inputs/receipt without claiming provider output;
+full `--verify` retains its original provider check. Database preparation omits
+`--fetch` and re-verifies complete pinned payloads. Interop input verification uses
+`prepare --require-prepared`; native `quality.py build --require-prepared` and
+`qualify_windows.py --require-prepared` (forwarded to `quality.py test`) retain that
+strict requirement through API's owning Gradle/isolated worker chain at actual use.
+Missing, partial, stale or both-disappeared inputs/receipt refuse instead of fetching.
+Default/manual/shared Conformance commands do not acquire a new mandatory token or
+prepared-only flag.
+
+Public numeric identity, immutable commit/tree/blob/path/size checks, admission and
+publication-before-completeness rules, response/request/byte/time bounds and existing
+failure codes are unchanged. Counts stay 17 Money GETs, 28 database GETs, and three
+interop metadata GETs plus one credential-free archive GET. Synthetic fixtures cover
+exact header scope, redirect/error closure, ambient-token refusal, complete offline
+revalidation and downstream noninheritance; they do not establish actual token quota
+availability or cross-repository access. The Actions `GITHUB_TOKEN` limit is 1,000
+requests/hour/repository, not the generic installation-token limit, and other job
+requests share that allowance. Upstream exhaustion/outage still refuses,
+and changed-source native qualification remains a later Root-controlled operation.
+
+The first native [PR81](https://github.com/PenniLogic/infra/pull/81) run
+[38049102345](https://github.com/PenniLogic/infra/actions/runs/38049102345) on
+`73a4fa8e6a00d2abd59ba9862c1d4837c365da58` failed both complete governance
+discoveries; neither platform reached scripts qualification. Both bounded diagnostic
+packets contained 20 reports for 13 unique test IDs and were truncated, not complete
+failure inventories. Focused reproduction exposed stale test assumptions about
+the API's pre-split command layout, prepared-only argv and native token leaves in
+the common-policy fixture. The corrected fixture projects only the two exact native
+environments for generic-policy tests; it is not an emitted or executable workflow.
+Real API bytes still require the exact generated checker, and the generic checker
+still refuses their token expressions. Mutation and actual shell-argv controls
+retain the scoped-token, base-injection, combined-build and fail-fast boundaries.
+This test correction does not change policy, emitted workflows or runtime behavior,
+diagnose the original Windows I/O cause, or establish native/product acceptance.
 
 ### Native PR CI failure and required runtime repair
 
@@ -1062,6 +1227,106 @@ required-case result, completeness, uniqueness, fresh JUnit result or qualificat
 The original refusal is re-raised; ordinary discovery and every existing success gate
 remain unchanged. This canonical observability correction does not recover the hidden
 testcase/cause from the original failed API Windows attempt or authorize consumer adoption.
+
+Already reported ERROR-prefix IDs also receive diagnostic-only exception details from
+matching ordinary unittest error sections. Only the fixed process-related exception
+allowlist is published, with at most eight total root-relative source-path hashes and
+line numbers across the existing eight-prefix limit. No raw exception name, message,
+traceback, path or environment is emitted. External frames are excluded; missing,
+duplicate, malformed, chained or unsupported reports remain explicitly unclassified
+and incomplete. Frame limits set explicit truncation/incompleteness flags. These are
+untrusted text observations, not authenticated exception objects or verified source
+locations; quoted reports cannot establish outcomes or repair a refusal. The extension
+does not recover the original API failure or classify a previously discarded capture.
+
+The same correlated ERROR section may carry one exact ASCII
+`process_budget_state=` exception note using `pennilogic.process-budget-state/1`.
+Only the producer's nine observed fields, or its exact two-field unavailable object,
+are transported. The note is at most 384 bytes, canonical sorted compact JSON, and
+must follow the exception and end that report. Duplicate/unknown keys, multiple notes,
+booleans in integer fields, malformed/nonfinite values, inconsistent running/return-code
+state, counts, time sums or bounds yield unavailable/incomplete metadata. Uncorrelated,
+duplicate or structurally invalid error sections cannot lend another test their state.
+An absent note preserves the prior diagnostic shape. Custom `BudgetExceeded` still stays
+unclassified under the unchanged nine-name allowlist.
+
+An optional, distinct `process_budget_job_state=` note may immediately precede that
+unchanged final v1 note, after the same owning exception. Its
+`pennilogic.process-budget-job-state/1` envelope has exactly `schema`, `accounting`
+and `members`, encoded as recursively sorted compact ASCII JSON within 512 bytes
+including the prefix. Observed accounting carries non-boolean uint32
+`total_assigned` and `active`, with `active <= total_assigned`; unavailable or
+unsupported accounting carries only its status. Observed or partial membership
+carries `listed`, `bootstrap`, `system_approved_shell`, `other` and `unclassified`:
+non-boolean integers from zero through 16, with at most one bootstrap and a role
+sum equal to `listed`. Observed membership cannot contain unclassified entries.
+Unavailable, unsupported or oversized membership carries only its status.
+
+The two samples are not atomic. Cumulative assignments are not active membership,
+and a retained handle is not proof of a live process or shell execution. A valid
+membership/accounting active-count disagreement becomes partial, preserving the
+counts; unavailable accounting is never substituted with zero. Invalid arithmetic
+or an observed unclassified member refuses the new envelope. Every partial or
+unavailable/unsupported/oversized component marks the diagnostic incomplete.
+Malformed, duplicate or misplaced new notes yield the exact same-schema envelope
+with unavailable accounting and members, never raw payloads or fabricated counts.
+An absent new note adds no field. Exact ERROR identity, report framing, source-frame
+and ordered-note association remain required. Independently valid final v1 metadata
+survives a refused new note; a note placed after v1 does not repair v1's lost final
+position. This additive transport does not classify `BudgetExceeded`, change outcome
+admission, observe the host, or diagnose the underlying API Windows failure.
+
+An optional `process_budget_capture_state=` note transports the original **inner**
+exception's existing capture metadata, not the qualifier's **outer** complete
+quality-command stdout/stderr summaries. Its exact
+`pennilogic.process-budget-capture-state/1` observed envelope contains `schema`,
+`status: "observed"`, `scope: "snapshot"`, `complete: false`, `mode` (`merged` or
+`separate`), and `stdout`/`stderr` objects containing only `bytes` and `sha256`.
+Byte counts are non-boolean uint64 integers; digests are exactly 64 lowercase hex
+characters. A zero count requires the SHA256 of empty bytes. In merged mode the
+stderr slot is unused and must be zero with that empty digest; stdout represents
+the merged snapshot. This is not evidence that the child emitted no stderr.
+The full prefixed note is recursively sorted compact ASCII JSON within 512 bytes.
+
+The capture note follows the exception and immediately precedes the optional Job
+note, or the final v1 note when Job metadata is absent. Job-v1 immediate adjacency
+and v1 finality remain unchanged. Matching ERROR identity, unique notes, frames,
+complete report framing and the contiguous note sequence are required. Malformed,
+duplicate, misplaced or unsupported capture metadata yields exactly
+`{"schema":"pennilogic.process-budget-capture-state/1","status":"unavailable"}`,
+without invented counts, hashes or mode. An absent note adds no field. Independently
+valid older metadata survives refusal of the capture note.
+
+Snapshot completeness is unestablished, not observed truncation: transported capture
+metadata sets incompleteness but does not by itself set truncation. Stream and
+Job-state observations are not an atomic census. The decoder reads only note data;
+it does not read or rehash inner streams, query native APIs, execute a schema, change
+capture/termination behavior, or identify the blocked operation. The original
+`BudgetExceeded`, owning exit and parser refusal are preserved. No raw inner text,
+process identity, path, command, environment or arbitrary error payload is published.
+
+Observed process state distinguishes the owned Windows bootstrap (the direct owned
+command on POSIX), its nullable return code and at most two capture-reader threads.
+Elapsed/setup/wait values are bounded integer milliseconds, not new deadlines or proof
+of why the budget expired. Source-frame and prefix limits remain eight each. The
+existing public diagnostic bound remains below 4096 bytes: capture-snapshot metadata
+across all retained records is reduced to unavailable, then omitted as needed before
+Job-state metadata and the existing v1 shedding. Crowded metadata has explicit incomplete/truncated
+flags; existing identities and frames are not removed to make room. All observations
+remain untrusted, incomplete hints, never outcome/admission or freshness evidence.
+Successful qualification stays silent about failure state. This transport does not
+recover the discarded hosted cause or establish
+[PenniLogic/api#106](https://github.com/PenniLogic/api/pull/106) acceptance.
+
+The real-unittest diagnostic fixture resolves its owned root before launch, matching
+the child fixture's resolved discovery root and the qualifier's ordinary `ROOT`.
+A real Windows short-path control reproduced the four assertion boundaries reported by
+[#80's first CI attempt](https://github.com/PenniLogic/infra/actions/runs/38032452261):
+an unresolved spelling of the same directory excluded its resolved traceback frames.
+A portable owned parent-directory alias regression also retains this boundary.
+Only fixture setup changes; the parser's lexical frame boundary and refusal policy
+remain unchanged. The native path spelling and failed comparison values were not
+retained, so this reproduction does not establish the hosted cause or native acceptance.
 
 Infra's shared synthetic PowerShell fixture attaches a bounded exception note to its
 private unittest error report before the fixture directory is cleaned up. On nonzero

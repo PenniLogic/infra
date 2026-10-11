@@ -10,7 +10,8 @@ import unittest
 from unittest import mock
 
 import conformance_support as support
-from test_api_node_runtime import BUILD_COMMAND
+from conformance import steps as workflow_steps
+from test_api_node_runtime import BUILD_COMMAND, native_command
 
 
 HERE = Path(__file__).resolve().parents[1]
@@ -29,13 +30,18 @@ checker = load("repository_checker", HERE / "templates/check_repository.py")
 
 UV_INSTALL = ("printf 'uv==0.11.33 --hash=sha256:9542178978b0b6f16a7ae99e55aca039f493a1edb373a15d7993eab80a28615a\\n'"
               " | python -m pip install --quiet --only-binary :all: --require-hashes --no-deps -r /dev/stdin")
-# Generated-setup request for the contracts scaffold: PenniLogic/contracts#2 comment 5905425858.
+# Contracts scaffold commands; the source-test entry point follows the infra#22 timing remediation.
+CONTRACTS_SOURCE_TEST_COMMAND = "python scripts/run_source_tests.py"
+CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND = 'python -m unittest discover -s scripts/tests -p "test_*.py"'
+CONTRACTS_COMMAND_ARTIFACTS = {
+    "AGENTS.md", "README.md", "CONTRIBUTING.md", ".github/agent-policy.json", ".github/workflows/ci.yml",
+}
 CONTRACTS_COMMANDS = [
     "python scripts/check_repository.py", "npm ci --no-audit --no-fund", "python scripts/toolchain.py install",
     "python scripts/lint_spec.py", "python scripts/check_breaking_changes.py",
     "python scripts/generate_clients.py --verify", "python scripts/smoke.py python",
     "python scripts/smoke.py typescript", "python scripts/smoke.py kotlin",
-    'python -m unittest discover -s scripts/tests -p "test_*.py"',
+    CONTRACTS_SOURCE_TEST_COMMAND,
 ]
 CONTRACTS_STATE = ("Versioned API schemas and client-generation tooling from the PenniLogic/contracts#2 scaffold; "
                    "see [OpenAPI](spec/openapi.yaml) and [CHANGELOG.md](CHANGELOG.md) for coverage. Definitions and "
@@ -51,13 +57,72 @@ ANDROID_COMMANDS = [
     ANDROID_GROUPED_COMMANDS[0],
     "python -m pip install -r scripts/privacy_traffic/requirements.txt",
     *ANDROID_GROUPED_COMMANDS[1:3],
-    "python scripts/privacy_traffic_harness.py self-test",
+    "python scripts/privacy_traffic_harness.py self-test --all-scripts",
     "python scripts/check_privacy_components.py",
-    ANDROID_GROUPED_COMMANDS[3],
 ]
 
 
+def contracts_command_delta(case, output):
+    expected = dict(output)
+    for name in CONTRACTS_COMMAND_ARTIFACTS:
+        old, new = CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND
+        if name.endswith((".json", ".yml")):
+            old, new = (json.dumps(command)[1:-1] for command in (old, new))
+        case.assertEqual(1, expected[name].count(old), name)
+        expected[name] = expected[name].replace(old, new, 1)
+    return expected
+
+
 class BaselineTests(unittest.TestCase):
+    def test_common_policy_projection_never_admits_or_masks_native_token_drift(self):
+        actual = generator.workflow("api")
+        projected = support.standard_workflow(generator, "api")
+        with self.assertRaisesRegex(ValueError, "unreviewed workflow expression"):
+            checker.validate_workflow(".github/workflows/ci.yml", actual.encode())
+        checker.validate_workflow(".github/workflows/ci.yml", projected.encode())
+        self.assertNotIn("${{ github.token }}", checker.WORKFLOW_EXPRESSIONS)
+        namespace = {"__file__": str(HERE.parent / "scripts/check_repository.py")}
+        exec(compile(generator.checker("api"), "actual API checker", "exec"), namespace)
+        namespace["validate_workflow"](".github/workflows/ci.yml", actual.encode())
+        with self.assertRaisesRegex(ValueError, "API CI must match"):
+            namespace["validate_workflow"](".github/workflows/ci.yml", projected.encode())
+
+        expected = json.loads(actual)
+        expected["jobs"] = {"ci": expected["jobs"]["ci"]}
+        expected["jobs"]["ci"]["name"] = "CI"
+        names = ["Prepare pinned Money sources", "Prepare pinned database and interop sources"]
+        for step in expected["jobs"]["ci"]["steps"]:
+            if step["name"] in names:
+                self.assertEqual({"PENNILOGIC_NATIVE_SOURCE_TOKEN": "${{ github.token }}"}, step.pop("env"))
+        self.assertEqual(expected, json.loads(projected))
+        for mutation in ("missing", "duplicate", "renamed", "changed-environment"):
+            value = json.loads(actual)
+            steps = value["jobs"]["ci"]["steps"]
+            native = next(step for step in steps if step["name"] == names[0])
+            if mutation == "missing":
+                steps.remove(native)
+            elif mutation == "duplicate":
+                steps.append(copy.deepcopy(native))
+            elif mutation == "renamed":
+                native["name"] = "Unreviewed acquisition"
+            else:
+                native["env"]["EXTRA"] = "${{ github.token }}"
+            with self.subTest(mutation=mutation), mock.patch.object(generator, "workflow", return_value=generator.encoded(value)):
+                with self.assertRaisesRegex(AssertionError, "exact native acquisition environments"):
+                    support.standard_workflow(generator, "api")
+        for placement in ("run", "env"):
+            value = json.loads(actual)
+            step = value["jobs"]["ci"]["steps"][-1]
+            if placement == "run":
+                step["run"] += "\necho '${{ github.token }}'"
+            else:
+                step["env"]["EXTRA"] = "${{ github.token }}"
+            with self.subTest(placement=placement), mock.patch.object(generator, "workflow", return_value=generator.encoded(value)):
+                fixture = support.standard_workflow(generator, "api")
+                with self.assertRaisesRegex(ValueError, "unreviewed workflow expression"):
+                    checker.validate_workflow(".github/workflows/ci.yml", fixture.encode())
+        self.assertEqual(actual, generator.workflow("api"))
+
     def test_all_repositories_have_public_hosted_readonly_ci(self):
         for repo in generator.PROFILES["repositories"]:
             with self.subTest(repo=repo):
@@ -130,11 +195,14 @@ class BaselineTests(unittest.TestCase):
                 steps = json.loads(output[".github/workflows/ci.yml"])["jobs"]["ci"]["steps"]
                 run = [step for step in steps if step["name"] == "Run checks"]
                 workflow_commands = [
-                    BUILD_COMMAND if repo == "api" and command == "python scripts/quality.py build"
+                    native_command(command) if repo == "api"
                     else generator.infra_ci_command(command) if repo == "infra" else command
                     for command in commands
                 ]
-                self.assertEqual([workflow_commands], [step["run"].split("\n") for step in run])
+                self.assertEqual(1, len(run))
+                self.assertEqual(workflow_commands, workflow_steps.workflow_run_commands(
+                    output[".github/workflows/ci.yml"].encode(),
+                ))
                 self.assertEqual(commands, json.loads(output[".github/agent-policy.json"])["commands"])
                 block = "```text\npython scripts/setup.py\n" + "\n".join(commands) + "\n```"
                 for name in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
@@ -149,6 +217,57 @@ class BaselineTests(unittest.TestCase):
         for flag in ("uv==0.11.33", "--hash=sha256:", "--only-binary :all:", "--require-hashes", "--no-deps"):
             self.assertIn(flag, UV_INSTALL)
         self.assertNotIn('"uv>=', json.dumps(generator.PROFILES["repositories"]["ai-service"]))
+
+    def test_contracts_source_test_entrypoint_changes_only_five_command_derived_artifacts(self):
+        self.assertEqual(CONTRACTS_SOURCE_TEST_COMMAND, generator.profile_for("contracts")["commands"][-1])
+        current = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
+        previous_profiles = copy.deepcopy(generator.PROFILES)
+        previous_profiles["repositories"]["contracts"]["commands"][-1] = CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND
+        with mock.patch.object(generator, "PROFILES", previous_profiles):
+            previous = {repo: generator.artifacts(repo) for repo in generator.PROFILES["repositories"]}
+        unchanged = 0
+        for repo in current:
+            with self.subTest(repo=repo):
+                self.assertEqual(previous[repo].keys(), current[repo].keys())
+                changed = {name for name in current[repo]
+                           if current[repo][name].encode("utf-8") != previous[repo][name].encode("utf-8")}
+                self.assertEqual(CONTRACTS_COMMAND_ARTIFACTS if repo == "contracts" else set(), changed)
+                unchanged += len(current[repo]) - len(changed)
+        self.assertEqual(184, unchanged)
+        self.assertEqual(contracts_command_delta(self, previous["contracts"]), current["contracts"])
+        self.assertNotIn("scripts/run_source_tests.py", current["contracts"])
+
+    def test_contracts_source_test_entrypoint_cli_refuses_removed_stubbed_or_previous_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generator.generate("contracts", root)
+            command = [sys.executable, str(HERE / "generate.py"), "--repository", "contracts",
+                       "--root", str(root), "--check"]
+
+            def invoke():
+                return subprocess.run(command, capture_output=True, text=True,
+                                      encoding="utf-8", timeout=60, check=False)
+
+            self.assertEqual(0, invoke().returncode)
+            path = root / ".github" / "workflows" / "ci.yml"
+            original = path.read_bytes()
+            document = json.loads(original)
+            run_checks = next(step for step in document["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+            self.assertEqual(CONTRACTS_COMMANDS, run_checks["run"].split("\n"))
+            for replacement in (None, "echo tests skipped", CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND):
+                with self.subTest(replacement=replacement):
+                    changed = copy.deepcopy(document)
+                    run_checks = next(step for step in changed["jobs"]["ci"]["steps"] if step["name"] == "Run checks")
+                    commands = CONTRACTS_COMMANDS[:-1]
+                    if replacement is not None:
+                        commands.append(replacement)
+                    run_checks["run"] = "\n".join(commands)
+                    path.write_bytes(generator.encoded(changed).encode("utf-8"))
+                    refused = invoke()
+                    self.assertEqual(1, refused.returncode, refused.stdout)
+                    self.assertEqual("Generated setup differs: .github/workflows/ci.yml\n", refused.stderr)
+                    path.write_bytes(original)
+                    self.assertEqual(0, invoke().returncode)
 
     def test_android_grouped_ci_changes_only_five_command_derived_artifacts(self):
         grouped_profiles = copy.deepcopy(generator.PROFILES)
@@ -206,7 +325,7 @@ class BaselineTests(unittest.TestCase):
                         commands.remove(ANDROID_COMMANDS[2])
                     else:
                         commands[2] = replacement
-                    self.assertEqual(ANDROID_COMMANDS[3:], commands[-4:])
+                    self.assertEqual(ANDROID_COMMANDS[3:], commands[-3:])
                     run_checks["run"] = "\n".join(commands)
                     path.write_bytes(generator.encoded(changed).encode("utf-8"))
                     refused = invoke("--check")
@@ -499,7 +618,8 @@ class BaselineTests(unittest.TestCase):
                     if "run" in step:
                         self.assertNotIn("${{", step["run"], msg=f"{repo} {step['name']}")
                 if repo == "api" and not setup:
-                    self.assertEqual(["Run checks"],
+                    self.assertEqual(["Prepare pinned Money sources", "Prepare pinned database and interop sources",
+                                      "Run checks"],
                                      [step["name"] for step in job["steps"] if "${{" in json.dumps(step)])
                 self.assertNotIn("${{", json.dumps(job.get("env", {})))
 
@@ -621,7 +741,7 @@ class BaselineTests(unittest.TestCase):
         checker.validate_workflow(".github/workflows/ci.yml", json.dumps(workflow).encode())
 
     def test_only_generator_expressions_and_no_conditions_are_accepted(self):
-        # Every expression in every generated workflow is in the checker allowlist and vice versa.
+        # Common-policy expressions equal the generic allowlist; native scopes require exact bytes.
         emitted = set()
         for repo in generator.PROFILES["repositories"]:
             for setup in (False, True):
