@@ -1276,13 +1276,42 @@ survives a refused new note; a note placed after v1 does not repair v1's lost fi
 position. This additive transport does not classify `BudgetExceeded`, change outcome
 admission, observe the host, or diagnose the underlying API Windows failure.
 
+An optional `process_budget_capture_state=` note transports the original **inner**
+exception's existing capture metadata, not the qualifier's **outer** complete
+quality-command stdout/stderr summaries. Its exact
+`pennilogic.process-budget-capture-state/1` observed envelope contains `schema`,
+`status: "observed"`, `scope: "snapshot"`, `complete: false`, `mode` (`merged` or
+`separate`), and `stdout`/`stderr` objects containing only `bytes` and `sha256`.
+Byte counts are non-boolean uint64 integers; digests are exactly 64 lowercase hex
+characters. A zero count requires the SHA256 of empty bytes. In merged mode the
+stderr slot is unused and must be zero with that empty digest; stdout represents
+the merged snapshot. This is not evidence that the child emitted no stderr.
+The full prefixed note is recursively sorted compact ASCII JSON within 512 bytes.
+
+The capture note follows the exception and immediately precedes the optional Job
+note, or the final v1 note when Job metadata is absent. Job-v1 immediate adjacency
+and v1 finality remain unchanged. Matching ERROR identity, unique notes, frames,
+complete report framing and the contiguous note sequence are required. Malformed,
+duplicate, misplaced or unsupported capture metadata yields exactly
+`{"schema":"pennilogic.process-budget-capture-state/1","status":"unavailable"}`,
+without invented counts, hashes or mode. An absent note adds no field. Independently
+valid older metadata survives refusal of the capture note.
+
+Snapshot completeness is unestablished, not observed truncation: transported capture
+metadata sets incompleteness but does not by itself set truncation. Stream and
+Job-state observations are not an atomic census. The decoder reads only note data;
+it does not read or rehash inner streams, query native APIs, execute a schema, change
+capture/termination behavior, or identify the blocked operation. The original
+`BudgetExceeded`, owning exit and parser refusal are preserved. No raw inner text,
+process identity, path, command, environment or arbitrary error payload is published.
+
 Observed process state distinguishes the owned Windows bootstrap (the direct owned
 command on POSIX), its nullable return code and at most two capture-reader threads.
 Elapsed/setup/wait values are bounded integer milliseconds, not new deadlines or proof
 of why the budget expired. Source-frame and prefix limits remain eight each. The
-existing public diagnostic bound remains below 4096 bytes: new Job-state metadata
+existing public diagnostic bound remains below 4096 bytes: capture-snapshot metadata
 across all retained records is reduced to unavailable, then omitted as needed before
-the existing v1 shedding runs. Crowded metadata has explicit incomplete/truncated
+Job-state metadata and the existing v1 shedding. Crowded metadata has explicit incomplete/truncated
 flags; existing identities and frames are not removed to make room. All observations
 remain untrusted, incomplete hints, never outcome/admission or freshness evidence.
 Successful qualification stays silent about failure state. This transport does not
