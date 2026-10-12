@@ -348,9 +348,12 @@ the Infra extension below originally retained all three API output bytes. The
 shared outcome-parser correction changed only the generated qualifier. The
 input-only prerequisite correction changes API CI and its checker digest, leaving
 that qualifier, API Linux/setup/manual commands and every other profile unchanged.
-The API registry reference still needs the real reviewed source commit through the
-separate source/binding sequence; a prebinding history mismatch remains an honest
-failure, not a placeholder reference or an acceptance waiver.
+The API registry now binds the `C` reader to the real source commit
+`822c5a501879b5224a4e0020c5e84157749e9071` through a separate binding change.
+Its historical generator must reproduce the current API workflow and checker;
+the prior `d31994d6` binding cannot represent this reader. Full-history validation
+remains required, and a prebinding mismatch remains an honest failure, not a
+placeholder reference or an acceptance waiver.
 Adopt all three atomically with the API-owned combined-build interface, only after
 separate producer/consumer review and protected acceptance. Synthetic Infra runner,
 parser and shell controls are not execution of the two API tests. Native Windows
