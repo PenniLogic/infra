@@ -395,27 +395,29 @@ $record = [ordered]@{
     status = 'unavailable'
     checkpoint = $null
     console_redirected = $null
+    pre_record_writer_return = 'not-observed'
 }
 $exitCode = 2
 $stream = $null
 try {
     $stream = [IO.File]::OpenRead($path)
-    $bytes = [byte[]]::new(7)
+    $bytes = [byte[]]::new(8)
     $count = 0
     while ($count -lt $bytes.Length) {
         $read = $stream.Read($bytes, $count, $bytes.Length - $count)
         if ($read -eq 0) { break }
         $count += $read
     }
-    if ($count -le 6) {
+    if ($count -le 7) {
         $value = [Text.Encoding]::ASCII.GetString($bytes, 0, $count)
-        if ($value -cmatch '\A(?:|E|EU|EUX|ES[01]{3}|ES[01]{3}X)\z') {
+        if ($value -cmatch '\A(?:|E|EU|EUX|ES[01]{3}|ES[01]{3}X|ES[01]{3}CX?)\z') {
             $record.status = 'observed-record'
             $record.checkpoint = if ($value -eq '') { 'none-observed' }
                 elseif ($value.EndsWith('X', [StringComparison]::Ordinal)) { 'after-write-output' }
                 elseif ($value -eq 'E') { 'command-entry' }
                 else { 'before-write-output' }
-            if ($value -cmatch '\AES([01])([01])([01])X?\z') {
+            if ($value.Contains('C')) { $record.pre_record_writer_return = 'observed' }
+            if ($value -cmatch '\AES([01])([01])([01])C?X?\z') {
                 $record.console_redirected = [ordered]@{
                     stdin = $Matches[1] -ceq '1'
                     stdout = $Matches[2] -ceq '1'

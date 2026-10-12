@@ -273,8 +273,10 @@ resolution. Raw root/module paths, names, commands, messages, process IDs and
 ANSI are never emitted. The collector neither verifies the producer's raw
 environment/path-length claims from hashes nor turns its hook-support claims,
 a completed post, the separate X marker, or valid diagnostic data into causal,
-default-launch, cleanup or qualification acceptance. The existing 2105-byte
-approved-shell boundary reader remains unchanged.
+default-launch, cleanup or qualification acceptance. V2 did not change the
+2105-byte approved-shell boundary reader; its separate additive extension is
+described below. The lookup JSON grammar and its 4096-byte public bound remain
+unchanged by that extension.
 
 An optional `Read approved-shell command boundary` step follows `Run Windows owning
 suites` in that same job. Its `always()` condition retains reporting after an owning
@@ -286,19 +288,38 @@ before the step, outside the reader's bound. The owning result, all twelve nativ
 fail-fast guards and the required CI result remain unchanged; there is no
 `continue-on-error`, upload action or qualifier/parser change.
 
-The reader consumes at most seven bytes, accepts only the finite zero-to-six-byte
-checkpoint protocol, and emits a fixed JSON record bounded to 1024 ASCII bytes.
+The reader consumes at most eight bytes to detect overflow, accepts only the finite
+zero-to-seven-byte checkpoint protocol, and emits a fixed JSON record bounded to
+1024 ASCII bytes. The prior zero-to-six-byte shapes remain valid with their original
+meanings: empty, `E`, `EU`, `EUX`, `ES[01]{3}` and `ES[01]{3}X`. The only additional
+shapes are `ES[01]{3}C` and `ES[01]{3}CX`. `C` may occur once, after `S` and all three
+redirect flags, before an optional `X`; it is invalid after `U`, before complete
+flags, after `X` or repeated. Eight or more bytes are oversized, including a valid
+prefix followed by extra data; malformed input never publishes prefix observations.
+
+Every record has a fixed `pre_record_writer_return` field: `observed` only for a
+valid shape containing `C`, otherwise `not-observed`. The producer emits `C` only
+after the first protected `Write-Output` target's pre-record `$p.Write.Invoke(...)`
+returns while the statement remains bracketed by `S` and `X`. A handled write
+failure can also return: `C` is not proof of write success, callback or native
+delegate completion, lookup success, cmdlet entry, output completion, cause or
+timing. Absence is not proof of non-return. A `C` without `X` still means
+`before-write-output`; `X` retains `after-write-output`, independently of `C`.
+No raw variable, handle, value or environment detail is exported.
+
 An empty existing record is `none-observed`. Only `FileNotFoundException` and
 `DirectoryNotFoundException` report `not-observed`, null checkpoint/redirected-I/O
-flags, `diagnostic_only: true`, and exit zero because instrumentation is optional.
+flags, `pre_record_writer_return: not-observed`, `diagnostic_only: true`, and exit
+zero because instrumentation is optional.
 This is explicit absence, not successful probe execution, proof of nonexecution or
 acceptance. An expected experiment without an observation remains inconclusive.
 Other unreadable, malformed, partial or oversized data still exits two without
 publishing arbitrary bytes. Same-job console output bypasses the qualifier's capture,
 but does not export raw stream or sidecar-byte custody. The original reader's CRLF
-endings normalize to LF in the embedded JSON-syntax YAML string; the only logical
-reader delta is the three-line narrow absence catch. This is not a claim of executed
-byte identity. Instrumented checkpoints perturb the command and its timing.
+endings normalize to LF in the embedded JSON-syntax YAML string. The historical
+three-line narrow absence catch is preserved by the later `C` extension. This is
+not a claim of executed byte identity. Instrumented checkpoints perturb the command
+and its timing.
 Neither a checkpoint, redirected-I/O flag nor collector success proves the blocking
 cause, pipe identity, shell exit, EOF, cleanup or qualification. Runner loss or a
 hard timeout may prevent any readback. Instrumentation, fresh same-job custody,
