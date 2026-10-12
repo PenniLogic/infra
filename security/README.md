@@ -8,10 +8,11 @@ checker and source-binding integration remains with the coordinating Infra owner
 
 ## Run locally
 
-Use Python 3.14, Git, and Gitleaks **8.30.1** on `PATH`. There are no new Python
+Use Python 3.14, trusted Git, and Gitleaks **8.30.1**. There are no new Python
 packages. Gitleaks is required: the real-scanner tests fail, rather than skip,
-when it is missing or its version differs. Do not install dependencies unless
-the normal missing-tool or manifest-change condition applies.
+when its explicit tool binding is missing or its digest/version differs. Do not
+install dependencies unless the normal missing-tool or manifest-change
+condition applies.
 
 The official [8.30.1 release](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1)
 archives are pinned by SHA-256:
@@ -23,12 +24,35 @@ archives are pinned by SHA-256:
 
 Verify the archive before extracting it into an owned tool directory; do not
 replace a shared installation. This pin is not an SBOM or signed provenance.
-Linux/Windows provisioning in generated CI has not been added by this slice.
+The verified Windows executable's SHA-256 is
+`17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c`.
+For each platform, obtain the executable digest from the independently verified
+archive, not from a candidate-provided binary. Linux/Windows provisioning in
+generated CI has not been added by this slice.
+
+The scanner requires `--git` and `--gitleaks` absolute executable paths outside
+the candidate checkout, plus `--gitleaks-sha256` from trusted provisioning.
+It does not discover tools from ambient `PATH` or the current directory.
+Gitleaks' own child Git lookup receives only the selected Git directory in
+`PATH`, `.EXE` on Windows, and disabled current-directory lookup. The executable
+digest is checked before execution and around each scanner pass. The caller
+must own the selected installation and supply these arguments independently of
+candidate files, environment changes and PR text. This is not isolation from
+another hostile process that can mutate the same user's trusted installation.
+
+For the focused tests, set these process-local bindings from that same trusted
+provisioning; they are test inputs, not production CLI fallbacks:
+
+| Variable | Value |
+| --- | --- |
+| `PENNILOGIC_TEST_GIT` | Absolute path to the trusted `git` / `git.exe`. |
+| `PENNILOGIC_TEST_GITLEAKS` | Absolute path to the verified Gitleaks executable. |
+| `PENNILOGIC_TEST_GITLEAKS_SHA256` | Executable digest from the verified release archive. |
 
 ```text
 python -m unittest discover -s scripts\tests -p test_security_controls.py -v
 python scripts\security_exceptions.py
-python scripts\scan_secrets.py --repository PenniLogic/infra
+python scripts\scan_secrets.py --repository PenniLogic/infra --git <absolute-trusted-git> --gitleaks <absolute-verified-gitleaks> --gitleaks-sha256 <verified-executable-digest>
 ```
 
 Commands print one machine-readable JSON document. Exit 0 means the requested
@@ -62,22 +86,112 @@ ignore file. The explicit trusted config, empty ignore input and
 `--ignore-gitleaks-allow` reject candidate-config, ignore-file and inline-comment
 suppression. Forced-text Git diffs with external diffs/textconv disabled prevent
 binary attributes and suffixes such as `.svg` from hiding mandatory patterns.
+Real-scanner fixtures include a credential only in the initial commit, removed
+later, and one introduced only by a merge resolution between clean parents,
+also removed later. Findings must identify the original root/merge commit.
 The tests exercise these actual scanner paths, not substitutes for Gitleaks.
 
 Coverage is reported as `all-local-refs`, not "all history ever hosted." The
 integration must fetch full branch/tag/PR history; deleted/unfetched remote refs,
 other repositories, archives beyond Gitleaks' supported decoding, Git LFS
-payloads and deployed secrets are not proved covered. Gitleaks has a 180-second
-deadline per pass; timeout, failed mirror, missing objects or oversized reports
-refuse, never silently reduce scope.
+payloads and deployed secrets are not proved covered.
+
+### Completion and process lifetime
+
+Gitleaks 8.30.1 can silently finish with partial findings when an internal
+deadline expires while workers drain; it also logs some Git errors without
+propagating a failing exit code. The wrapper explicitly uses `--timeout=0` and
+enforces a **180-second external deadline per scanner pass**. Any scanner output
+at the configured error log level, unexpected exit, missing/mismatched report,
+timeout, failed mirror or oversized input refuses. Exit 0/10 and a parseable
+report alone are not completion evidence. Regressions exercise an actual
+swallowed Git error, accepted-code partial/error reports, a late-fragment
+detection and cancellation of the real scanner while it is running.
+
+The wrapper reuses the unchanged `governance/conformance/defects.py` owned-process
+runners and `scripts/bootstrap.py` lifetime primitives; it does not run the
+Conformance suite, Docker or a service. The trusted source binding must include
+those helpers and their existing local imports. On Windows a trusted isolated
+Python gate waits for Job Object ownership before releasing the command.
+Timeout cleanup terminates that job's descendants and bounds pipe/process
+draining to the helper's existing five-second teardown reserve. A synthetic
+descendant-held-pipe/file test checks actual exit and file release.
+
+POSIX reuses the existing separate process group and bounded termination.
+Its timeout path deliberately does **not** claim detached-descendant exit;
+the scan refuses and retains scratch when cleanup is unconfirmed. No Windows
+result is Linux qualification. Process cleanup status remains explicit, and a
+scratch-deletion failure cannot replace the primary timeout/error. Neither
+condition is an empty successful scan. Explicit cancellation becomes a
+fixed-field `scanner-process-interrupted` refusal, not a Python traceback.
+A raw `KeyboardInterrupt` may also originate during the helper's teardown,
+so it is **not a typed cleanup witness**: the public boundary always reports
+`process_cleanup: unconfirmed`, returns 2 and retains any scan scratch still
+under its ownership. It does not retry cleanup against a possibly live tree.
+A synthetic control can verify that its particular helper invocation stopped
+its processes, but cannot upgrade that public cancellation status. Separate
+controls exercise confirmed helper cleanup and interruption during teardown.
+
+Retained scratch may contain full source history, including exposed values;
+report redaction does not sanitize it. Operator follow-up must privately locate
+the owned scratch, establish that all owning processes have exited and arrange
+its controlled cleanup. The public report does not disclose its path. Eventual
+cleanup, secure erasure and a precise typed cancellation witness are not
+established by this source correction; no automatic retry or cleanup approval
+is implied.
 
 Only `pennilogic.secret-scan/1` leaves the command. Raw scanner reports and
-stdout/stderr remain temporary and are removed. Findings contain a rule,
+stdout/stderr stay private; temporary reports are removed after confirmed
+process exit. Unconfirmed cleanup retains scratch and fails explicitly.
+Findings contain a rule,
 credential class/severity, commit, line/column span, hashed artifact identifier,
 and a stable finding ID. They contain no match, credential, filename, author,
 email, commit message or secret-derived hash. Separate secrets on the same line
 have separate exception targets. Duplicate detector rules may report the same
 exposure separately; repeated occurrences of one exact finding are deduplicated.
+
+### Incomplete incident handoff
+
+A refusal is not permission to discard already established detections. Each
+pass must finish with the pinned executable intact, confirmed process cleanup,
+an accepted exit, no diagnostics and a wholly valid report before its findings
+are minimized and retained. Invalid, errored or cancelled passes contribute
+**nothing**, including any apparently valid prefix of their report. A later
+pass, scratch cleanup or history-stability failure still refuses coverage and
+returns exit 2, but preserves earlier completed-pass detections in
+`incident_handoff`, separately from a normal scan's `findings`.
+
+The outer `pennilogic.secret-scan/1` stays `status: refused`, with a static
+`code` and `coverage: {"scope":"all-local-refs","complete":false}`. If validated
+detections exist, `incident_handoff` contains exactly:
+
+- `schema: pennilogic.secret-incident/1`, `status: incomplete`;
+- the known `repository`, numeric `repository_id` and original snapshot `head`;
+- ordered `completed_passes`: `["mandatory"]` or `["mandatory","provider"]`;
+- nonempty `findings`, with only the same minimized finding fields as a complete scan.
+
+There is no completed-coverage or commit-count claim in this handoff. The
+original head identifies the scanned snapshot even when a later stability
+check discovers movement. With no valid completed-pass detections there is no
+incident handoff; a generic refusal cannot be reinterpreted as a clean scan.
+Successful scan reports additionally state `coverage.complete: true`, still
+limited to locally available refs.
+
+The rotation command accepts this strict incomplete envelope while retaining
+repository, finding-identity, severity, current-exception and deduplication
+validation. It rejects raw/extra incident fields, inconsistent coverage,
+invalid pass sequences and provider findings attributed only to the mandatory
+pass. Its output records `scan_status: refused`, `scan_coverage: incomplete`,
+and **always returns 2**, even if separate age evaluation succeeds. It may
+still contain immediate rotation requests. Schema, hashes, a claimed pass name
+and a valid finding ID are **not provenance or authentication**: the eventual
+trusted collector must bind the actual trusted producer and preserve its
+nonzero exit; candidate-supplied JSON cannot establish that a pass executed.
+
+Synthetic regressions run the real mandatory scanner pass before later
+diagnostic, timeout, invalid-report, cleanup and history-movement failures,
+then feed the resulting non-green handoff into the rotation CLI. These prove
+source data flow and minimization, not live publication or native acceptance.
 
 ## One exception contract, no blanket baselines
 
@@ -208,7 +322,13 @@ Every new, untracked and unsuppressed finding produces a request in that invocat
 There is no waiting period for the initial alert, rotation or incident path.
 The report includes per-repository open count, individual ages and oldest age.
 Empty inventories have an absent (`null`) oldest age, never a fabricated zero.
-Future creation times and incomplete ticket inventories refuse.
+Incomplete ticket inventories, repository/identity errors, ambiguous markers
+and severity drift still refuse request planning. Age evaluation is separate:
+invalid/future creation times or an invalid escalation window set
+`age_alert_status: failed` and a static `age_alert_code`, keep counts and
+validated requests/deduplication, leave ages and stale flags/counts `null`,
+and return 2. A failing age calculation must not suppress an immediate request
+or bypass duplicate-ticket controls.
 
 No accepted incident-aging threshold was found in the current policies:
 Docs `architecture/02-security-architecture.md` section 6.6 requires immediate
@@ -218,7 +338,8 @@ lead is not a rotation-incident escalation window. Accordingly there is **no
 default window**. Without one, requests and observed ages are still produced,
 but `age_alert_status` is `policy-required`, stale counts/flags are `null`, and
 the CLI returns 2. The trusted publisher must not discard new requests because
-the separate aging policy is unresolved.
+the separate aging policy is unresolved or failed, or because the incident
+handoff reports incomplete scan coverage.
 
 After an explicit accepted decision, the trusted workflow may supply its fixed
 positive `--stale-after-seconds` value. Equality triggers escalation of an
@@ -232,7 +353,8 @@ owner-approved, trusted integration with least privilege, serialized per
 repository, a fresh deduplication read immediately before creation and
 read-back of the returned issue/labels. Candidate code/reports must not gain
 issue-write credentials. A failed scan must still trigger this trusted path;
-failure to publish must remain visible. The required planted-secret ticket and
+it consumes validated `incident_handoff` evidence without salvaging an errored
+pass or making the scan green. Failure to publish must remain visible. The required planted-secret ticket and
 independent severity-label confirmation cannot be claimed from a payload test.
 
 ## Acceptance ledger and integration handoff
@@ -253,9 +375,12 @@ independent severity-label confirmation cannot be claimed from a payload test.
 | Open-ticket count, age and fixed-window alerts | Deterministic ages, explicit missing-policy status and tested configurable boundary; an accepted fixed window and live collection/alert delivery remain pending. |
 | Violation tests and Definition of Done | Focused actual-scanner/source tests only. Separate Core/QA/Security/Privacy review, current-head native CI, protected integration and infra#22 acceptance remain required. |
 
-The initial actual local Infra full-history scan was **RED**, with 56 findings
-across 957 reachable commits. Findings were retained only as redacted metadata;
-their validity/credential state was not inferred. Do not suppress them wholesale,
-rewrite history or describe the control as green. Historical triage belongs to
-the owner before activation. Later local histories can contain more refs/commits,
-so this initial observation is not a permanent expected count.
+The actual local Infra history observations on **2026-10-12** remain **RED**:
+the initial receipt recorded 56 findings / 957 reachable commits; the later
+`f96739cf027a8499825bc97826d4ba4a8e9956bd` receipt recorded 56 / 961, with none
+attributed to that commit. Both predate the executable/completion/lifetime
+corrections and are preserved as dated results, not completeness witnesses or
+claims that the historical findings are false positives. No actual repository
+history was rescanned for those corrections. Findings were retained only as
+redacted metadata; validity, privilege and revocation remain untriaged. Do not
+suppress them wholesale, rewrite history or describe the control as green.

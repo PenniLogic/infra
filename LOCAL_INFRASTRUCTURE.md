@@ -21,10 +21,13 @@ push-protection violation evidence remain separate acceptance gates.
   `docker compose version`.
 - Python 3.14 (the scripts use only the standard library).
 
-The security-control tests in `scripts/tests` additionally require hash-verified Gitleaks
-`8.30.1` on `PATH`; see the [pinned archives and focused command](security/README.md#run-locally).
-A missing scanner is an explicit failure, not a skip. These tests use disposable local
-Git histories and nonfunctional synthetic patterns, never a remote planted secret.
+The security-control tests in `scripts/tests` additionally require trusted absolute
+Git/Gitleaks paths and a verified Gitleaks `8.30.1` executable digest, supplied through
+the documented process-local test bindings; see the
+[pinned archives and focused command](security/README.md#run-locally).
+Ambient `PATH` is not a tool binding. A missing scanner is an explicit failure, not a
+skip. These tests use disposable local Git histories and nonfunctional synthetic
+patterns, never a remote planted secret.
 
 The separate **governance** test suite also needs Node `24.14.0` (generated `.nvmrc`, bundled npm
 `11.9.0`) and uv `0.11.33`, plus a network to prepare its temporary Vitest/pytest consumers.
