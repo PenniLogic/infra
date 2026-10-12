@@ -1,6 +1,7 @@
 """Qualify Infra's complete ordinary discovery on the two reviewed hosted platforms."""
 
 import contextlib
+import functools
 import hashlib
 import io
 import json
@@ -64,6 +65,12 @@ WINDOWS_SCRIPTS = frozenset("test_bootstrap.DockerCommandTests." + name for name
     "test_windows_job_owns_the_whole_tree_and_terminates_it",
     "test_process_exits_awaits_the_process_objects_not_the_job_accounting",
 ))
+WINDOWS_SECURITY = frozenset({
+    "test_security_controls.ScannerBoundaryTests.test_interrupted_teardown_never_claims_confirmed_cleanup",
+    "test_security_controls.ScannerBoundaryTests.test_timeout_terminates_actual_descendants_holding_pipes_and_files",
+    "test_security_controls.GitleaksIntegrationTests."
+    "test_confirmed_interruption_keeps_public_cleanup_unconfirmed_and_incidents",
+})
 STACK_TESTS = frozenset("test_integration_stack.StackLifecycleTests." + name for name in (
     "test_01_fresh_stack_becomes_healthy_with_smoke_and_artifact",
     "test_02_second_run_is_idempotent",
@@ -83,11 +90,26 @@ NATIVE_LINKS = {
 }
 REQUIRED = {
     "governance": WINDOWS_GOVERNANCE | LINUX_GOVERNANCE | NATIVE_LINKS,
-    "scripts": WINDOWS_SCRIPTS | STACK_TESTS | {FLOCK},
+    "scripts": WINDOWS_SCRIPTS | WINDOWS_SECURITY | STACK_TESTS | {FLOCK},
 }
 SKIPS = {
     "win32": {"governance": LINUX_GOVERNANCE, "scripts": STACK_TESTS | {FLOCK}},
-    "linux": {"governance": WINDOWS_GOVERNANCE, "scripts": WINDOWS_SCRIPTS},
+    "linux": {"governance": WINDOWS_GOVERNANCE, "scripts": WINDOWS_SCRIPTS | WINDOWS_SECURITY},
+}
+SECURITY_SOURCE_FILES = frozenset({
+    "governance/generate.py", "governance/qualify.py", "governance/templates/qualify_windows.py",
+    "governance/repository-profiles.json", "governance/conformance/__init__.py",
+    "governance/conformance/defects.py", "governance/conformance/generator.py",
+    "governance/conformance/report.py", "governance/conformance/steps.py",
+    "scripts/bootstrap.py", "scripts/smoke_infra.py", "scripts/scan_secrets.py",
+    "scripts/secret_rotation.py", "scripts/check_dependencies.py", "scripts/security_exceptions.py",
+    "scripts/tests/test_security_controls.py", "security/gitleaks.toml",
+    "security/exceptions.json", "security/exceptions.schema.json",
+})
+HOST_GIT = {"win32": r"C:\Program Files\Git\cmd\git.exe", "linux": "/usr/bin/git"}
+GITLEAKS_ARCHIVE_PINS = {
+    "win32": "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e",
+    "linux": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
 }
 POWERSHELL_FIXTURE_PREFIX = b"PENNILOGIC_POWERSHELL_FIXTURE_V1 "
 POWERSHELL_FIXTURE_COUNTS = {
@@ -106,37 +128,97 @@ def identifier(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def checked(command, root):
-    result = subprocess.run(command, cwd=root, capture_output=True, check=False)
-    if result.returncode != 0:
-        raise Refused("qualification-prerequisite-command-failed")
-    return result.stdout
+def checked(command, root, *, bindings=None):
+    if bindings is not None:
+        if command[0] not in (bindings["git"], bindings["gitleaks"]):
+            raise Refused("security-tool-command-is-not-bound")
+        security_tools(root, expected=bindings)
+    succeeded = False
+    try:
+        result = subprocess.run(command, cwd=root, capture_output=True, check=False)
+        if result.returncode != 0:
+            raise Refused("qualification-prerequisite-command-failed")
+        succeeded = True
+        return result.stdout
+    finally:
+        if bindings is not None:
+            try:
+                security_tools(root, expected=bindings)
+            except (Refused, OSError, ValueError):
+                if succeeded:
+                    raise
+                emit("qualification_tool_recheck_refused", code="post-use-security-tool-binding-invalid")
 
 
-def source_inventory(root):
-    git = ["git", "--no-pager"]
-    head = checked([*git, "rev-parse", "HEAD"], root).decode("ascii").strip()
+def security_tools(root, *, expected=None):
+    if sys.platform not in HOST_GIT:
+        raise Refused("security-tools-platform-is-unsupported")
+    root = root.resolve(strict=True)
+
+    def external(value, directory=False):
+        if not isinstance(value, str) or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise Refused("security-tool-binding-is-missing-or-invalid")
+        path = Path(value)
+        if (not path.is_absolute() or path != path.resolve(strict=True) or path.is_relative_to(root)
+                or any(part.is_symlink() or part.is_junction() for part in (path, *path.parents))
+                or not (path.is_dir() if directory else path.is_file())):
+            raise Refused("security-tool-binding-is-not-external-and-regular")
+        return path
+
+    temporary = external(os.environ.get("RUNNER_TEMP"), directory=True)
+    git = external(os.environ.get("PENNILOGIC_TEST_GIT"))
+    scanner = external(os.environ.get("PENNILOGIC_TEST_GITLEAKS"))
+    expected_scanner = temporary / "pennilogic-gitleaks-8.30.1" / (
+        "gitleaks.exe" if sys.platform == "win32" else "gitleaks"
+    )
+    if git != Path(HOST_GIT[sys.platform]) or scanner != expected_scanner:
+        raise Refused("security-tools-do-not-match-prepared-locations")
+    values = {"git": str(git), "gitleaks": str(scanner)}
+    for name, path in (("git", git), ("gitleaks", scanner)):
+        digest = os.environ.get(f"PENNILOGIC_TEST_{name.upper()}_SHA256", "")
+        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise Refused("security-tool-digest-binding-is-missing")
+        with path.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        if actual != digest:
+            raise Refused("security-tool-digest-changed")
+        values[name + "_sha256"] = actual
+    if expected is not None and values != expected:
+        raise Refused("security-tool-original-binding-changed")
+    return values
+
+
+def source_inventory(root, bound_tools=None):
+    bindings = security_tools(root) if bound_tools is None else bound_tools()
+    git = [bindings["git"], "--no-pager"]
+    head = checked([*git, "rev-parse", "HEAD"], root, bindings=bindings).decode("ascii").strip()
     if (not re.fullmatch(r"[0-9a-f]{40}", head) or head != os.environ.get("GITHUB_SHA")
-            or checked([*git, "rev-parse", "--is-shallow-repository"], root).strip() != b"false"):
+            or checked([*git, "rev-parse", "--is-shallow-repository"], root, bindings=bindings).strip() != b"false"):
         raise Refused("source-must-match-the-full-native-checkout")
-    if checked([*git, "status", "--porcelain", "--untracked-files=normal"], root):
+    if checked([*git, "status", "--porcelain", "--untracked-files=normal"], root, bindings=bindings):
         raise Refused("qualification-source-is-not-clean")
-    tree = checked([*git, "rev-parse", "HEAD^{tree}"], root).decode("ascii").strip()
-    files = []
-    for entry in checked([*git, "ls-tree", "-r", "-z", "HEAD"], root).split(b"\0"):
+    tree = checked([*git, "rev-parse", "HEAD^{tree}"], root, bindings=bindings).decode("ascii").strip()
+    files, paths = [], set()
+    for entry in checked([*git, "ls-tree", "-r", "-z", "HEAD"], root, bindings=bindings).split(b"\0"):
         if not entry:
             continue
         fields, path = entry.split(b"\t", 1)
         mode, kind, blob = fields.decode("ascii").split()
         if mode not in ("100644", "100755") or kind != "blob" or not re.fullmatch(r"[0-9a-f]{40}", blob):
             raise Refused("source-inventory-is-not-regular")
-        files.append({"path_sha256": identifier(path.decode("utf-8")), "mode": mode, "git_blob": blob})
+        name = path.decode("utf-8")
+        if name in paths:
+            raise Refused("source-inventory-has-duplicate-paths")
+        paths.add(name)
+        files.append({"path_sha256": identifier(name), "mode": mode, "git_blob": blob})
     if not re.fullmatch(r"[0-9a-f]{40}", tree) or not files:
         raise Refused("source-inventory-is-incomplete")
+    if not SECURITY_SOURCE_FILES <= paths:
+        raise Refused("security-source-closure-is-incomplete")
     return head, tree, files
 
 
-def versions(root):
+def versions(root, bound_tools=None):
     system = {"win32": "Windows", "linux": "Linux"}.get(sys.platform)
     images = {"win32": {"win25", "win25-vs2026"}, "linux": {"ubuntu24"}}.get(sys.platform, set())
     image = os.environ.get("ImageOS")
@@ -145,6 +227,7 @@ def versions(root):
             or os.environ.get("RUNNER_OS") != system or os.environ.get("RUNNER_ARCH") != "X64"
             or os.environ.get("GITHUB_REPOSITORY") != "PenniLogic/infra"
             or os.environ.get("GITHUB_REPOSITORY_ID") != "1394135059"
+            or os.environ.get("GITHUB_REPOSITORY_OWNER_ID") != "335295566"
             or image not in images
             or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", os.environ.get("ImageVersion", ""))
             or len(os.environ["ImageVersion"]) > 64):
@@ -154,7 +237,9 @@ def versions(root):
     if any(name.upper() in {"NODE_OPTIONS", "NODE_PATH", "NPM_CONFIG_NODE_OPTIONS", "NPM_CONFIG_NODE-OPTIONS"}
            for name in os.environ):
         raise Refused("node-startup-overrides-are-not-admitted")
-    tools = {name: shutil.which(name) for name in ("node", "uv", "git", "bash")}
+    bindings = security_tools(root) if bound_tools is None else bound_tools()
+    tools = {name: shutil.which(name) for name in ("node", "uv", "bash")}
+    tools["git"] = bindings["git"]
     if not all(tools.values()):
         raise Refused("a-required-qualification-tool-is-missing")
     node = Path(tools["node"])
@@ -164,7 +249,7 @@ def versions(root):
             or checked([str(node), str(npm), "--version"], root).strip() != b"11.9.0"):
         raise Refused("node-or-bundled-npm-version-mismatch")
     uv = checked([tools["uv"], "--version"], root).split()
-    git = checked([tools["git"], "--version"], root).decode("ascii").strip()
+    git = checked([tools["git"], "--version"], root, bindings=bindings).decode("ascii").strip()
     bash = re.match(rb"GNU bash, version ([0-9]+(?:\.[0-9]+)+)", checked(
         [tools["bash"], "--noprofile", "--norc", "--version"], root,
     ))
@@ -172,8 +257,13 @@ def versions(root):
             or not re.fullmatch(r"git version [0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.windows\.[0-9]+)?", git)
             or bash is None):
         raise Refused("uv-git-or-bash-version-evidence-is-invalid")
+    if checked([bindings["gitleaks"], "version"], root, bindings=bindings).strip() != b"8.30.1":
+        raise Refused("gitleaks-version-mismatch")
     return {"python": ".".join(map(str, sys.version_info[:3])), "node": "24.14.0", "npm": "11.9.0",
             "uv": "0.11.33", "git": git, "bash": bash.group(1).decode("ascii"),
+            "git_sha256": bindings["git_sha256"], "gitleaks": "8.30.1",
+            "gitleaks_sha256": bindings["gitleaks_sha256"],
+            "gitleaks_archive_pin": GITLEAKS_ARCHIVE_PINS[sys.platform],
             "runner_os": system, "image_family": image, "image_version": os.environ["ImageVersion"]}
 
 
@@ -365,8 +455,9 @@ def cleanup_evidence(data, required):
 def qualify(root, suite):
     if "PENNILOGIC_SKIP_DOCKER_TESTS" in os.environ:
         raise Refused("ambient-docker-test-skip-is-not-admitted")
-    runtime = versions(root)
-    source = source_inventory(root)
+    bound_tools = functools.cache(lambda: security_tools(root))
+    runtime = versions(root, bound_tools)
+    source = source_inventory(root, bound_tools)
     emit("qualification_source", suite=suite, commit=source[0], tree=source[1], **runtime)
     for entry in source[2]:
         emit("source_file", suite=suite, **entry)
@@ -413,7 +504,7 @@ def qualify(root, suite):
         if record["outcome"] != expected:
             raise Refused("test-outcome-differs-from-exact-platform-applicability")
     cleanup_evidence(output, required=sys.platform == "linux" and suite == "scripts")
-    if source_inventory(root) != source:
+    if source_inventory(root, bound_tools) != source:
         raise Refused("qualification-source-changed-during-discovery")
     emit("infra_qualification", suite=suite, ok=True, tests=len(records), skipped=len(allowed))
 

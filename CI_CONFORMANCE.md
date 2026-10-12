@@ -1202,6 +1202,26 @@ admit this transition. Root must separately obtain non-author Core/QA and applic
 specialist review of the final source and decide the protected maintenance procedure.
 No source-authorized bypass, protection change or automatic remote control is implied.
 
+The Infra23 QA-I1 prerequisite is a further **Source A**, not that maintenance
+transition. It adds checksum-pinned Gitleaks preparation to Infra's two existing
+jobs, preserves both ordinary suite commands and Linux Compose/stack coverage,
+and keeps all action/permission/job/result bounds. The qualifier requires explicit
+external tool/digest bindings, the complete native source inventory including
+transitive scanner helpers, and exactly three new Windows-only security IDs with
+Linux-only skip allowance. Mocked provisioning failures and the existing data-only
+validator prove refusal mechanics; they do not prove a real download, native OS
+qualification or safe protected integration. Other consumers and API C-readback
+remain byte-invariant.
+
+The old protected contract still rejects QA-I1's changed CI/checker/validator
+bytes. Its existing Infra native and PR-gate source references remain unchanged
+until separately reviewed actual Source A and registry-only B exist; historical
+rendering failures must remain visible meanwhile. No required check is weakened,
+and neither source-only review nor candidate schema/digests can admit a replacement.
+The strict **each OS job and whole workflow below 600 seconds** acceptance policy
+is unchanged. Prior Windows timings leave uncertain headroom for the scanner tests;
+no timeout increase, suite pruning or retry-to-green is authorized by this source.
+
 Publication remains gated on explicit Root intake authorization. Real source A must
 contain the final canonical code and owning generated outputs; later registry-only
 B must bind the changed API/Infra primary CI entries and Infra PR-integrity entry

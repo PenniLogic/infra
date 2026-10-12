@@ -314,7 +314,7 @@ import hashlib
 
 
 PR_GATE_FILE = ".github/workflows/pr-workflow-integrity.yml"
-PR_GATE_SHA256 = "f70aa2eb7e5bd5a54f7acc323b82e4832591ffa31671e2e57c3a99975904a30a"
+PR_GATE_SHA256 = "4afd55152714e99a85aeea2551abb2da154ffb8557555bd8a7742c1a99e6fa5c"
 REQUIRED += (PR_GATE_FILE,)
 
 
@@ -329,7 +329,7 @@ def validate_non_infra_ci_workflow(name, data):
 import hashlib
 
 
-INFRA_CI_SHA256 = "bbf3b9e2ad3eeb8e504cee308190d03b738b89196f588570284abbce53c5f8ff"
+INFRA_CI_SHA256 = "9d59c624c33c1cf8cc9b8ba7a6a1d320ee677b8ea1f747c7b2deb2ee5596bdee"
 
 
 def validate_workflow(name, data):

@@ -376,6 +376,18 @@ dependency-free, pinned to SHA-256
 Linux retains its existing uv installer. Every Windows native command has an
 immediate exit-code guard, including installation and each repository/generation check.
 
+QA-I1 Source A adds an Infra-CI-only `Prepare security tools` step before the owning
+suites. Its isolated embedded stdlib program verifies the whole Gitleaks `8.30.1`
+archive against the platform pin before parsing/extracting the exact regular
+executable into a fresh `RUNNER_TEMP` directory outside the checkout. It binds the
+fixed hosted-image Git and both executable digests, rejects candidate/linked paths,
+and publishes the explicit test bindings only after successful version/digest checks.
+No new action, package, global installation, token or write permission is introduced.
+The detailed bounds, failures and retained tool-directory limitation are in
+[security/README.md](../security/README.md#hosted-qualification-preparation-qa-i1-source-a).
+Mocked download/archive tests and emitted-shell controls are not actual downloads
+or Linux/Windows hosted qualification.
+
 Both OS jobs execute full governance discovery followed serially by full scripts
 discovery. Only those two commands receive the transparent
 `python governance/qualify.py -- <canonical discovery command>` wrapper; it executes
@@ -395,7 +407,7 @@ source, not an additional generated consumer file; the shared API parser is unch
 The native helper requires a clean, non-shallow checkout matching `GITHUB_SHA`,
 records commit/tree and the entire Git file inventory (hashed paths, modes and blobs),
 enumerates every discovery ID before execution, then requires the exact same ID set
-in the child outcomes. It records actual Python/Node/npm/uv/Git/Bash versions and
+in the child outcomes. It records actual Python/Node/npm/uv/Git/Bash/Gitleaks versions and tool digests, and
 runner OS/image build identifiers. `windows-2025`/`ubuntu-24.04` are mutable labels;
 `ImageOS`/`ImageVersion` are recorded metadata, not image-byte pins or attestations.
 The exact Windows image families are `win25` and `win25-vs2026`; Linux accepts only
@@ -406,6 +418,23 @@ maps that variant to `ImageOS=win25-vs2026`; this is not an arbitrary image-pref
 allowlist or a waiver of repository, hosted-runner, architecture or tool checks.
 Missing tools, import errors, missing historical-object skips, changed source, unknown
 skips, setup/teardown failures or nonzero commands cannot qualify.
+
+The entire native Git inventory remains required before and after discovery, not
+only changed files. Its mandatory security closure includes config/schema/profile
+inputs, `conformance` imports and Windows bootstrap/smoke helpers. Prepared Git and
+scanner bindings are admitted once per qualification and revalidated immediately
+before and after every bound tool invocation, including every inventory query.
+The original canonical paths and digests are not refreshed from changed files or
+environment variables. A failed post-use check refuses a successful command; when
+the command itself failed, a fixed-field diagnostic records the failed recheck
+without replacing the primary failure. These checks are not atomic execution or
+OS isolation against another same-user writer. Three exact
+security IDs join the required scripts inventory: both `ScannerBoundaryTests`
+methods for interruption-during-teardown and descendant-held-pipe timeout, and
+`GitleaksIntegrationTests.test_confirmed_interruption_keeps_public_cleanup_unconfirmed_and_incidents`.
+Only Linux admits these declared Windows-only skips; Windows requires passes.
+The existing stack/flock applicability and every other outcome rule remain intact.
+These records are source/tool observations, never self-authenticating candidate provenance.
 
 Nonzero discovery remains the primary failure even if its unittest protocol is
 ambiguous. Before refusing, the helper emits diagnostic-only hints: at most 20
@@ -424,9 +453,13 @@ bootstrap test and tiny real unittest cases reproduce mixed-stderr ambiguity.
 Separating the normal runner's report fixes that proven reporting defect without
 relaxing S1; it is not retrospective scripts, lifecycle or cleanup qualification.
 
-Canonical-composition fixtures pin the three API/Infra registry references to
-source `889c5c35a1677ef33899a2e63bc528d3bac802f9` and prove its historical renderings
-match the current workflows; they do not copy candidate references into expectations.
+The earlier canonical-composition fixtures bound the API/Infra route to real source
+`889c5c35a1677ef33899a2e63bc528d3bac802f9`. The accepted API C-readback reference is
+now `822c5a501879b5224a4e0020c5e84157749e9071` and is unchanged by QA-I1. Both Infra
+references deliberately remain `889c5c35a1677ef33899a2e63bc528d3bac802f9` while this
+new Source A is uncommitted. Their old renderings no longer match the new CI/gate:
+that is a real pending source-binding failure, not a skipped test or a placeholder
+approval. Registry-only B must wait for a separately reviewed actual Source A commit.
 The real CLI/Bash fixtures resolve their owned temporary root before constructing
 the runner event path, including Windows case aliases. This fixes the fixture's
 canonical-path precondition without relaxing the production event-path guard.

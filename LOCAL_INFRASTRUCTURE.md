@@ -29,6 +29,14 @@ Ambient `PATH` is not a tool binding. A missing scanner is an explicit failure, 
 skip. These tests use disposable local Git histories and nonfunctional synthetic
 patterns, never a remote planted secret.
 
+The QA-I1 canonical Infra CI source now prepares those tools from the pinned
+archives outside the checkout, with fixed hosted Git locations and an additional
+Git digest binding for `governance/qualify.py`. It does not install anything for a
+local developer or activate a production history scan. Actual hosted provisioning,
+both complete OS runs, timing, real-source registry binding and the protected
+maintenance transition remain pending; see
+[hosted qualification preparation](security/README.md#hosted-qualification-preparation-qa-i1-source-a).
+
 The separate **governance** test suite also needs Node `24.14.0` (generated `.nvmrc`, bundled npm
 `11.9.0`) and uv `0.11.33`, plus a network to prepare its temporary Vitest/pytest consumers.
 Its emitted-shell controls also require Bash and PowerShell (`pwsh`); both are present

@@ -3,8 +3,10 @@
 Independent source slice of [infra#23](https://github.com/PenniLogic/infra/issues/23).
 These commands implement scanning, reconciliation, exception expiry and redacted
 rotation requests. They **do not activate workflows, publish issues, establish
-trusted report provenance, or prove hosted acceptance**. Canonical workflow,
-checker and source-binding integration remains with the coordinating Infra owner.
+trusted report provenance, or prove hosted acceptance**. The QA-I1 Source A below
+adds canonical tool preparation for Infra's ordinary qualification, not production
+scan activation. Source binding, protected integration and hosted acceptance
+remain with the coordinating Infra owner.
 
 ## Run locally
 
@@ -27,8 +29,9 @@ replace a shared installation. This pin is not an SBOM or signed provenance.
 The verified Windows executable's SHA-256 is
 `17157e2ee8b76fc8b1d8bee607a250e34b8a8023c8bc81822d4b5ee4d78fcb7c`.
 For each platform, obtain the executable digest from the independently verified
-archive, not from a candidate-provided binary. Linux/Windows provisioning in
-generated CI has not been added by this slice.
+archive, not from a candidate-provided binary. The generated Infra CI preparation
+implements that verification on both supported hosted platforms; its actual
+download and native qualification remain unverified by local mocked controls.
 
 The scanner requires `--git` and `--gitleaks` absolute executable paths outside
 the candidate checkout, plus `--gitleaks-sha256` from trusted provisioning.
@@ -61,6 +64,58 @@ or an age/closed-ticket alert, and 2 means a refused/unavailable input or tool.
 Do not turn an exit 1/2 into a green pipeline while publishing the report.
 Malformed input, scanner failure, incomplete history and unavailable advisory
 data are not empty successful scans.
+
+## Hosted qualification preparation (QA-I1 Source A)
+
+Only Infra CI gets the generated `Prepare security tools` step, before the existing
+complete governance/scripts discoveries. Setup workflows, Conformance and the other
+repositories are unchanged. The embedded stdlib program uses the existing pinned
+setup-python action's absolute `pythonLocation`, not an interpreter in the checkout.
+It checks hosted repository/org/platform identity; downloads the fixed public release
+without credentials or proxy inheritance; verifies the entire bounded archive's
+SHA-256 **before parsing or extraction**; and requires exactly the regular
+`LICENSE`, `README.md` and platform executable entries. Links, alternate paths,
+duplicates, extras, malformed/truncated payloads and oversized files refuse.
+Only the executable is written to a fresh private directory under `RUNNER_TEMP`,
+outside the candidate checkout. There is no global installation or automatic retry.
+
+Git is bound to the hosted image's `/usr/bin/git` on Linux or
+`C:\Program Files\Git\cmd\git.exe` on Windows. A missing/linked/different image
+installation refuses rather than falling back to `PATH`. Both tools run only
+version probes during preparation, with scrubbed environments, external working
+directories and private bounded captures. Their digests are checked immediately
+before and after invocation. A 180-second preparation deadline and at-most-15-second
+network/probe waits supplement, not replace, the unchanged ten-minute OS job limit.
+This is not OS isolation against another process with write access to the same
+user's installation; DNS/platform stalls still have the native job as an outer bound.
+
+Only successful preparation appends the three existing test bindings plus
+`PENNILOGIC_TEST_GIT_SHA256` to the runner's environment file. That fourth binding
+is required by the hosted qualifier, not by the unchanged focused local scanner
+suite. Failure returns nonzero with a fixed-field refusal, without child output,
+URLs or local paths. A failed/interrupted preparation does not claim cleanup;
+any tool-only directory already created is retained. It contains binaries, not
+scanned history, and is distinct from the sensitive scanner scratch described below.
+Do not forge hosted metadata to use this bootstrap as a local installer.
+
+The qualifier checks the prepared locations/digests and records safe version/digest
+evidence. It retains the **whole native checkout** commit/tree/blob inventory before
+and after each ordinary discovery, and requires the scanner, dependency/rotation
+code, exception/config/schema/profile files, `conformance` imports and dynamic
+Windows `bootstrap.py` -> `smoke_infra.py` closure within that inventory. This is
+not a four-file receipt and does not authenticate candidate-generated scan evidence.
+Exactly the three Windows-only security methods are required in both inventories:
+they must pass on Windows and be skipped on Linux. Missing IDs, a skip on Windows,
+a pass in place of the declared Linux skip or any unrelated skip refuses.
+
+This source does not run a production repository-history gate, collect PR advisories,
+publish rotation tickets or schedule rescans. The Infra native/PR-gate registry
+references intentionally remain at their old accepted source until a separately
+reviewed real Source A commit can be bound by registry-only B. The protected-base
+validator rejects the changed CI/checker/gate bytes; local checker success is not
+permission to suppress that negative. Both complete native OS jobs **and the whole
+workflow** still need times strictly below 600 seconds. Neither the old Windows
+65-test results nor a static Linux 62-pass/3-skip expectation establish this.
 
 ## Full-history secrets
 
