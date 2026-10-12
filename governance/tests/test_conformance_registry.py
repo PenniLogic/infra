@@ -139,6 +139,31 @@ class RegistryTests(unittest.TestCase):
                     self.skipTest("commit not present in this (shallow) history")
                 self.assertEqual(support.generator.artifacts(name)[".github/workflows/ci.yml"].encode("utf-8"), rendered)
 
+    def test_infra_workflow_ref_exists_and_replays_its_committed_native_workflow(self):
+        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/infra")
+        self.assertEqual(entry["workflow_ref"], entry["pr_gate"]["workflow_ref"])
+        rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "infra")
+        self.assertIsNotNone(rendered, "the Infra source binding must exist in real Git history")
+        self.assertEqual(support.generator.workflow("infra").encode("utf-8"), rendered)
+        committed = subprocess.run(
+            ["git", "--no-pager", "show", entry["workflow_ref"] + ":" + registry.CI_WORKFLOW],
+            cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+            capture_output=True, check=False, timeout=30,
+        )
+        self.assertEqual(0, committed.returncode, "the Infra source must contain its rendered native workflow")
+        self.assertEqual(rendered, committed.stdout)
+
+    def test_previous_infra_ref_cannot_bind_the_security_preparation_workflows(self):
+        current = support.generator.artifacts("infra")
+        for workflow_file in (registry.CI_WORKFLOW, registry.PR_GATE_WORKFLOW):
+            with self.subTest(workflow_file=workflow_file):
+                rendered = registry.render_workflow_at(
+                    support.GOVERNANCE.parent, "889c5c35a1677ef33899a2e63bc528d3bac802f9", "infra",
+                    workflow_file=workflow_file,
+                )
+                self.assertIsNotNone(rendered, "the prior Infra source must exist for this regression")
+                self.assertNotEqual(current[workflow_file].encode("utf-8"), rendered)
+
     def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")

@@ -52,11 +52,11 @@
     {
       "repo": "PenniLogic/infra",
       "check_name": "CI",
-      "workflow_ref": "889c5c35a1677ef33899a2e63bc528d3bac802f9",
+      "workflow_ref": "1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1",
       "language": "python",
       "pr_gate": {
         "check_name": "PR workflow integrity",
-        "workflow_ref": "889c5c35a1677ef33899a2e63bc528d3bac802f9"
+        "workflow_ref": "1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1"
       }
     }
   ]

@@ -455,11 +455,13 @@ relaxing S1; it is not retrospective scripts, lifecycle or cleanup qualification
 
 The earlier canonical-composition fixtures bound the API/Infra route to real source
 `889c5c35a1677ef33899a2e63bc528d3bac802f9`. The accepted API C-readback reference is
-now `822c5a501879b5224a4e0020c5e84157749e9071` and is unchanged by QA-I1. Both Infra
-references deliberately remain `889c5c35a1677ef33899a2e63bc528d3bac802f9` while this
-new Source A is uncommitted. Their old renderings no longer match the new CI/gate:
-that is a real pending source-binding failure, not a skipped test or a placeholder
-approval. Registry-only B must wait for a separately reviewed actual Source A commit.
+now `822c5a501879b5224a4e0020c5e84157749e9071` and is unchanged by QA-I1. Registry
+follow-up B binds both Infra references to reviewed actual Source A
+`1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1`.
+The original `889c5c35a1677ef33899a2e63bc528d3bac802f9` bindings and their two
+historical rendering failures remain evidence on their original subjects, not
+skipped or retroactively passed tests. This source binding alone does not establish
+publication, protected acceptance, a maintenance transition or native qualification.
 The real CLI/Bash fixtures resolve their owned temporary root before constructing
 the runner event path, including Windows case aliases. This fixes the fixture's
 canonical-path precondition without relaxing the production event-path guard.

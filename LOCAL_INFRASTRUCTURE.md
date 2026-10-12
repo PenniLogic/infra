@@ -32,8 +32,12 @@ patterns, never a remote planted secret.
 The QA-I1 canonical Infra CI source now prepares those tools from the pinned
 archives outside the checkout, with fixed hosted Git locations and an additional
 Git digest binding for `governance/qualify.py`. It does not install anything for a
-local developer or activate a production history scan. Actual hosted provisioning,
-both complete OS runs, timing, real-source registry binding and the protected
+local developer or activate a production history scan. Registry follow-up B binds
+both Infra references to reviewed actual Source A
+`1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1`. The original `889c5c3` bindings and
+two historical failures remain retained. This source binding alone does not establish
+publication, protected acceptance, a maintenance transition or native qualification.
+Actual hosted provisioning, both complete OS runs, timing and the protected
 maintenance transition remain pending; see
 [hosted qualification preparation](security/README.md#hosted-qualification-preparation-qa-i1-source-a).
 

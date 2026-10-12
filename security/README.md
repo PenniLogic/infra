@@ -109,9 +109,12 @@ they must pass on Windows and be skipped on Linux. Missing IDs, a skip on Window
 a pass in place of the declared Linux skip or any unrelated skip refuses.
 
 This source does not run a production repository-history gate, collect PR advisories,
-publish rotation tickets or schedule rescans. The Infra native/PR-gate registry
-references intentionally remain at their old accepted source until a separately
-reviewed real Source A commit can be bound by registry-only B. The protected-base
+publish rotation tickets or schedule rescans. Registry follow-up B binds both Infra
+native/PR-gate references to reviewed actual Source A
+`1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1`. The original `889c5c3` bindings and
+two historical rendering failures remain retained. This source binding alone does
+not establish publication, protected acceptance, a maintenance transition or native
+qualification. The protected-base
 validator rejects the changed CI/checker/gate bytes; local checker success is not
 permission to suppress that negative. Both complete native OS jobs **and the whole
 workflow** still need times strictly below 600 seconds. Neither the old Windows
