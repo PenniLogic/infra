@@ -1,0 +1,454 @@
+{
+  "schema": "pennilogic.qa-gates.protected-tests/1",
+  "repository": "PenniLogic/infra",
+  "status": "proposed",
+  "confirmation_ref": null,
+  "packages": [
+    {
+      "id": "infra.governance",
+      "money_path": false,
+      "owner": "@basiltt",
+      "basis": "docs test-strategy 1.1.1 package infra.governance (money_path false): generator, profiles and templates, tested by governance/tests; owner from .github/CODEOWNERS (* @basiltt)"
+    },
+    {
+      "id": "infra.tooling",
+      "money_path": false,
+      "owner": "@basiltt",
+      "basis": "docs test-strategy 1.1.1 package infra.tooling (money_path false): bootstrap, smoke and policy scripts, tested by scripts/tests; owner from .github/CODEOWNERS (* @basiltt)"
+    }
+  ],
+  "rules": [
+    {
+      "id": "PT-001",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_android_privacy_canonical",
+      "package": "infra.governance",
+      "tags": [
+        "privacy"
+      ],
+      "reason": "Android privacy-component canonical inventory plumbing"
+    },
+    {
+      "id": "PT-002",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_api_build_coverage",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "API build coverage hand-off plumbing"
+    },
+    {
+      "id": "PT-003",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_api_native_source_fetch",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Native source acquisition with credential and transport controls"
+    },
+    {
+      "id": "PT-004",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_api_node_runtime",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Pinned Node runtime hand-off to the API build"
+    },
+    {
+      "id": "PT-005",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_api_windows_qualification",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "API Windows outcome strictness that keeps a skipped or failed check from passing"
+    },
+    {
+      "id": "PT-006",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_baseline",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Generator baseline: secret detection, action pins and read-only tokens"
+    },
+    {
+      "id": "PT-007",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_capability_paragraph",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Generated reviewer-capability instruction text"
+    },
+    {
+      "id": "PT-008",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_api",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Read-only GitHub access and token handling of the conformance client"
+    },
+    {
+      "id": "PT-009",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_capture_redaction",
+      "package": "infra.governance",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Conformance capture redaction"
+    },
+    {
+      "id": "PT-010",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_defects",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Planted-defect harness proving conformance catches defects"
+    },
+    {
+      "id": "PT-011",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_native_runtime",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Native fixture provisioning that is never skipped as green"
+    },
+    {
+      "id": "PT-012",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_processes",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Finite process-lifetime behaviour of the conformance runner"
+    },
+    {
+      "id": "PT-013",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_registry",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Check-name registry schema"
+    },
+    {
+      "id": "PT-014",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_report",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Conformance report builder and orchestrator"
+    },
+    {
+      "id": "PT-015",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_runtime",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Ephemeral token channel and child isolation"
+    },
+    {
+      "id": "PT-016",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_runtime_fixtures",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Unchanged consumer commands on minimal fake consumers"
+    },
+    {
+      "id": "PT-017",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_steps",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Step detection and check-name production"
+    },
+    {
+      "id": "PT-018",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_trends",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Offline CI history and publication"
+    },
+    {
+      "id": "PT-019",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_database_admission_installation",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Admission installation mechanics including link refusal"
+    },
+    {
+      "id": "PT-020",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_generated_conformance_workflow",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Generated conformance workflow and its guarded token channel"
+    },
+    {
+      "id": "PT-021",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_generated_pr_workflow_integrity",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Base-trusted generated PR workflow integrity"
+    },
+    {
+      "id": "PT-022",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_infra_qualification",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Infra outcome strictness that keeps a skipped or failed test from passing"
+    },
+    {
+      "id": "PT-023",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_instruction_provenance",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Instruction-provenance rule against untrusted instructions"
+    },
+    {
+      "id": "PT-024",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_money_source_fetch_reliability",
+      "package": "infra.governance",
+      "tags": [
+        "money",
+        "security"
+      ],
+      "reason": "Immutable fetch boundaries for the API money-path sources"
+    },
+    {
+      "id": "PT-025",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_money_source_materialization",
+      "package": "infra.governance",
+      "tags": [
+        "money",
+        "security"
+      ],
+      "reason": "Pinned materialization of the API money-path sources"
+    },
+    {
+      "id": "PT-026",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_money_source_materialization_failures",
+      "package": "infra.governance",
+      "tags": [
+        "money",
+        "security"
+      ],
+      "reason": "Failure handling of the API money-path source materialization"
+    },
+    {
+      "id": "PT-027",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_pr_workflow_integrity",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "PR workflow integrity validator"
+    },
+    {
+      "id": "PT-028",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_rule_table",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "README rule table stays true to the documented code"
+    },
+    {
+      "id": "PT-029",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_workflow_shape",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Workflow key allowlists that keep tokens and secrets out of public jobs"
+    },
+    {
+      "id": "PT-030",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_workflow_validation",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Secret tripwire, condition refusal and action allowlist"
+    },
+    {
+      "id": "PT-031",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_bootstrap",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Generated local credentials, env-file validation and process ownership of bootstrap.py"
+    },
+    {
+      "id": "PT-032",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_database_admission",
+      "package": "infra.tooling",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Database extension admission gate and its embedding-policy data classes"
+    },
+    {
+      "id": "PT-033",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_integration_stack",
+      "package": "infra.tooling",
+      "tags": [],
+      "reason": "Compose stack lifecycle in self-owned projects; no security, privacy or money control"
+    },
+    {
+      "id": "PT-034",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_junit",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Bounded JUnit ingestion of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-035",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_ledger",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Quarantine ledger rules of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-036",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_policy",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Pinned flake policy of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-037",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_quarantine",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Quarantine gate decisions (E25-F01)"
+    },
+    {
+      "id": "PT-038",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_tags",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Protected-tag classification of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-039",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_smoke_infra",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Smoke protocol handling including credential redaction"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "infra-ci-linux",
+      "workflow": ".github/workflows/ci.yml",
+      "job": "ci",
+      "packages": [
+        "infra.governance",
+        "infra.tooling"
+      ]
+    },
+    {
+      "id": "infra-ci-windows",
+      "workflow": ".github/workflows/ci.yml",
+      "job": "windows",
+      "packages": [
+        "infra.governance",
+        "infra.tooling"
+      ]
+    }
+  ]
+}

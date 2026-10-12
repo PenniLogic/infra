@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="3" failures="1" errors="0" time="0.123">
+    <testsuite name="src/sample.test.ts" timestamp="2026-03-16T00:00:00.000Z" hostname="synthetic-host" tests="3" failures="1" errors="0" skipped="0" time="0.012">
+        <testcase classname="src/sample.test.ts" name="sample &gt; formats a value" time="0.001">
+        </testcase>
+        <testcase classname="src/sample.test.ts" name="sample &gt; rejects bad input" time="0.002">
+            <failure message="expected 1 to be 2" type="AssertionError">
+AssertionError: expected 1 to be 2
+ at src/sample.test.ts:9:17
+            </failure>
+        </testcase>
+        <testcase classname="src/sample.test.ts" name="sample &gt; parses a value" time="0.001">
+        </testcase>
+    </testsuite>
+</testsuites>
