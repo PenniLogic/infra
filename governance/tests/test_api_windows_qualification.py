@@ -66,14 +66,29 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             "timeout-minutes": 1,
             "run": source,
         }, reader)
-        self.assertEqual(2105, len(source.encode("ascii")))
-        self.assertEqual("ae4694d83532deda918500fb7b5d4ec85a61b65d6eb94c428fbcac2af9b9656a",
+        self.assertEqual(2254, len(source.encode("ascii")))
+        self.assertEqual("cb9fa0289b294b06a5ce6c5bfc0b04751a1d38b90a70e08956c6d58354864a62",
                          hashlib.sha256(source.encode("ascii")).hexdigest())
+        previous = source
+        for current, accepted in (
+            ("    pre_record_writer_return = 'not-observed'\n", ""),
+            ("[byte[]]::new(8)", "[byte[]]::new(7)"),
+            ("if ($count -le 7)", "if ($count -le 6)"),
+            (r"\A(?:|E|EU|EUX|ES[01]{3}|ES[01]{3}X|ES[01]{3}CX?)\z",
+             r"\A(?:|E|EU|EUX|ES[01]{3}|ES[01]{3}X)\z"),
+            ("            if ($value.Contains('C')) { $record.pre_record_writer_return = 'observed' }\n", ""),
+            (r"\AES([01])([01])([01])C?X?\z", r"\AES([01])([01])([01])X?\z"),
+        ):
+            self.assertEqual(1, previous.count(current))
+            previous = previous.replace(current, accepted, 1)
+        self.assertEqual(2105, len(previous.encode("ascii")))
+        self.assertEqual("ae4694d83532deda918500fb7b5d4ec85a61b65d6eb94c428fbcac2af9b9656a",
+                         hashlib.sha256(previous.encode("ascii")).hexdigest())
         absence = ("} catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {\n"
                    "    $record.status = 'not-observed'\n    $exitCode = 0\n")
         self.assertEqual(1, source.count(absence))
         self.assertEqual("aef8bf30c81bf0a9b14409f949c2d94428ce695c8520fac1af38e7476237eda4",
-                         hashlib.sha256(source.replace(absence, "", 1).encode("ascii")).hexdigest())
+                         hashlib.sha256(previous.replace(absence, "", 1).encode("ascii")).hexdigest())
         self.assertNotIn("hashFiles", generator.workflow("api"))
         self.assertNotIn("\r", source)
         self.assertEqual(30, workflow["jobs"]["windows"]["timeout-minutes"])
@@ -114,7 +129,14 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             ("owner-soft-failure", lambda job: job["steps"][-2].update({"continue-on-error": True})),
             ("reader", lambda job: job["steps"][-1].update(run="exit 0")),
             ("read-bound", lambda job: job["steps"][-1].update(
-                run=job["steps"][-1]["run"].replace("[byte[]]::new(7)", "[byte[]]::new(4096)"))),
+                run=job["steps"][-1]["run"].replace("[byte[]]::new(8)", "[byte[]]::new(4096)"))),
+            ("record-bound", lambda job: job["steps"][-1].update(
+                run=job["steps"][-1]["run"].replace("if ($count -le 7)", "if ($count -le 8)"))),
+            ("writer-return-after-u", lambda job: job["steps"][-1].update(
+                run=job["steps"][-1]["run"].replace("|ES[01]{3}CX?", "|EUCX?|ES[01]{3}CX?"))),
+            ("writer-return-absence", lambda job: job["steps"][-1].update(
+                run=job["steps"][-1]["run"].replace(
+                    "pre_record_writer_return = 'not-observed'", "pre_record_writer_return = 'observed'"))),
             ("output-bound", lambda job: job["steps"][-1].update(
                 run=job["steps"][-1]["run"].replace("-gt 1024", "-gt 4096"))),
             ("failure-exit", lambda job: job["steps"][-1].update(
@@ -356,6 +378,78 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         current_generated = generator.artifacts("api")["scripts/qualify_windows.py"].encode("utf-8")
         self.assertEqual(current_digest, hashlib.sha256(current_template).hexdigest())
         self.assertEqual(current_digest, hashlib.sha256(current_generated).hexdigest())
+
+
+class WindowsShellBoundaryReaderTests(unittest.TestCase):
+    def setUp(self):
+        self.powershell = shutil.which("pwsh")
+        self.assertIsNotNone(self.powershell, "PowerShell is required for the emitted boundary reader fixture")
+        temporary = tempfile.TemporaryDirectory(prefix="api-shell-boundary-reader-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.marker = self.root / "build" / "diagnostics" / "api106-approved-shell-boundary.bin"
+        self.script = self.root / "read.ps1"
+        reader = json.loads(generator.workflow("api"))["jobs"]["windows"]["steps"][-1]
+        self.assertEqual("Read approved-shell command boundary", reader["name"])
+        self.script.write_text(reader["run"], encoding="ascii", newline="\n")
+
+    def assert_boundary(self, status, exit_code, checkpoint=None, redirected=None, writer_return="not-observed"):
+        result = subprocess.run(
+            [self.powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(self.script)],
+            cwd=self.root, env=support.defects.probe_environment(), capture_output=True, check=False, timeout=15,
+        )
+        self.assertEqual(exit_code, result.returncode, result.stderr)
+        self.assertEqual(b"", result.stderr)
+        self.assertLessEqual(len(result.stdout), 1024)
+        self.assertEqual(1, len(result.stdout.splitlines()))
+        self.assertEqual({
+            "event": "api106_approved_shell_command_boundary", "diagnostic_only": True,
+            "status": status, "checkpoint": checkpoint, "console_redirected": redirected,
+            "pre_record_writer_return": writer_return,
+        }, json.loads(result.stdout.decode("ascii")))
+
+    def test_all_legacy_shapes_and_only_paired_writer_returns_preserve_checkpoint_and_flags(self):
+        self.marker.parent.mkdir(parents=True)
+        for payload, checkpoint in (
+            (b"", "none-observed"), (b"E", "command-entry"),
+            (b"EU", "before-write-output"), (b"EUX", "after-write-output"),
+        ):
+            with self.subTest(payload=payload):
+                self.marker.write_bytes(payload)
+                self.assert_boundary("observed-record", 0, checkpoint)
+                self.assertEqual(payload, self.marker.read_bytes())
+        for flags in itertools.product("01", repeat=3):
+            redirected = dict(zip(("stdin", "stdout", "stderr"), (flag == "1" for flag in flags), strict=True))
+            for writer_return, suffix in itertools.product(("", "C"), ("", "X")):
+                payload = ("ES" + "".join(flags) + writer_return + suffix).encode("ascii")
+                with self.subTest(payload=payload):
+                    self.marker.write_bytes(payload)
+                    self.assert_boundary(
+                        "observed-record", 0, "after-write-output" if suffix else "before-write-output",
+                        redirected, "observed" if writer_return else "not-observed",
+                    )
+                    self.assertEqual(payload, self.marker.read_bytes())
+
+    def test_partial_misordered_repeated_and_oversized_records_never_publish_a_prefix(self):
+        self.marker.parent.mkdir(parents=True)
+        payloads = (
+            b"ES", b"ES1", b"ES11", b"C", b"CES111", b"EC", b"ECS111", b"EUC", b"EUCX", b"EUXC",
+            b"ESC111", b"ES1C11", b"ES11C1", b"ES111XC", b"ES111CC", b"ES111CCX",
+            b"ES111c", b"ES222C", b"EEX", b"ES111X\n", b"ES111C\0", b"ES111CX\n", b"ES111CXC",
+            b"\xffES111C", b"ES111C" + MARKER.encode("ascii"),
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                self.marker.write_bytes(payload)
+                self.assert_boundary("oversized-record" if len(payload) >= 8 else "partial-or-invalid-record", 2)
+                self.assertEqual(payload, self.marker.read_bytes())
+
+    def test_missing_file_and_parent_are_optional_but_unreadable_data_is_not_an_observation(self):
+        self.assert_boundary("not-observed", 0)
+        self.marker.parent.mkdir(parents=True)
+        self.assert_boundary("not-observed", 0)
+        self.marker.mkdir()
+        self.assert_boundary("unavailable-read", 2)
 
 
 class WindowsOutcomeTests(unittest.TestCase):
