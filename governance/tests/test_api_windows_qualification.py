@@ -85,7 +85,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         artifacts = generator.artifacts("api")
         self.assertEqual(25, len(artifacts))
         self.assertFalse(any("read_approved_shell_boundary" in path for path in artifacts))
-        self.assertEqual("4372d853bafe6f55022328cc44147cd9594f3e3766690c9d347ab0c7d7500be4",
+        self.assertEqual("0a073083148e670081eee72612fd9853a1a78100c2a50129ce89a2da9adfe1b3",
                          hashlib.sha256(artifacts["scripts/qualify_windows.py"].encode("utf-8")).hexdigest())
 
     def test_optional_shell_readback_drift_is_refused_without_policy_widening(self):
@@ -351,7 +351,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             support.git(support.GOVERNANCE.parent, "show", f"{historical_source}:governance/templates/qualify_windows.py"),
             support.git(support.GOVERNANCE.parent, "show", f"{historical_accepted}:governance/templates/qualify_windows.py"),
         )
-        current_digest = "4372d853bafe6f55022328cc44147cd9594f3e3766690c9d347ab0c7d7500be4"
+        current_digest = "0a073083148e670081eee72612fd9853a1a78100c2a50129ce89a2da9adfe1b3"
         current_template = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
         current_generated = generator.artifacts("api")["scripts/qualify_windows.py"].encode("utf-8")
         self.assertEqual(current_digest, hashlib.sha256(current_template).hexdigest())
@@ -908,6 +908,14 @@ class WindowsShellLookupDiagnosticTests(unittest.TestCase):
              "command_type": 1, "module_kind": "pshome", "module_sha256": "c" * 64},
         ]
 
+    def v2_records(self):
+        records = self.records()
+        for record in records:
+            record["v"] = 2
+        records[1]["not_found"] = {"status": "armed"}
+        records.insert(3, {"v": 2, "phase": "not-found", "status": "observed", "ms": 15})
+        return records
+
     def encode(self, records):
         return b"".join(json.dumps(record, separators=(",", ":")).encode("ascii") + b"\n" for record in records)
 
@@ -1221,9 +1229,230 @@ class WindowsShellLookupDiagnosticTests(unittest.TestCase):
         self.assertEqual("projection-limit", refused["code"])
         self.assertNotIn("records", refused)
 
+    def test_lookup_v2_negative_edge_is_lossless_nonterminal_and_not_command_provenance(self):
+        records = self.v2_records()
+        for count in (1, 2, 3, 4, 5):
+            with self.subTest(records=count):
+                result = self.collect(self.encode(records[:count]))
+                self.assertEqual("observed" if count == 5 else "partial", result["status"])
+                self.assertIs(result["capsule_complete"], count == 5)
+                observed = copy.deepcopy(result["records"])
+                columns = observed[0].pop("root_columns")
+                observed[0]["roots"] = [dict(zip(columns, entry, strict=True)) for entry in observed[0]["roots"]]
+                self.assertEqual(records[:count], observed)
+        for kind, command, hashed in (("no-command", None, None), ("none", 32, None),
+                                     ("unknown", 2, None), ("pshome", 1, "c" * 64),
+                                     ("other", 256, "d" * 64)):
+            with self.subTest(kind=kind):
+                records[-1].update(module_kind=kind, command_type=command, module_sha256=hashed)
+                self.assertEqual(records[-1], self.collect(self.encode(records))["records"][-1])
+        for version in (1, 2):
+            prefix = (self.records() if version == 1 else self.v2_records())[:3]
+            prefix[-1]["ms"] = 238
+            result = self.collect(self.encode(prefix))
+            self.assertEqual(("partial", "incomplete-prefix"), (result["status"], result["code"]))
+            self.assertFalse(any(record["phase"] == "not-found" for record in result["records"]))
+            self.assertEqual(version == 2, "not_found" in result["records"][1])
+
+    def test_lookup_v2_negative_hook_availability_is_independent_and_exact(self):
+        for availability in ({"status": "armed"}, {"status": "unavailable", "code": "existing-hook"},
+                             {"status": "unavailable", "code": "unsupported-api"},
+                             {"status": "refused", "code": "install"}):
+            records = self.v2_records()
+            records.pop(3)
+            records[1]["not_found"] = availability
+            with self.subTest(availability=availability):
+                result = self.collect(self.encode(records))
+                self.assertEqual(records[1:], result["records"][1:])
+                self.assertIs(result["capsule_complete"], True)
+                if availability["status"] != "armed":
+                    records.insert(3, self.v2_records()[3])
+                    self.assertEqual("record-order", self.collect(self.encode(records))["code"])
+        for status, code in (("unavailable", "existing-hooks"), ("unavailable", "unsupported-api"),
+                             ("refused", "install"), ("unavailable", "roots-refused")):
+            records = self.v2_records()[:1]
+            if code == "roots-refused":
+                records[0] = {"v": 2, "phase": "roots", "status": "refused", "code": "snapshot"}
+            records += [
+                {"v": 2, "phase": "observer", "status": status, "code": code,
+                 "not_found": {"status": "unavailable", "code": "observer-unavailable"}},
+                {"v": 2, "phase": "post", "status": "unavailable", "code": "observer-unavailable"},
+            ]
+            with self.subTest(parent=code):
+                self.assertEqual(records[1:], self.collect(self.encode(records))["records"][1:])
+                records[1]["not_found"] = {"status": "armed"}
+                self.assertEqual("record-order", self.collect(self.encode(records))["code"])
+        for availability in (None, False, [], {"status": True}, {"status": "armed", "code": "install"},
+                             {"status": "observed"}, {"status": "unavailable", "code": "existing-hooks"},
+                             {"status": "refused", "code": MARKER}, {"status": "armed", "extra": MARKER}):
+            records = self.v2_records()
+            records[1]["not_found"] = availability
+            with self.subTest(invalid=availability):
+                self.assertEqual("record-shape", self.collect(self.encode(records))["code"])
+        records = self.v2_records()
+        records[1]["not_found"] = {"status": "unavailable", "code": "observer-unavailable"}
+        self.assertEqual("record-order", self.collect(self.encode(records))["code"])
+
+    def test_lookup_v2_requires_one_version_and_preserves_v1_shapes_and_record_cap(self):
+        for records in (self.records(), self.v2_records()):
+            for index in range(len(records)):
+                for version in (True, 0, 3, 2 if records[0]["v"] == 1 else 1):
+                    changed = copy.deepcopy(records)
+                    changed[index]["v"] = version
+                    with self.subTest(index=index, version=version, count=len(records)):
+                        self.assertEqual("refused", self.collect(self.encode(changed))["status"])
+        v1 = self.records()
+        v1[1]["not_found"] = {"status": "armed"}
+        self.assertEqual("record-shape", self.collect(self.encode(v1))["code"])
+        v1 = self.records()
+        v1.insert(3, {**self.v2_records()[3], "v": 1})
+        self.assertEqual("record-count", self.collect(self.encode(v1))["code"])
+        self.assertEqual("record-shape", self.collect(self.encode(v1[:4]))["code"])
+        v2 = self.v2_records()
+        del v2[1]["not_found"]
+        self.assertEqual("record-shape", self.collect(self.encode(v2))["code"])
+        for data in (self.encode(self.records()) + b"\n", self.encode(self.records()) + b"{bad\n"):
+            self.assertEqual("record-count", self.collect(data)["code"])
+        self.assertEqual("record-count", self.collect(self.encode(self.v2_records()) + b"\n")["code"])
+
+    def test_lookup_v2_negative_boundary_samples_are_nullable_exact_and_monotonic(self):
+        for start, negative, end, elapsed in (
+            (0, 0, 0, 0), (0, 600000, 600000, 600000), (600000, 600000, 600000, 0),
+            (None, 0, 600000, None), (0, None, 600000, 600000), (0, 600000, None, None),
+            (None, None, 0, None), (None, 0, None, None), (0, None, None, None),
+            (None, None, None, None),
+        ):
+            records = self.v2_records()
+            records[2]["ms"], records[3]["ms"] = start, negative
+            records[4].update(ms=end, lookup_ms=elapsed)
+            with self.subTest(valid=(start, negative, end, elapsed)):
+                self.assertEqual("observed", self.collect(self.encode(records))["status"])
+        for start, negative, end, elapsed in (
+            (20, 10, 30, 10), (10, 30, 20, 10), (None, 30, 20, None),
+            (20, None, 10, 0), (10, 15, 20, 5), (None, 15, 20, 10),
+            (10, True, 20, 10), (10, -1, 20, 10), (10, 600001, 20, 10),
+            (10, 15.0, 20, 10), (10, "15", 20, 10), (10, [], 20, 10),
+        ):
+            records = self.v2_records()
+            records[2]["ms"], records[3]["ms"] = start, negative
+            records[4].update(ms=end, lookup_ms=elapsed)
+            with self.subTest(invalid=(start, negative, end, elapsed)):
+                self.assertEqual("timing", self.collect(self.encode(records))["code"])
+        records = self.v2_records()[:4]
+        records[3]["ms"] = 9
+        self.assertEqual("timing", self.collect(self.encode(records))["code"])
+
+    def test_lookup_v2_duplicate_late_missing_and_impossible_phases_refuse_without_prefix(self):
+        records = self.v2_records()
+        for positions in ((0, 1, 3), (0, 1, 3, 4), (0, 1, 2, 4, 3), (0, 1, 2, 3, 3),
+                          (0, 1, 2, 2, 3), (0, 1, 2, 4, 4), (0, 1, 1), (0, 2, 3)):
+            with self.subTest(positions=positions):
+                self.assertEqual("record-order", self.collect(self.encode([records[i] for i in positions]))["code"])
+        for length, status, codes in (
+            (2, "unavailable", ("no-pre", "post-without-pre")), (2, "refused", ("callback",)),
+            (3, "unavailable", ("no-post", "nested-target")),
+            (4, "unavailable", ("no-post", "nested-target")),
+            (3, "refused", ("command-type", "module-path-limit", "callback")),
+            (4, "refused", ("command-type", "module-path-limit", "callback")),
+        ):
+            for code in codes:
+                terminal = {"v": 2, "phase": "post", "status": status, "code": code}
+                data = records[:length] + [terminal]
+                with self.subTest(length=length, code=code):
+                    result = self.collect(self.encode(data))
+                    self.assertEqual(terminal, result["records"][-1])
+                    self.assertIs(result["capsule_complete"], True)
+        for code in ("no-pre", "post-without-pre", "observer-unavailable"):
+            data = records[:4] + [{"v": 2, "phase": "post", "status": "unavailable", "code": code}]
+            self.assertEqual("record-order", self.collect(self.encode(data))["code"])
+        for mutate in (lambda r: r[3].update(extra=MARKER),
+                       lambda r: r[3].update(status="unavailable", code="no-post"),
+                       lambda r: r[3].update(phase=MARKER),
+                       lambda r: r[3].pop("ms"),
+                       lambda r: r[-1].update(status="unavailable", code="not-found-without-pre")):
+            data = copy.deepcopy(records)
+            mutate(data)
+            self.assertEqual("record-shape", self.collect(self.encode(data))["code"])
+        data = records[:2] + [
+            {"v": 2, "phase": "post", "status": "unavailable", "code": "not-found-without-pre"},
+        ]
+        result = self.collect(self.encode(data))
+        self.assertEqual(("refused", "record-shape"), (result["status"], result["code"]))
+        self.assertIs(result["capsule_complete"], False)
+        self.assertNotIn("records", result)
+
+    def test_lookup_v2_whole_input_and_caps_are_checked_before_any_projection(self):
+        valid = self.encode(self.v2_records())
+        for data, code in (
+            (valid[:-1], "partial-line"),
+            (valid.replace(b'"not_found":{"status":"armed"}',
+                           b'"not_found":{"status":"armed","status":"armed"}'), "duplicate-json-key"),
+            (valid.replace(b'"phase":"not-found"', b'"phase":"not-found","phase":"not-found"'),
+             "duplicate-json-key"),
+            (valid.replace(b'"ms":15', b'"ms":15,"private":"' + MARKER.encode() + b'"'), "record-shape"),
+            (valid.replace(b'"ms":15', b'"ms":15,"private":"' + MARKER.encode() + b'\x1b"'), "encoding"),
+            (self.encode(self.v2_records()[:4]) + b'{"private":"' + MARKER.encode() + b'"\n', "invalid-json"),
+            (valid[:-1] + b" " * 8192 + b"\n", "file-limit"),
+            (self.encode(self.v2_records()[:1])[:-1] + b" " * 6144 + b"\n", "record-limit"),
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(code, self.collect(data)["code"])
+        lines = [self.encode([record]) for record in self.v2_records()]
+        lines[0] = lines[0][:-1] + b" " * (6144 - len(lines[0])) + b"\n"
+        lines[1] = lines[1][:-1] + b" " * (8192 - sum(map(len, lines))) + b"\n"
+        self.assertEqual(8192, sum(map(len, lines)))
+        self.assertEqual("observed", self.collect(b"".join(lines))["status"])
+
+    def test_lookup_v2_worst_case_availability_prefixes_and_negative_edge_fit_public_cap(self):
+        records = self.v2_records()
+        records[0]["roots"] = [
+            {"i": index, "kind": "unknown", "sha256": hashlib.sha256(str(index).encode("ascii")).hexdigest(),
+             "duplicate_of": None} for index in range(32)
+        ]
+        records[2]["ms"] = 100000
+        records[3]["ms"] = 600000
+        records[4].update(ms=600000, lookup_ms=500000, command_type=256)
+        shapes = [records[:count] for count in range(1, 6)]
+        for availability in ({"status": "unavailable", "code": "existing-hook"},
+                             {"status": "unavailable", "code": "unsupported-api"},
+                             {"status": "refused", "code": "install"}):
+            data = copy.deepcopy(records)
+            data.pop(3)
+            data[1]["not_found"] = availability
+            shapes.extend(data[:count] for count in range(2, 5))
+        for length, status, codes in (
+            (2, "unavailable", ("no-pre", "post-without-pre")), (2, "refused", ("callback",)),
+            (3, "unavailable", ("no-post", "nested-target")), (4, "unavailable", ("no-post", "nested-target")),
+            (3, "refused", ("command-type", "module-path-limit", "callback")),
+            (4, "refused", ("command-type", "module-path-limit", "callback")),
+        ):
+            shapes.extend(records[:length] + [{"v": 2, "phase": "post", "status": status, "code": code}]
+                          for code in codes)
+        sizes = []
+        for data in shapes:
+            encoded = self.encode(data)
+            self.assertLessEqual(len(encoded), 8192)
+            self.assertTrue(all(len(line) + 1 <= 6144 for line in encoded.splitlines()))
+            result = self.collect(encoded)
+            self.assertNotEqual("refused", result["status"])
+            self.assertEqual(32, len(result["records"][0]["roots"]))
+            columns = result["records"][0]["root_columns"]
+            self.assertEqual(data[0]["roots"], [
+                dict(zip(columns, entry, strict=True)) for entry in result["records"][0]["roots"]
+            ])
+            self.assertEqual(data[1:], result["records"][1:])
+            sizes.append(len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode("ascii")) + 2)
+        self.assertEqual(sizes[4], max(sizes))
+        self.assertLessEqual(max(sizes), 4096)
+        with mock.patch.object(qualification, "DIAGNOSTIC_BYTE_LIMIT", sizes[4] - 3):
+            refused = self.collect(self.encode(records))
+        self.assertEqual("projection-limit", refused["code"])
+        self.assertNotIn("records", refused)
+
     def test_lookup_collection_settles_after_child_and_cannot_mask_owning_or_qualification_failure(self):
         fixtures = WindowsOutcomeTests()
-        for data in (None, b"", self.encode(self.records()[:3]), self.encode(self.records()), b"invalid\n"):
+        for data in (None, b"", self.encode(self.records()[:3]), self.encode(self.records()),
+                     self.encode(self.v2_records()[:4]), self.encode(self.v2_records()), b"invalid\n"):
             for failure in ("none", "owning", "python", "duplicate"):
                 with self.subTest(capsule_bytes=None if data is None else len(data), failure=failure), \
                         tempfile.TemporaryDirectory(prefix="lookup-owning-flow-") as temporary:

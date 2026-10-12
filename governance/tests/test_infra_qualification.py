@@ -75,7 +75,7 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
         current = {
             ".github/workflows/ci.yml": "b2f7a523d5799c918287a7fe71533766c1111f7556074f2f72ad4c1126fb504c",
             "scripts/check_repository.py": "a460facbd44e3d410551785c5dd5955bad400dcb2541305a99310d6d39846ca2",
-            "scripts/qualify_windows.py": "4372d853bafe6f55022328cc44147cd9594f3e3766690c9d347ab0c7d7500be4",
+            "scripts/qualify_windows.py": "0a073083148e670081eee72612fd9853a1a78100c2a50129ce89a2da9adfe1b3",
             "scripts/materialize_money_sources.py": "e9f83c57079c6cadc42c751da4db8c0524012ee3f2629cd9b1f010d6413656b5",
             "scripts/prepare_database_admission.py": "fdcab20a76569fc4b03991003e06918f9d03d4f845e2562b844ee76dcc50ab49",
             "src/main/resources/database-admission-installation.json": "6d9821ac08ffba68865793d2998cba2aad21bbb8acd6a237d7aceec0a40b0195",

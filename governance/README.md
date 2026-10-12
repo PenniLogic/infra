@@ -173,13 +173,16 @@ gate. An unrelated preflight refusal still stops before any invocation or
 collection. A pre-invocation metadata check prevents attributing a preexisting
 capsule to the current invocation; only an explicit observed-absence state
 permits reading it later. A missing freshness observation refuses instead.
-Freshness does not come from timestamps: v1 has no run identifier.
+Freshness does not come from timestamps: neither v1 nor v2 has a run identifier.
 The collector does not create, repair, remove
 or modify that sidecar, resolve commands, enumerate modules, install hooks or
 follow alias targets.
 
-The producer's v1 ASCII, LF-only NDJSON contract permits at most 8192 file bytes,
-four records, 6144 bytes per record including LF, and 32 ordered roots. The
+The producer's ASCII, LF-only NDJSON contracts permit at most 8192 file bytes,
+6144 bytes per record including LF, and 32 ordered roots. V1 remains limited
+to four records; v2 permits five for its additional passive negative-edge
+observation. Every record in a nonempty file must use the same exact integer
+`v`, either 1 or 2; mixed versions refuse the entire capsule. The
 collector reads at most 8193 bytes to detect overflow, rejects symlink/reparse
 or nonregular paths, and checks opened-file identity, size and modification
 time before projecting a stable complete read, without claiming a hostile-
@@ -192,7 +195,7 @@ otherwise valid prefix. Missing files, empty files, valid incomplete prefixes
 and truncated lines remain distinct; missing callbacks are unknown, not evidence
 of a cached lookup.
 
-Validated records preserve every v1 field. To fit the unchanged 4096-byte public
+Validated records preserve every field of their declared version. To fit the unchanged 4096-byte public
 record cap without dropping roots, the roots record uses `root_columns` with
 `["i", "kind", "sha256", "duplicate_of"]` and ordered row arrays instead of
 repeating those keys. No root, duplicate, phase, status, timing or provenance
@@ -212,6 +215,57 @@ duration or evidence that the original ten-second provider deadline was met.
 Observed post provenance requires an earlier unambiguous observed pre even
 when its time is null. Callback failure can instead produce an explicit
 refused post without a recorded pre; it supplies no command provenance.
+
+V2 adds an exact `not_found` object to every `observer` record, describing the
+optional public `CommandNotFoundAction` hook separately from the existing
+Pre/Post observer:
+
+| Base observer | `not_found` exact value |
+| --- | --- |
+| Armed | `{"status":"armed"}` |
+| Armed; an existing negative handler is left untouched | `{"status":"unavailable","code":"existing-hook"}` |
+| Armed; the extra public hook is unsupported | `{"status":"unavailable","code":"unsupported-api"}` |
+| Armed; extra hook installation/readback failed | `{"status":"refused","code":"install"}` |
+| Any nonarmed base observer | `{"status":"unavailable","code":"observer-unavailable"}` |
+
+No other relationship is accepted. The producer assigns only a supported,
+initially null hook and verifies its owned delegate identity before declaring
+it armed. A failed/partial installation stays inert. Existing Pre/Post evidence
+can remain available when this extra hook cannot arm; no existing handler is
+overwritten. Cleanup removes only reference-equal owned delegates, not a later
+replacement. These are producer obligations, not something the reader can
+attest from a capsule. V1 observer fields and their original meaning are unchanged.
+
+After an unambiguous recorded target `pre`, v2 may add exactly
+`{"v":2,"phase":"not-found","status":"observed","ms":<integer-or-null>}`
+before `post`. Both observer components must be armed. This records only that
+the first matching passive negative callback was reached; it does not prove
+that callback returned, that engine lookup completed, or that a particular
+`CommandInfo` was subsequently selected. No specific post command type is
+inferred. A prefix ending at `pre` or `not-found` stays incomplete and unknown,
+including historical v1 pre-only observations. No `not-found` record is required
+for a post: absence is not evidence of resolution, caching or nonexecution.
+
+The new boundary is sampled independently from the same monotonic stopwatch.
+A sample out of range or below a retained valid pre is `null`; a post sample
+below either retained valid preceding boundary is also `null`. The reader
+requires all nonnull pre/not-found/post samples to be nondecreasing, including
+comparisons across null samples. Existing `lookup_ms` remains exactly post
+minus pre when those two samples are nonnull, irrespective of a null negative
+sample; there is no new elapsed field. A throwing clock/property access uses
+the existing fixed callback refusal, not a fabricated sample.
+
+Only the first paired negative callback is recorded. Repeated/nested target
+pre or negative callbacks invalidate pairing and end with the existing
+`post/unavailable/nested-target`, not inner provenance or duplicate phases.
+A matching negative without pre uses the existing `post-without-pre`; that code
+does not identify which callback caused it. Normal finalization after
+pre/not-found but without post uses `no-post`. Done/failed/unarmed producer
+callbacks emit no later records. Duplicate, out-of-order or after-post input
+still refuses in full; logical record closure is not a new physical cleanup
+or descendant-lifetime guarantee. No new terminal code, lookup initiation,
+event-control mutation, provider behavior, default root order, original
+ten-second deadline or boundary-reader change is part of v2.
 
 Root/module hashes describe observed strings and `pshome` is a lexical
 classification, not filesystem identity, module-byte attestation or alias
