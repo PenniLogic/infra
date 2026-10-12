@@ -74,7 +74,7 @@ def remove_native_steps(case, workflow, jobs=("ci", "windows")):
                 "working-directory": "${{ github.workspace }}",
                 "timeout-minutes": 1,
             }, {key: value for key, value in readback.items() if key != "run"})
-            case.assertEqual("ae4694d83532deda918500fb7b5d4ec85a61b65d6eb94c428fbcac2af9b9656a",
+            case.assertEqual("cb9fa0289b294b06a5ce6c5bfc0b04751a1d38b90a70e08956c6d58354864a62",
                              hashlib.sha256(readback["run"].encode("ascii")).hexdigest())
         case.assertEqual([native_step(windows), native_step(windows, phase=1)],
                          [step for step in steps if step.get("name") in STEP_NAMES])

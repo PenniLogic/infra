@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 import conformance_support as support
+from conformance import generator as generator_module
 from conformance import registry, schema, steps
 
 
@@ -137,6 +138,44 @@ class RegistryTests(unittest.TestCase):
                 if rendered is None:
                     self.skipTest("commit not present in this (shallow) history")
                 self.assertEqual(support.generator.artifacts(name)[".github/workflows/ci.yml"].encode("utf-8"), rendered)
+
+    def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
+        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
+        rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")
+        self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
+        self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
+        with tempfile.TemporaryDirectory(prefix="api-registry-source-") as temporary:
+            root = Path(temporary)
+            for relative in ("generate.py", "repository-profiles.json", "templates/check_repository.py",
+                             "templates/api_ci_checker.py"):
+                committed = subprocess.run(
+                    ["git", "--no-pager", "show", entry["workflow_ref"] + ":governance/" + relative],
+                    cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+                    capture_output=True, check=False, timeout=30,
+                )
+                self.assertEqual(0, committed.returncode, "the API binding must contain every checker source")
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(committed.stdout)
+            historical = generator_module.load(root / "generate.py", name="api_registry_source")
+            self.assertEqual(support.generator.checker("api"), historical.checker("api"))
+
+    def test_previous_api_refs_cannot_bind_the_writer_return_reader(self):
+        current = json.loads(support.generator.workflow("api"))
+        for ref in ("d31994d63001f97a0fc78c411cca9380ca2a7dcd", "c33625aae38673e49c0ad2d57277116b8b79ba98"):
+            with self.subTest(ref=ref):
+                rendered = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
+                self.assertIsNotNone(rendered, "the prior API workflow source must exist for this regression")
+                previous = json.loads(rendered)
+                self.assertNotEqual(current, previous)
+                old_reader = previous["jobs"]["windows"]["steps"][-1]
+                new_reader = current["jobs"]["windows"]["steps"][-1]
+                self.assertEqual("Read approved-shell command boundary", old_reader["name"])
+                self.assertEqual({key: value for key, value in old_reader.items() if key != "run"},
+                                 {key: value for key, value in new_reader.items() if key != "run"})
+                self.assertNotIn("pre_record_writer_return", old_reader["run"])
+                previous["jobs"]["windows"]["steps"][-1] = new_reader
+                self.assertEqual(current, previous)
 
     def test_android_workflow_ref_exists_and_renders_the_exact_combined_caller(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")
