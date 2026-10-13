@@ -175,6 +175,26 @@ def fingerprint(rule_id, path, span):
     return "sha256:" + canonical_sha256([rule_id, path, sha256_bytes(span)])
 
 
+def _source(root, path):
+    """The bytes of a validated relative path under ``root``; a link whose real location leaves the root is refused.
+
+    The matched span is only hashed, never echoed, but a span hash over a few bytes of a file outside the checkout
+    would still leak them, so containment is checked on the resolved paths.
+    """
+    try:
+        base = os.path.realpath(root)
+        candidate = os.path.realpath(os.path.join(base, *path.split("/")))
+        inside = os.path.commonpath([base, candidate]) == base
+    except (OSError, ValueError):
+        raise Refused("SAST-SOURCE-UNREADABLE") from None
+    if not inside:
+        raise Refused("SAST-SOURCE-OUTSIDE-ROOT")
+    source = read_bounded(candidate, SOURCE_LIMIT, "SAST-SOURCE-UNREADABLE")
+    if len(source) > SOURCE_LIMIT:
+        raise Refused("SAST-SOURCE-UNREADABLE")
+    return source
+
+
 def _finding(result, rule_ids, scanned, root, sources, modes, today):
     if not isinstance(result, dict) or not isinstance(result.get("extra"), dict):
         raise Refused("SAST-RESULT-SHAPE")
@@ -187,10 +207,7 @@ def _finding(result, rule_ids, scanned, root, sources, modes, today):
         raise Refused("SAST-RESULT-SEVERITY")
     (line, start), (end_line, end) = _position(result.get("start")), _position(result.get("end"))
     if path not in sources:
-        source = read_bounded(Path(root, *path.split("/")), SOURCE_LIMIT, "SAST-SOURCE-UNREADABLE")
-        if len(source) > SOURCE_LIMIT:
-            raise Refused("SAST-SOURCE-UNREADABLE")
-        sources[path] = source
+        sources[path] = _source(root, path)
     if not (start < end <= len(sources[path]) and line <= end_line):
         raise Refused("SAST-RESULT-SPAN")
     return {

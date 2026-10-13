@@ -38,7 +38,9 @@ including a missing report. stdout carries one ASCII JSON report (`pennilogic.qa
 
 Every finding must name a path listed in `paths.scanned`, a known Semgrep severity and a non-empty byte span inside
 the source file; otherwise the report is refused. Static rule codes are the only refusal text: no message,
-snippet, metadata or unvalidated value is ever printed.
+snippet, metadata or unvalidated value is ever printed. A source path whose resolved location leaves the resolved
+`--root` (a symbolic link out of the checkout) is refused (`SAST-SOURCE-OUTSIDE-ROOT`), because even a hash of a
+short span would reveal bytes of the outside file.
 
 ### Finding record (proposed vocabulary)
 
@@ -52,7 +54,9 @@ snippet, metadata or unvalidated value is ever printed.
 
 Semgrep OSS writes `requires login` in place of `extra.fingerprint` and `extra.lines`, so neither is used. The
 fingerprint does not depend on the line number: moving unrelated code keeps it stable, editing the matched code
-changes it. The report vocabulary is *proposed, pending infra#23 owner alignment*.
+changes it. The report vocabulary is *proposed, pending infra#23 owner alignment*. A rule ID is recognized by
+suffix (`<config path>.<rule id>`), so a foreign rule whose ID ends with `.<rule id>` would be treated as that
+rule; the held CI step must therefore pass only this repository's rule directory to Semgrep.
 
 ### Rule set (proposed, not agreed)
 

@@ -9,10 +9,12 @@ import contextlib
 import datetime
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 
 import support  # noqa: F401  (puts scripts/ on sys.path)
 import qa_gates_sast as sast
@@ -232,6 +234,16 @@ class SastReportGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             self.assertRefused("SAST-SOURCE-UNREADABLE", gate, document, None, TODAY, Path(empty))
 
+    def test_source_resolving_outside_root_refused(self):
+        """A link inside the checkout must not let a span hash read a file outside it (simulated portably)."""
+        document = only(EVAL_RULE)
+        self.assertEqual(gate(document)["reason"], "SAST-BLOCKING-FINDINGS")
+        name = document["results"][0]["path"].split("/")[-1]
+        real = os.path.realpath
+        outside = os.path.join(os.path.dirname(real(ROOT)), "outside-root", name)
+        with unittest.mock.patch.object(sast.os.path, "realpath",
+                                        lambda path: outside if str(path).endswith(name) else real(path)):
+            self.assertRefused("SAST-SOURCE-OUTSIDE-ROOT", gate, document)
 
     def test_fingerprint_binds_rule_path_and_matched_span(self):
         result = only(EVAL_RULE)["results"][0]

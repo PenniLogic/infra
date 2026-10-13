@@ -373,27 +373,33 @@ def parse_alerts(data, policy, target):
 def coverage(entries, scanned):
     """IDs of the expected-surface entries no scanned URL covers (same auth kind, method and path shape).
 
-    A `{name}` template segment matches any one path segment; literal segments match exactly. Candidates are
-    indexed by literal position, so the cost stays near linear in the scanned set.
+    A `{name}` template segment matches any one path segment; literal segments match exactly. Scanned paths are
+    indexed only at the first literal position of some template, so memory stays linear in the scanned set no
+    matter how deep a hostile manifest's paths are.
     """
-    groups, by_position = set(), {}
-    for authenticated, method, segments, _context in scanned:
-        group = (authenticated, method, len(segments))
-        groups.add(group)
-        for position, segment in enumerate(segments):
-            by_position.setdefault(group + (position, segment), set()).add(segments)
-    missing = []
+    shapes = []
+    positions = {}
     for entry in entries:
         group = (entry["authenticated"], entry["method"], len(entry["segments"]))
         literals = [(position, part) for position, part in enumerate(entry["segments"]) if not part.startswith("{")]
+        shapes.append((entry["id"], group, literals))
+        if literals:
+            positions.setdefault(group, set()).add(literals[0][0])
+    groups, index = set(), {}
+    for authenticated, method, segments, _context in scanned:
+        group = (authenticated, method, len(segments))
+        groups.add(group)
+        for position in positions.get(group, ()):
+            index.setdefault(group + (position, segments[position]), []).append(segments)
+    missing = []
+    for identifier, group, literals in shapes:
         if not literals:
             covered = group in groups
         else:
-            candidates = [by_position.get(group + literal, set()) for literal in literals]
-            smallest = min(candidates, key=len)
-            covered = any(all(segments[position] == part for position, part in literals) for segments in smallest)
+            candidates = index.get(group + literals[0], ())
+            covered = any(all(segments[position] == part for position, part in literals) for segments in candidates)
         if not covered:
-            missing.append(entry["id"])
+            missing.append(identifier)
     return sorted(missing)
 
 

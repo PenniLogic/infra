@@ -443,6 +443,7 @@ class AlertShape(unittest.TestCase):
         good = dump(alerts())
         hostile = {
             "duplicate key": good.replace(b'"@generated"', b'"@version": "2.16.1",\n  "@generated"', 1),
+            "nested duplicate key": good.replace(b'"@ssl": "false"', b'"@ssl": "false", "@ssl": "true"', 1),
             "byte order mark": b"\xef\xbb\xbf" + good,
             "nan": good.replace(b'"site": [', b'"x": NaN, "site": [', 1),
             "invalid utf-8": good.replace(b"synthetic", b"synth\xffetic", 1),
@@ -451,6 +452,7 @@ class AlertShape(unittest.TestCase):
                                        TODAY)["decision"], "pass")
         for label, data in hostile.items():
             with self.subTest(label=label):
+                self.assertNotEqual(data, good)
                 document = manifest(alerts(), surface())
                 document["alerts_sha256"] = sha256_bytes(data)
                 with self.assertRaises(Refused) as caught:
@@ -580,6 +582,26 @@ class Determinism(unittest.TestCase):
         high, medium = alert(risk="3"), alert(risk="2")
         self.assertEqual(gate(alerts(high))["findings"], gate(alerts(high))["findings"])
         self.assertEqual(gate(alerts(high, medium))["findings"], gate(alerts(medium, high))["findings"])
+
+
+class CoverageShapes(unittest.TestCase):
+    def entries(self, path):
+        return [{"id": "SURF-SHAPE-1", "authenticated": True, "method": "GET",
+                 "segments": dast._template(path, "DAST-SURFACE-PATH")}]
+
+    def test_every_literal_position_must_match(self):
+        entries = self.entries("/{org}/members/{member_id}/profile")
+        covered = [(True, "GET", ("o1", "members", "m1", "profile"), "member")]
+        self.assertEqual(dast.coverage(entries, covered), [])
+        for segments in (("o1", "members", "m1", "settings"), ("o1", "member", "m1", "profile"),
+                         ("o1", "members", "m1"), ("o1", "members", "m1", "profile", "x")):
+            with self.subTest(segments=segments):
+                self.assertEqual(dast.coverage(entries, [(True, "GET", segments, "member")]), ["SURF-SHAPE-1"])
+
+    def test_placeholder_only_template_needs_same_depth(self):
+        entries = self.entries("/{a}/{b}")
+        self.assertEqual(dast.coverage(entries, [(True, "GET", ("x", "y"), "member")]), [])
+        self.assertEqual(dast.coverage(entries, [(True, "GET", ("x",), "member")]), ["SURF-SHAPE-1"])
 
 if __name__ == "__main__":
     unittest.main()
