@@ -87,7 +87,10 @@ verification is held (see below), and an unavailable verifier fails closed.
   report states `exceptions unavailable (infra#23 not integrated)` and every finding stays unexcepted. The gates
   define no exception record, file or schema; the planned binding is infra#23's
   `security_exceptions.Exceptions.load(path, now)` and `Exceptions.suppression(...)`, which has no supply-chain
-  kind yet (open question for the infra#23 owner). A future suppression is published with its id, never hidden.
+  kind yet. Open questions for the infra#23 owner: the supply-chain kind, how each gate maps to that binding's
+  `repository` and 64-hex `artifact` digest (findings carry neither; `artifact_id` is a label), and which rule-id
+  grammar applies (its `pattern` grammar rejects the `_` in checkov ids). A future suppression is published with
+  its id, never hidden.
 - Rollout (ticket): run report-only long enough to measure noise, then block high and critical per scanner.
   Rollback (ticket): one noisy rule may return to reporting with a named owner and expiry. Both need the infra#23
   exception mechanism and CI wiring; neither the noise window nor any rollback has happened.

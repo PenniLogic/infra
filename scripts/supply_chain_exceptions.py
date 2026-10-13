@@ -8,8 +8,12 @@ severity, and every report states ``exceptions unavailable (infra#23 not integra
 Planned binding (by name, from infra draft PR #88 at cc17385c7277f607ddbbf42ffa5cb9a6fc81a18c, not copied):
 ``security_exceptions.Exceptions.load(path, now)`` once per run and
 ``Exceptions.suppression(kind, repository, pattern, artifact)`` per finding, returning an exception id or None.
-Its ``kind`` set (``secret``, ``advisory``) has no supply-chain kind yet; that mapping is an open question for the
-infra#23 owner. The ``available`` branch below is exercised only by test fakes.
+Its ``kind`` set (``secret``, ``advisory``) has no supply-chain kind yet. The binding also cannot be called from the
+finding shape as it stands: a finding carries no repository and no 64-hex artifact digest (``artifact_id`` is a
+label), and checkov ids contain ``_``, which infra#23's ``pattern`` grammar ``[A-Za-z][A-Za-z0-9-]{0,95}``
+rejects. Open questions for the infra#23 owner: the supply-chain kind, how each gate maps to ``repository`` and
+``artifact`` digest, and which rule-id grammar applies. The ``available`` branch below is exercised only by test
+fakes.
 """
 
 import re
@@ -20,7 +24,8 @@ from supply_chain_common import (
 
 
 UNAVAILABLE_REASON = "exceptions unavailable (infra#23 not integrated)"
-EXCEPTION_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
+# Aligned by value with infra#23's IDENTIFIER (proposed); the integrated binding stays the authority on ids.
+EXCEPTION_ID = re.compile(r"[a-z][a-z0-9-]{0,63}", re.ASCII)
 EFFECTS = ("fail", "report", "excepted")
 # On a fingerprint collision the strictest entry is kept: most severe first, then the least trusted basis.
 BASIS_ORDER = {"unrated": 0, "scanner": 1, "rule": 2}
