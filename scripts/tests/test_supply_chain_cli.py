@@ -194,6 +194,11 @@ class UsageTests(CliCase):
                                      "c" * 64])
         self.assertEqual((code, report["code"]), (2, "SC-CLI-USAGE-DIGEST"))
 
+    def test_image_report_without_expected_digest_is_refused(self):
+        code, report = self.run_cli(["trivy", "--artifact-id", "web/image", "--kind", "image", "--input",
+                                     str(FIXTURES / "trivy-image-planted-vulnerable.json")])
+        self.assertEqual((code, report["code"]), (2, "SC-TRIVY-SUBJECT"))
+
     def test_unexpected_port_error_is_refused_without_echo(self):
         class Broken:
             available = "maybe"

@@ -1,7 +1,6 @@
 """Tests for scripts/supply_chain_sbom.py: CycloneDX completeness and artifact binding (passing control + one
 mutation per negative, exact rule id)."""
 
-import copy
 import unittest
 
 import support  # noqa: F401  (puts scripts/ on sys.path)

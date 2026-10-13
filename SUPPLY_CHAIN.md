@@ -40,6 +40,8 @@ deploy     --artifact <file> --sbom <bom.cdx.json> --provenance <statement.json>
 ```
 
 - `--artifact-id` matches `[a-z0-9][a-z0-9._/-]{0,127}`; it is a label, not a path.
+- `trivy --kind image` requires `--expected-digest` (the image digest the report must name); `--kind config`
+  refuses it.
 - Every option takes exactly one separate value (`--name value`). Unknown, repeated, abbreviated or missing
   options are usage errors. There is no option that selects a verifier, an exceptions source or a report-only
   mode.
