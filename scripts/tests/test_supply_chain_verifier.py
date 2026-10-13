@@ -14,7 +14,7 @@ ARTIFACT = b"synthetic deployable artifact bytes v1"
 
 class SignatureTests(unittest.TestCase):
     def setUp(self):
-        self.fake = fakes.HmacFakeVerifier()
+        self.fake = fakes.IssuedTableFakeVerifier()
         self.subject = fakes.sha256(ARTIFACT)
         self.signature = self.fake.sign(self.subject)
 
@@ -31,9 +31,16 @@ class SignatureTests(unittest.TestCase):
         self.assertEqual(self.rules(found), ["SC-SIG-INVALID"])
         self.assertEqual(found[0]["severity"], "critical")
 
-    def test_wrong_key_signature_is_rejected(self):
-        other = fakes.HmacFakeVerifier().sign(self.subject)
+    def test_signature_from_another_signer_is_rejected(self):
+        other = fakes.IssuedTableFakeVerifier().sign(self.subject)
         found = verifier.check_signature("web/bundle", self.subject, other, self.fake)
+        self.assertEqual(self.rules(found), ["SC-SIG-INVALID"])
+
+    def test_signature_never_issued_for_the_subject_is_rejected(self):
+        other_subject = fakes.sha256(ARTIFACT + b"other")
+        forged = dict(self.signature, subject=other_subject)
+        self.assertEqual(verifier.check_signature("web/bundle", self.subject, self.signature, self.fake), [])
+        found = verifier.check_signature("web/bundle", other_subject, forged, self.fake)
         self.assertEqual(self.rules(found), ["SC-SIG-INVALID"])
 
     def test_unsigned_artifact_is_rejected_without_calling_the_verifier(self):
@@ -97,7 +104,7 @@ class NoDowngradeTests(unittest.TestCase):
                 self.assertEqual(exceptions.evaluate(found, threshold)["decision"], "fail")
 
     def test_accepted_signature_contributes_no_finding(self):
-        fake = fakes.HmacFakeVerifier()
+        fake = fakes.IssuedTableFakeVerifier()
         subject = fakes.sha256(ARTIFACT)
         found = verifier.check_signature("web/bundle", subject, fake.sign(subject), fake)
         self.assertEqual(exceptions.evaluate(found, "high")["decision"], "pass")

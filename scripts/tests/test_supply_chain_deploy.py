@@ -21,7 +21,7 @@ class ExceptEverything:
 
 class DeployGateTests(unittest.TestCase):
     def setUp(self):
-        self.fake = fakes.HmacFakeVerifier()
+        self.fake = fakes.IssuedTableFakeVerifier()
         self.sha = fakes.sha256(fakes.ARTIFACT)
         self.sbom = fakes.encode(fakes.sbom_document(self.sha))
         self.provenance = fakes.encode(fakes.provenance_statement(self.sha))

@@ -230,6 +230,19 @@ class ImportBoundaryTests(unittest.TestCase):
                 self.assertEqual(foreign, set())
                 self.assertNotIn("environ", module.read_text(encoding="utf-8"))
 
+    def test_test_fakes_hold_no_key_material(self):
+        """Plan 8.5: a Verifier port with a fake in tests, no hand-written crypto and no keys."""
+        source = (Path(__file__).resolve().parent / "supply_chain_support.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names.add(node.module)
+        self.assertEqual(names & {"hmac", "secrets", "random", "ssl", "cryptography"}, set())
+        self.assertNotIn("token_bytes", source)
+
 
 if __name__ == "__main__":
     unittest.main()

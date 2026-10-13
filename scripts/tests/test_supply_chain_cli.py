@@ -23,7 +23,7 @@ class CliCase(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.mkdtemp(prefix="supply-chain-cli-")
         self.addCleanup(shutil.rmtree, self.directory)
-        self.fake = fakes.HmacFakeVerifier()
+        self.fake = fakes.IssuedTableFakeVerifier()
         self.sha = fakes.sha256(fakes.ARTIFACT)
         self.sbom = fakes.encode(fakes.sbom_document(self.sha))
         self.provenance = fakes.encode(fakes.provenance_statement(self.sha))

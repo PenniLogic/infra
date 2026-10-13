@@ -106,8 +106,10 @@ python -m unittest discover -s scripts/tests -p "test_supply_chain_*.py"
 ```
 
 All fixtures are synthetic. Each negative has a passing control and one mutation and asserts the exact rule id.
-Signature orchestration is tested with a test-only HMAC fake whose key is generated at run time and never stored;
-it proves orchestration only, not production signature fidelity. Tests never write inside the repository, use no
+Signature orchestration is tested with a key-free, test-only allow-table fake that accepts exactly the signature
+objects it recorded as issued for a subject (no cryptography, no key, not even at run time); it proves
+orchestration only, not production signature fidelity. Whether runtime-only test keys are acceptable remains an
+open owner question; this work does not depend on the answer. Tests never write inside the repository, use no
 network, Docker or external binary, and must pass on Linux and Windows without skips.
 
 ## Held and not claimed

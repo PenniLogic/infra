@@ -1,41 +1,46 @@
 """Test-only fakes and synthetic builders for the PenniLogic/infra#31 supply-chain gates (never used by gates).
 
-Keys are generated at runtime per fake instance with ``secrets`` and never written anywhere; the HMAC fake proves
-gate orchestration only, not production signature fidelity (held for the managed-tool integration).
+The fakes hold no key and perform no cryptography: :class:`IssuedTableFakeVerifier` accepts exactly the
+signature objects it recorded as issued. They prove gate orchestration only, not production signature fidelity
+(held for the managed-tool integration).
 """
 
 import hashlib
-import hmac
+import itertools
 import json
-import secrets
 
 import support  # noqa: F401  (puts scripts/ on sys.path)
 from supply_chain_verifier import VerifierUnavailable
 
 
-TEST_SCHEME = "test-only-hmac-sha256"
+TEST_SCHEME = "test-only-issued-table"
+_ISSUERS = itertools.count(1)
 
 
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-class HmacFakeVerifier:
-    """Accepts exactly the signature objects it issued for a subject digest; a runtime key, never persisted."""
+class IssuedTableFakeVerifier:
+    """Key-free allow-table fake: accepts a signature object only if this instance issued it for that subject.
+
+    A signature object is ``{"scheme", "issuer", "subject"}``; ``issuer`` is a per-instance counter value, so a
+    signature issued by another instance, for another subject, or never issued at all is rejected.
+    """
 
     def __init__(self):
-        self._key = secrets.token_bytes(32)
+        self.issuer = next(_ISSUERS)
+        self._issued = set()
         self.calls = 0
 
     def sign(self, subject_sha256):
-        value = hmac.new(self._key, subject_sha256.encode("ascii"), hashlib.sha256).hexdigest()
-        return {"scheme": TEST_SCHEME, "value": value}
+        self._issued.add(subject_sha256)
+        return {"scheme": TEST_SCHEME, "issuer": self.issuer, "subject": subject_sha256}
 
     def verify(self, subject_sha256, signature):
         self.calls += 1
-        if signature.get("scheme") != TEST_SCHEME or not isinstance(signature.get("value"), str):
-            return False
-        return hmac.compare_digest(self.sign(subject_sha256)["value"], signature["value"])
+        expected = {"scheme": TEST_SCHEME, "issuer": self.issuer, "subject": subject_sha256}
+        return signature == expected and subject_sha256 in self._issued
 
 
 class TableFakeVerifier:
