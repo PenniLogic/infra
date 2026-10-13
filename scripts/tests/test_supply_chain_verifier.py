@@ -79,6 +79,14 @@ class SignatureTests(unittest.TestCase):
             verifier.check_signature("Web Bundle", self.subject, self.signature, self.fake)
         self.assertEqual(caught.exception.code, "SC-SIG-ARTIFACT")
 
+    def test_member_location_is_validated(self):
+        found = verifier.check_signature("web/bundle", self.subject, None, self.fake, location="sbom.signature")
+        self.assertEqual([(item["rule_id"], item["location_class"]) for item in found],
+                         [("SC-SIG-UNSIGNED", "sbom.signature")])
+        with self.assertRaises(Refused) as caught:
+            verifier.check_signature("web/bundle", self.subject, None, self.fake, location="image.signature")
+        self.assertEqual(caught.exception.code, "SC-SIG-LOCATION")
+
 
 class NoDowngradeTests(unittest.TestCase):
     def test_signature_failure_blocks_at_every_threshold(self):

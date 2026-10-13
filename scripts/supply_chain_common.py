@@ -82,6 +82,36 @@ def read_bounded(path, limit, code):
         raise Refused(code) from None
 
 
+ARTIFACT_LIMIT = 4 * 1024 * 1024 * 1024
+CHUNK = 1024 * 1024
+
+
+def sha256_file(path, code, limit=ARTIFACT_LIMIT):
+    """``(hex, size)`` of one regular file read once in chunks; anything else (or over ``limit``) is refused.
+
+    The digest is computed from the opened handle, so the hashed bytes are exactly the bytes checked.
+    """
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            raise Refused(code)
+        with open(path, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise Refused(code)
+            while True:
+                chunk = handle.read(CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    raise Refused(code)
+                digest.update(chunk)
+    except (OSError, ValueError):
+        raise Refused(code) from None
+    return digest.hexdigest(), total
+
+
 def pattern(value, expression, code):
     if not isinstance(value, str) or expression.fullmatch(value) is None:
         raise Refused(code)
@@ -98,7 +128,8 @@ def fingerprint(*parts):
     return "sha256:" + digest.hexdigest()
 
 
-SCANNERS = ("builtin-compose", "builtin-android", "trivy", "checkov", "verifier")
+SCANNERS = ("builtin-compose", "builtin-android", "trivy", "checkov", "builtin-sbom", "builtin-provenance",
+            "verifier")
 LOCATION_CLASS = re.compile(r"[a-z][a-z0-9-]{0,31}(?:\.[a-z][a-z0-9-]{0,31}){0,3}")
 # Signature, verifier and subject-binding findings are never exceptable and never below the threshold.
 NEVER_EXCEPTABLE = ("SC-SIG-", "SC-SUBJECT-")

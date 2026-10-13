@@ -1,6 +1,7 @@
 """Tests for scripts/supply_chain_common.py: strict JSON, bounded reads, the finding vocabulary."""
 
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -68,6 +69,28 @@ class ReadBoundedTests(unittest.TestCase):
             with open(path, "wb") as handle:
                 handle.write(b"x" * 100)
             self.assertEqual(len(common.read_bounded(path, 10, "SC-T-READ")), 11)
+
+
+class Sha256FileTests(unittest.TestCase):
+    def test_digest_and_size_of_a_regular_file(self):
+        data = b"synthetic" * 300000
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "artifact.bin")
+            with open(path, "wb") as handle:
+                handle.write(data)
+            self.assertEqual(common.sha256_file(path, "SC-T-ARTIFACT"),
+                             (hashlib.sha256(data).hexdigest(), len(data)))
+
+    def test_directory_missing_and_oversized_files_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "artifact.bin")
+            with open(path, "wb") as handle:
+                handle.write(b"x" * 100)
+            self.assertEqual(common.sha256_file(path, "SC-T-ARTIFACT", 100)[1], 100)
+            for target, limit in ((path, 99), (directory, 100), (path + ".absent", 100), ("bad\x00name", 100)):
+                with self.subTest(limit=limit), self.assertRaises(Refused) as caught:
+                    common.sha256_file(target, "SC-T-ARTIFACT", limit)
+                self.assertEqual(caught.exception.code, "SC-T-ARTIFACT")
 
 
 class FindingTests(unittest.TestCase):
@@ -159,6 +182,8 @@ class ImportBoundaryTests(unittest.TestCase):
     """The gate modules stay offline and keyless: no network, process, crypto-signing or environment access."""
 
     ALLOWED = {"hashlib", "json", "math", "os", "re", "stat", "xml.etree"}
+    # Only the command line may import sys (argv and exit status).
+    CLI_ALLOWED = ALLOWED | {"sys"}
 
     def test_gate_modules_import_only_the_allowed_standard_library(self):
         modules = sorted(Path(common.__file__).resolve().parent.glob("supply_chain_*.py"))
@@ -171,7 +196,8 @@ class ImportBoundaryTests(unittest.TestCase):
                     names.update(alias.name for alias in node.names)
                 elif isinstance(node, ast.ImportFrom):
                     names.add(node.module)
-            foreign = {name for name in names if not name.startswith("supply_chain_")} - self.ALLOWED
+            allowed = self.CLI_ALLOWED if module.name == "supply_chain_cli.py" else self.ALLOWED
+            foreign = {name for name in names if not name.startswith("supply_chain_")} - allowed
             with self.subTest(module=module.name):
                 self.assertEqual(foreign, set())
                 self.assertNotIn("environ", module.read_text(encoding="utf-8"))

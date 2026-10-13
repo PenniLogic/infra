@@ -58,6 +58,7 @@ def evaluate(findings, threshold, port=None):
     published, seen = [], set()
     counts = {scanner: {severity: 0 for severity in SEVERITIES} for scanner in SCANNERS}
     effects = {effect: 0 for effect in EFFECTS}
+    by_rule = {}
     for item in findings:
         if item["fingerprint"] in seen:
             continue
@@ -77,6 +78,7 @@ def evaluate(findings, threshold, port=None):
             effect = "fail" if blocking(item, threshold) else "report"
         counts[item["scanner"]][item["severity"]] += 1
         effects[effect] += 1
+        by_rule[item["rule_id"]] = by_rule.get(item["rule_id"], 0) + 1
         published.append({**item, "effect": effect, "exception_id": exception_id})
     published.sort(key=lambda entry: (entry["fingerprint"], entry["rule_id"]))
     return {
@@ -88,6 +90,7 @@ def evaluate(findings, threshold, port=None):
         "counts": {
             "by_scanner": {scanner: dict(row) for scanner, row in counts.items() if any(row.values())},
             "by_effect": effects,
+            "by_rule": dict(sorted(by_rule.items())),
         },
         "findings": published,
     }
