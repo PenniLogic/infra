@@ -1,6 +1,7 @@
 """Run the ordinary Windows owning suites and emit only safe, fresh per-test outcomes."""
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -10,6 +11,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+from types import ModuleType
 import xml.etree.ElementTree as ET
 
 
@@ -22,6 +25,19 @@ LOOKUP = Path("build/diagnostics/api106-approved-shell-module-lookup.jsonl")
 LOOKUP_FILE_LIMIT = 8192
 LOOKUP_RECORD_LIMIT = 6144
 LOOKUP_EVENT = "windows_shell_lookup_diagnostic"
+OBSERVER_STATE = LOOKUP.with_name("api106-observer-collection-state.jsonl")
+OBSERVER_FILES = {
+    "required-boundary": (LOOKUP.with_name("api106-approved-shell-boundary.bin"), 7),
+    "required-lookup": (LOOKUP, LOOKUP_FILE_LIMIT),
+    "pair": (LOOKUP.with_name("api106-approved-shell-observer-pair.jsonl"), 4096),
+    "enclosure": (LOOKUP.with_name("api106-approved-shell-enclosure.jsonl"), 8192),
+    "auxiliary-boundary": (LOOKUP.with_name("api106-approved-shell-auxiliary-boundary.bin"), 7),
+    "auxiliary-lookup": (LOOKUP.with_name("api106-approved-shell-auxiliary-module-lookup.jsonl"), LOOKUP_FILE_LIMIT),
+}
+OBSERVER_BUDGET_BYTES = 30820
+OBSERVER_BUDGET_SHA256 = "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"
+OBSERVER_COMMAND_SECONDS = 270
+OBSERVER_CLOSED_SECONDS = 300
 PYTHON_CASE = re.compile(rb"(test[A-Za-z0-9_]*) \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \.\.\. (.*))?")
 PYTHON_SUMMARY = re.compile(rb"Ran (\d+) tests? in [0-9.]+s")
 PYTHON_TERMINAL = re.compile(
@@ -55,6 +71,15 @@ PYTHON_EXCEPTIONS = (
 
 class Refused(ValueError):
     """A static qualification refusal, never a child diagnostic or fixture value."""
+
+
+class _ObserverResultRefused(Refused):
+    """Retain failed captures for the existing bounded outcome projection."""
+
+    def __init__(self, result, secondary):
+        super().__init__("owning-suite-command-failed")
+        self.result = result
+        self.__cause__ = secondary
 
 
 class _PythonOutcomeRefused(Refused):
@@ -418,6 +443,21 @@ def python_diagnostic_json(diagnostic):
     return encoded
 
 
+def qualification_python_outcomes(root, result, output, errors):
+    try:
+        return python_outcomes(errors)
+    except _PythonOutcomeRefused as error:
+        print(python_diagnostic_json({
+            "event": "windows_qualification_diagnostic", "diagnostic_only": True,
+            "inventory_complete": False, "exit_code": result.returncode,
+            "stdout": {"bytes": len(output), "sha256": hashlib.sha256(output).hexdigest()},
+            "stderr": {"bytes": len(errors), "sha256": hashlib.sha256(errors).hexdigest()},
+            "parser": {**error.diagnostic,
+                       "negative_prefix": python_error_diagnostics(root, errors, error.diagnostic)},
+        }), flush=True)
+        raise
+
+
 def junit_diagnostic_number(value):
     if type(value) is str and len(value) <= 32:
         try:
@@ -498,19 +538,45 @@ def junit_outcomes(root):
     return records
 
 
-def lookup_path_metadata(root):
+def lookup_path_metadata(root, relative=LOOKUP):
     path = root
-    for index, part in enumerate(("", *LOOKUP.parts)):
+    for index, part in enumerate(("", *relative.parts)):
         if part:
             path = path / part
         metadata = path.lstat()
         # Windows junctions can report a directory mode and still be reparse points.
         if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
             raise Refused("reparse-path")
-        regular = stat.S_ISREG if index == len(LOOKUP.parts) else stat.S_ISDIR
+        regular = stat.S_ISREG if index == len(relative.parts) else stat.S_ISDIR
         if not regular(metadata.st_mode):
             raise Refused("nonregular-path")
     return metadata
+
+
+def diagnostic_bytes(root, relative, limit):
+    def metadata():
+        return lookup_path_metadata(root) if relative == LOOKUP else lookup_path_metadata(root, relative)
+
+    prior = metadata()
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(root / relative, flags)
+    try:
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(prior, opened):
+                raise Refused("file-changed")
+            data = stream.read(limit + 1)
+            after = os.fstat(stream.fileno())
+    finally:
+        os.close(descriptor)
+    current = metadata()
+    if (any(not os.path.samestat(opened, other) for other in (after, current))
+            or len({item.st_size for item in (prior, opened, after, current)}) != 1
+            or len({item.st_mtime_ns for item in (prior, opened, after, current)}) != 1):
+        raise Refused("file-changed")
+    if len(data) != min(current.st_size, limit + 1):
+        raise Refused("incomplete-read")
+    return data
 
 
 def lookup_before(root):
@@ -699,6 +765,17 @@ def lookup_records(data):
     return records
 
 
+def lookup_projection(records):
+    projected = []
+    for record in records:
+        if record["phase"] == "roots" and record["status"] == "observed":
+            columns = ["i", "kind", "sha256", "duplicate_of"]
+            record = {**record, "root_columns": columns,
+                      "roots": [[entry[key] for key in columns] for entry in record["roots"]]}
+        projected.append(record)
+    return projected
+
+
 def lookup_diagnostic_json(root, before):
     base = {"event": LOOKUP_EVENT, "diagnostic_only": True, "capsule_complete": False}
     result = dict(base)
@@ -706,35 +783,11 @@ def lookup_diagnostic_json(root, before):
         if before != "absent":
             known = ("preexisting-capsule", "preflight-unavailable", "reparse-path", "nonregular-path")
             raise Refused(before if type(before) is str and before in known else "freshness-unavailable")
-        metadata = lookup_path_metadata(root)
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        descriptor = os.open(root / LOOKUP, flags)
-        try:
-            with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                opened = os.fstat(stream.fileno())
-                if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(metadata, opened):
-                    raise Refused("file-changed")
-                data = stream.read(LOOKUP_FILE_LIMIT + 1)
-                after = os.fstat(stream.fileno())
-        finally:
-            os.close(descriptor)
-        current = lookup_path_metadata(root)
-        if (any(not os.path.samestat(opened, other) for other in (after, current))
-                or len({item.st_size for item in (metadata, opened, after, current)}) != 1
-                or len({item.st_mtime_ns for item in (metadata, opened, after, current)}) != 1):
-            raise Refused("file-changed")
-        if len(data) != min(current.st_size, LOOKUP_FILE_LIMIT + 1):
-            raise Refused("incomplete-read")
+        data = diagnostic_bytes(root, LOOKUP, LOOKUP_FILE_LIMIT)
         records = lookup_records(data)
-        projected = []
-        for record in records:
-            if record["phase"] == "roots" and record["status"] == "observed":
-                columns = ["i", "kind", "sha256", "duplicate_of"]
-                record = {**record, "root_columns": columns,
-                          "roots": [[entry[key] for key in columns] for entry in record["roots"]]}
-            projected.append(record)
         complete = bool(records and records[-1]["phase"] == "post")
-        result.update(status="observed" if complete else "partial", capsule_complete=complete, records=projected)
+        result.update(status="observed" if complete else "partial", capsule_complete=complete,
+                      records=lookup_projection(records))
         if not complete:
             result["code"] = "incomplete-prefix" if records else "empty-prefix"
     except FileNotFoundError:
@@ -750,37 +803,556 @@ def lookup_diagnostic_json(root, before):
     return encoded
 
 
-def qualify(root, require_prepared=False):
+def observer_require(condition, code="observer-record-shape"):
+    if not condition:
+        raise Refused(code)
+
+
+def observer_integer(value, lower=0, upper=4294967295):
+    return type(value) is int and lower <= value <= upper
+
+
+def observer_digest(value):
+    return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def observer_json_lines(data, byte_limit, record_limit):
+    observer_require(len(data) <= byte_limit, "file-limit")
+    if not data:
+        return []
+    observer_require(data.isascii() and b"\r" not in data and b"\x1b" not in data, "encoding")
+    observer_require(data.endswith(b"\n"), "partial-line")
+    lines = data.split(b"\n")[:-1]
+    observer_require(len(lines) <= record_limit, "record-count")
+    observer_require(all(0 < len(line) and len(line) + 1 <= 1024 for line in lines), "record-limit")
+    try:
+        return [json.loads(line, object_pairs_hook=lookup_json_object) for line in lines]
+    except Refused:
+        raise
+    except (ValueError, RecursionError):
+        raise Refused("invalid-json") from None
+
+
+def observer_envelope(record, event, fields):
+    observer_require(type(record) is dict and set(record) == {"event", "v", "diagnostic_only", "phase", *fields})
+    observer_require(record["event"] == event and type(record["v"]) is int and record["v"] == 1
+                     and record["diagnostic_only"] is True)
+
+
+def observer_pair_records(data):
+    records = observer_json_lines(data, 4096, 6)
+    roles = ("required", "auxiliary-no-lookup-delegates")
+    outcomes, started = {}, None
+    event = "api106_approved_shell_observer_pair"
+    for index, record in enumerate(records):
+        observer_require(type(record) is dict and type(record.get("phase")) is str)
+        phase = record["phase"]
+        if index == 0:
+            observer_envelope(record, event, (
+                "order", "enclosing_seconds", "cleanup_reserve_seconds", "arm_work_seconds", "arm_cleanup_seconds",
+            ))
+            observer_require(phase == "begin" and record["order"] == "required-then-auxiliary")
+            for key, value in (("enclosing_seconds", 60), ("cleanup_reserve_seconds", 12),
+                               ("arm_work_seconds", 10), ("arm_cleanup_seconds", 10)):
+                observer_require(type(record[key]) is int and record[key] == value)
+        elif phase == "complete":
+            observer_envelope(record, event, ("required", "auxiliary", "acceptance"))
+            observer_require(index == len(records) - 1 and started is None and len(outcomes) == 2,
+                             "observer-record-order")
+            observer_require(record["acceptance"] is False and record["required"] == outcomes[roles[0]]
+                             and record["auxiliary"] == outcomes[roles[1]])
+        else:
+            observer_require(len(outcomes) < 2 and record.get("role") == roles[len(outcomes)],
+                             "observer-record-order")
+            role = record["role"]
+            if role == roles[1] and outcomes[roles[0]] == "process-or-cleanup-error":
+                observer_require(phase == "arm" and record.get("outcome") == "not-executed"
+                                 and record.get("reason") == "required-process-or-cleanup-error",
+                                 "observer-record-order")
+            if phase == "started":
+                observer_envelope(record, event, ("role",))
+                observer_require(started is None, "observer-record-order")
+                started = role
+            else:
+                observer_require(phase == "arm", "observer-record-order")
+                outcome = record.get("outcome")
+                if outcome == "not-executed":
+                    observer_envelope(record, event, ("role", "outcome", "reason"))
+                    reason = record["reason"]
+                    observer_require(reason == "insufficient-complete-arm-budget" or (
+                        reason == "required-process-or-cleanup-error" and role == roles[1]
+                        and started is None and outcomes[roles[0]] == "process-or-cleanup-error"))
+                    observer_require(index == len(records) - 1 or (
+                        reason == "required-process-or-cleanup-error" and index == len(records) - 2),
+                        "observer-record-order")
+                else:
+                    observer_envelope(record, event, ("role", "outcome", "elapsed_ms", "returncode", "stdout"))
+                    observer_require(started == role and outcome in (
+                        "passed", "work-budget-exceeded", "output-budget-exceeded",
+                        "assertion-failed", "process-or-cleanup-error",
+                    ), "observer-record-order")
+                    observer_require(observer_integer(record["elapsed_ms"]))
+                    observer_require(record["returncode"] is None
+                                     or observer_integer(record["returncode"], -2147483648))
+                    captured = record["stdout"]
+                    if captured is not None:
+                        observer_require(type(captured) is dict and set(captured) == {"text_bytes", "sha256"})
+                        observer_require(observer_integer(captured["text_bytes"]) and observer_digest(captured["sha256"]))
+                        observer_require(captured["text_bytes"] != 0
+                                         or captured["sha256"] == hashlib.sha256(b"").hexdigest())
+                    if outcome == "passed":
+                        observer_require(record["returncode"] == 0 and captured is not None)
+                outcomes[role], started = outcome, None
+    return records, bool(records and records[-1]["phase"] == "complete")
+
+
+def observer_enclosure_records(data):
+    records = observer_json_lines(data, 8192, 8)
+    order = ("admitted", "armed", "body-left", "case-closed", "suite-exit")
+    position, last_ms = 0, None
+    for index, record in enumerate(records):
+        observer_require(type(record) is dict and type(record.get("phase")) is str)
+        phase = record["phase"]
+        event = "api106_approved_shell_enclosure"
+        if phase == "cleanup":
+            observer_envelope(record, event, ("owned_tree_and_control_released", "report_close_not_attested_by_this_record"))
+            observer_require(index == len(records) - 1, "observer-record-order")
+            observer_require(type(record["owned_tree_and_control_released"]) is bool
+                             and record["report_close_not_attested_by_this_record"] is True)
+            continue
+        observer_require(position < len(order) and phase == order[position], "observer-record-order")
+        position += 1
+        if phase == "admitted":
+            observer_envelope(record, event, ("binding_sha256", "sources", "python", "work_seconds",
+                                              "total_seconds", "cleanup_reserve_seconds"))
+            observer_require(observer_digest(record["binding_sha256"]) and observer_digest(record["python"])
+                             and observer_integer(record["sources"], 1))
+            for key, value in (("work_seconds", 48), ("total_seconds", 60), ("cleanup_reserve_seconds", 12)):
+                observer_require(type(record[key]) is int and record[key] == value)
+        elif phase == "suite-exit":
+            observer_envelope(record, event, ("exit_code", "tests_run", "tests_discovered", "inventory_complete"))
+            observer_require(type(record["exit_code"]) is int and record["exit_code"] in (0, 1)
+                             and observer_integer(record["tests_run"])
+                             and observer_integer(record["tests_discovered"], 1))
+            complete = record["tests_run"] == record["tests_discovered"]
+            observer_require(record["inventory_complete"] is complete
+                             and (record["exit_code"] != 0 or complete))
+        else:
+            observer_envelope(record, event, ("elapsed_ms", "known_live_discovery_members", "suite_job_retained"))
+            observer_require(observer_integer(record["elapsed_ms"]) and (
+                last_ms is None or record["elapsed_ms"] >= last_ms))
+            observer_require(type(record["known_live_discovery_members"]) is int
+                             and record["known_live_discovery_members"] == 1 and record["suite_job_retained"] is True)
+            last_ms = record["elapsed_ms"]
+    complete = bool(records and position == len(order) and records[-1]["phase"] == "cleanup")
+    return records, complete
+
+
+def observer_context(root):
+    for path in (root, *root.parents):
+        metadata = path.lstat()
+        observer_require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+                         and not getattr(metadata, "st_file_attributes", 0) & 0x400, "reparse-path")
+    metadata = root.lstat()
+    observer_require(type(metadata.st_ino) is int and metadata.st_ino > 0, "observer-workspace-identity")
+    context = [metadata.st_dev, metadata.st_ino]
+    actions = os.environ.get("GITHUB_ACTIONS")
+    observer_require(actions in (None, "false", "true"), "observer-job-context")
+    if actions == "true":
+        for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+            value = os.environ.get(key, "")
+            observer_require(re.fullmatch(r"[1-9][0-9]{0,19}", value) is not None, "observer-job-context")
+            context.append(value)
+        observer_require(os.environ.get("GITHUB_REPOSITORY") == "PenniLogic/api"
+                         and os.environ.get("GITHUB_REPOSITORY_ID") == "1394134582"
+                         and os.environ.get("GITHUB_REPOSITORY_OWNER_ID") == "335295566"
+                         and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+                         and os.environ.get("GITHUB_JOB") == "windows", "observer-job-context")
+        sha = os.environ.get("GITHUB_SHA", "")
+        observer_require(re.fullmatch(r"[0-9a-f]{40}", sha) is not None, "observer-job-context")
+        context.append(sha)
+    else:
+        observer_require(not any(key in os.environ for key in (
+            "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_REPOSITORY_ID",
+            "GITHUB_REPOSITORY_OWNER_ID", "GITHUB_JOB", "GITHUB_SHA",
+        )), "observer-job-context")
+        context.append("local-workspace-only")
+    return hashlib.sha256(json.dumps(context, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def observer_state_record(stream, root, fields):
+    opened = os.fstat(stream.fileno())
+    current = lookup_path_metadata(root, OBSERVER_STATE)
+    observer_require(os.path.samestat(opened, current) and opened.st_nlink == 1
+                     and opened.st_size == current.st_size == stream.tell(), "file-changed")
+    data = (json.dumps({"v": 1, **fields}, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+    observer_require(len(data) <= 512 and stream.tell() + len(data) <= 1024, "record-limit")
+    observer_require(stream.write(data) == len(data), "observer-state-short-write")
+    stream.flush()
+
+
+def observer_budget_module(root):
+    relative = Path("scripts/process_budget.py")
+    data = diagnostic_bytes(root, relative, OBSERVER_BUDGET_BYTES)
+    observer_require(len(data) == OBSERVER_BUDGET_BYTES and hashlib.sha256(data).hexdigest() == OBSERVER_BUDGET_SHA256,
+                     "observer-budget-source")
+    module = ModuleType("api106_qualification_budget")
+    module.__file__ = str(root / relative)
+    exec(compile(data, module.__file__, "exec"), module.__dict__)
+    return module
+
+
+def observer_runtime_path(value, *, directory):
+    observer_require(type(value) is str and value and re.search(r"[\x00-\x1f\x7f]", value) is None,
+                     "observer-runtime-path")
+    path = Path(value)
+    observer_require(path.is_absolute() and ".." not in path.parts, "observer-runtime-path")
+    for current in (path, *path.parents):
+        metadata = current.lstat()
+        observer_require(not stat.S_ISLNK(metadata.st_mode)
+                         and not getattr(metadata, "st_file_attributes", 0) & 0x400, "observer-runtime-path")
+        observer_require((stat.S_ISDIR if current != path or directory else stat.S_ISREG)(metadata.st_mode),
+                         "observer-runtime-path")
+    return path
+
+
+def observer_runtime_bytes(path, limit):
+    data = diagnostic_bytes(path.parent, Path(path.name), limit)
+    observer_require(len(data) <= limit, "observer-runtime-input-limit")
+    return data
+
+
+def observer_runtime_inputs(root, budget):
+    observer_require(os.environ.get("GITHUB_ACTIONS") == "true"
+                     and os.environ.get("PENNILOGIC_API106_MONEY") == "success"
+                     and os.environ.get("PENNILOGIC_API106_PREPARED") == "verified",
+                     "observer-same-job-preparation")
+    checkout = os.environ.get("PENNILOGIC_API106_CHECKOUT", "")
+    tree = os.environ.get("PENNILOGIC_API106_TREE", "")
+    observer_require(re.fullmatch(r"[0-9a-f]{40}", checkout) is not None
+                     and checkout == os.environ.get("GITHUB_SHA")
+                     and re.fullmatch(r"[0-9a-f]{40}", tree) is not None, "observer-checkout-binding")
+    observer_require(observer_runtime_path(os.environ.get("GITHUB_WORKSPACE"), directory=True) == root,
+                     "observer-checkout-binding")
+    metadata = observer_runtime_path(str(root / ".git"), directory=True)
+    observer_runtime_path(str(metadata / "objects"), directory=True)
+    for name, limit in (("HEAD", 1024), ("index", 4 * 1024 * 1024), ("config", 65536)):
+        expected = os.environ.get("PENNILOGIC_API106_" + name.upper() + "_SHA256", "")
+        observer_require(re.fullmatch(r"[0-9a-f]{64}", expected) is not None
+                         and hashlib.sha256(observer_runtime_bytes(metadata / name, limit)).hexdigest() == expected,
+                         "observer-git-state-changed")
+    python = observer_runtime_path(os.environ.get("PENNILOGIC_API106_PYTHON"), directory=False)
+    version = os.environ.get("PENNILOGIC_API106_PYTHON_VERSION", "")
+    observer_require(sys.implementation.name == "cpython" and sys.version_info[:2] == (3, 14)
+                     and version == ".".join(map(str, sys.version_info[:3]))
+                     and python.name.lower() == "python.exe" and python == Path(sys.executable)
+                     and python.parent == Path(sys.prefix) == Path(sys.base_prefix)
+                     and Path(budget.sys.executable) == python and Path(budget.sys.base_prefix) == python.parent,
+                     "observer-python-selection")
+    git = observer_runtime_path(os.environ.get("PENNILOGIC_API106_GIT"), directory=False)
+    expected = os.environ.get("PENNILOGIC_API106_GIT_SHA256", "")
+    observer_require(git.name.lower() == "git.exe" and re.fullmatch(r"[0-9a-f]{64}", expected) is not None
+                     and hashlib.sha256(observer_runtime_bytes(git, 32 * 1024 * 1024)).hexdigest() == expected,
+                     "observer-git-selection")
+    java = observer_runtime_path(os.environ.get("PENNILOGIC_API106_JAVA"), directory=True)
+    observer_require(java == observer_runtime_path(os.environ.get("JAVA_HOME"), directory=True)
+                     and "," not in str(java), "observer-java-selection")
+    for name in ("java.exe", "javac.exe"):
+        observer_runtime_path(str(java / "bin" / name), directory=False)
+    release = "\n".join(observer_runtime_bytes(java / "release", 16384).decode("utf-8").splitlines())
+    versions = re.findall(r'^JAVA_VERSION="(21(?:\.[0-9]+){1,3})(?:\+[0-9A-Za-z.-]+)?"$', release, re.MULTILINE)
+    selected = os.environ.get("PENNILOGIC_API106_JAVA_VERSION", "").split("+", 1)[0]
+    observer_require(len(versions) == 1 and versions[0] == selected
+                     and re.findall(r'^IMPLEMENTOR="([^"\r\n]+)"$', release, re.MULTILINE) == ["Eclipse Adoptium"],
+                     "observer-java-selection")
+    for relative in ("build/source-materialization", "build/contracts-money",
+                     "build/money-client-interop/inputs", "build/database-admission"):
+        observer_runtime_path(str(root / relative), directory=True)
+    for relative in (".gradle", ".kotlin", "git.exe", "python.exe", "java.exe"):
+        observer_require(not (root / relative).exists() and not (root / relative).is_symlink(),
+                         "observer-unadmitted-runtime-state")
+    temporary = observer_runtime_path(os.environ.get("PENNILOGIC_API106_TEMP"), directory=True)
+    observer_require(temporary == observer_runtime_path(os.environ.get("RUNNER_TEMP"), directory=True)
+                     and not temporary.is_relative_to(root), "observer-temporary-selection")
+    owned = temporary / ("api106-observer-" + observer_context(root))
+    owned.mkdir()
+    for name in ("home", "temp", "gradle"):
+        (owned / name).mkdir()
+    # Select the setup-java JDK, without admitting user init scripts or another toolchain.
+    java_property = str(java).replace("\\", "\\\\")
+    with (owned / "gradle" / "gradle.properties").open("x", encoding="utf-8", newline="\n") as stream:
+        stream.write("org.gradle.java.installations.auto-detect=false\n"
+                     "org.gradle.java.installations.auto-download=false\n"
+                     "org.gradle.java.installations.paths=" + java_property + "\n")
+    supplied = {
+        "HOME": str(owned / "home"), "USERPROFILE": str(owned / "home"),
+        "TEMP": str(owned / "temp"), "TMP": str(owned / "temp"), "TMPDIR": str(owned / "temp"),
+        "JAVA_HOME": str(java), "GRADLE_USER_HOME": str(owned / "gradle"),
+        "CI": "true", "GITHUB_ACTIONS": "true",
+    }
+    return supplied, [git.parent]
+
+
+def observer_secondary_failure(primary, code):
+    primary.add_note("Observer secondary failure: " + code)
+    try:
+        print(json.dumps({"event": "windows_observer_secondary_failure", "diagnostic_only": True,
+                          "code": code}, sort_keys=True), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        primary.add_note("Observer secondary failure reporting also failed")
+
+
+def observer_result_failure(result, secondary):
+    if result is not None and result.returncode != 0:
+        return _ObserverResultRefused(result, secondary)
+    return secondary
+
+
+def observer_owning_command(root):
+    observer_require(type(OBSERVER_COMMAND_SECONDS) is int and OBSERVER_COMMAND_SECONDS == 270
+                     and type(OBSERVER_CLOSED_SECONDS) is int and OBSERVER_CLOSED_SECONDS == 300,
+                     "observer-whole-command-budget-unapproved")
+    context = observer_context(root)
+    for relative in (OBSERVER_STATE, *(path for path, _ in OBSERVER_FILES.values())):
+        try:
+            lookup_path_metadata(root, relative)
+        except FileNotFoundError:
+            continue
+        raise Refused("observer-preexisting-diagnostic")
+    budget = observer_budget_module(root)
+    supplied, directories = observer_runtime_inputs(root, budget)
+    started = time.monotonic_ns()
+    returned = False
+    try:
+        result = observer_run_and_settle(root, budget, supplied, directories, context)
+        returned = True
+        return result
+    finally:
+        elapsed = time.monotonic_ns() - started
+        within = type(elapsed) is int and 0 <= elapsed < OBSERVER_CLOSED_SECONDS * 1_000_000_000
+        primary = None if returned else sys.exception()
+        late = None
+        if not within:
+            if primary is not None:
+                observer_secondary_failure(primary, "closed-command-budget-exceeded")
+            else:
+                late = observer_result_failure(result, Refused("observer-closed-command-budget-exceeded"))
+                if result.returncode != 0:
+                    observer_secondary_failure(late, "closed-command-budget-exceeded")
+        try:
+            print(json.dumps({"event": "windows_observer_owning_interval", "diagnostic_only": True,
+                              "elapsed_ns": elapsed, "limit_seconds": OBSERVER_CLOSED_SECONDS,
+                              "within_limit": within}, sort_keys=True), flush=True)
+        except (OSError, ValueError) as error:
+            if primary is not None:
+                primary.add_note("Closed observer interval reporting also failed")
+                observer_secondary_failure(primary, "interval-report-unavailable")
+            else:
+                if late is None:
+                    late = observer_result_failure(result, error)
+                observer_secondary_failure(late, "interval-report-unavailable")
+        if late is not None:
+            raise late
+
+
+def observer_run_and_settle(root, budget, supplied, directories, context):
+    environment = budget.environment(supplied=supplied, runtime_dirs=directories)
+    for name, expected in (("python", Path(sys.executable)), ("git", directories[0] / "git.exe"),
+                           ("java", Path(supplied["JAVA_HOME"]) / "bin" / "java.exe")):
+        observer_require(Path(budget.resolve_command([name], environment)[0]) == expected,
+                         "observer-runtime-shadowed")
+    system = Path(environment["COMSPEC"]).parent
+    observer_runtime_path(str(system / "cmd.exe"), directory=False)
+    observer_runtime_path(str(system / "WindowsPowerShell" / "v1.0" / "powershell.exe"), directory=False)
+    command = [sys.executable, str(root / "scripts/quality.py"), "test", "--require-prepared", "--api106-observer-pair"]
+    (root / OBSERVER_STATE).parent.mkdir(parents=True, exist_ok=True)
+    completed = None
+    with ExitStack() as resources:
+        state = (root / OBSERVER_STATE).open("xb", buffering=0)
+
+        def close_state(error_type, primary, traceback):
+            try:
+                state.close()
+            except OSError as error:
+                if primary is None:
+                    failure = observer_result_failure(completed, error)
+                    observer_secondary_failure(failure, "state-close-unconfirmed")
+                    raise failure
+                observer_secondary_failure(primary, "state-close-unconfirmed")
+
+        resources.push(close_state)
+        observer_state_record(state, root, {"phase": "prepared", "context_sha256": context, "all_six_absent": True})
+        try:
+            result = budget.run(command, root, OBSERVER_COMMAND_SECONDS, capture=True, separate=True,
+                                env=environment)
+        except budget.BudgetExceeded as error:
+            reason = "output-budget-exceeded" if isinstance(error, budget.OutputExceeded) else "work-budget-exceeded"
+            primary = Refused("observer-owning-" + reason)
+            diagnostic = {"event": "windows_observer_owning_failure", "diagnostic_only": True, "code": reason,
+                          "job": dict(PROCESS_BUDGET_JOB_UNAVAILABLE), "state": dict(PROCESS_BUDGET_UNAVAILABLE),
+                          "capture": process_budget_capture_note(
+                              budget.capture_observation(error.streams, separate=True).encode("ascii"))}
+            notes = getattr(error, "__notes__", [])
+            if (type(notes) is list and len(notes) == 3
+                    and all(type(note) is str and note.isascii() and len(note) <= 1024 for note in notes)):
+                diagnostic["job"] = process_budget_job_note(notes[1].encode("ascii"))
+                diagnostic["state"] = process_budget_note(notes[2].encode("ascii"))
+            try:
+                print(json.dumps(diagnostic, sort_keys=True), flush=True)
+            except (OSError, ValueError):
+                observer_secondary_failure(primary, "owning-failure-report-unavailable")
+            try:
+                observer_state_record(state, root, {"phase": "settled", "status": reason, "returncode": None})
+            except (OSError, Refused):
+                observer_secondary_failure(primary, "state-finalization")
+            raise primary from error
+        except OSError as error:
+            try:
+                print('{"event":"windows_observer_owning_failure","diagnostic_only":true,'
+                      '"code":"process-or-cleanup-error","owner_release":"unconfirmed"}', flush=True)
+            except (OSError, ValueError):
+                observer_secondary_failure(error, "owning-failure-report-unavailable")
+            raise
+        observer_require(observer_integer(result.returncode, -2147483648)
+                         and type(result.stdout) is bytes and type(result.stderr) is bytes, "observer-command-result")
+        completed, failure = result, None
+        try:
+            print(json.dumps({"event": "windows_owning_suite_command", "exit_code": result.returncode}, sort_keys=True), flush=True)
+        except (OSError, ValueError) as error:
+            failure = observer_result_failure(result, error)
+            observer_secondary_failure(failure, "owning-command-report-unavailable")
+        try:
+            observer_state_record(state, root, {"phase": "settled", "status": "exited", "returncode": result.returncode})
+        except (OSError, Refused) as error:
+            if failure is None:
+                failure = observer_result_failure(result, error)
+            observer_secondary_failure(failure, "state-finalization")
+        if failure is not None:
+            raise failure
+        return result
+
+
+def observer_boundary(data):
+    observer_require(len(data) <= 7, "file-limit")
+    observer_require(re.fullmatch(rb"(?:|E|EU|EUX|ES[01]{3}C?X?)", data) is not None, "boundary-shape")
+    flags = re.fullmatch(rb"ES([01])([01])([01])C?X?", data)
+    return {
+        "checkpoint": ("none-observed" if not data else "after-write-output" if data.endswith(b"X")
+                       else "command-entry" if data == b"E" else "before-write-output"),
+        "console_redirected": (dict(zip(("stdin", "stdout", "stderr"),
+                                       (value == b"1" for value in flags.groups()), strict=True)) if flags else None),
+        "pre_record_writer_return": "observed" if b"C" in data else "not-observed",
+    }
+
+
+def collect_observer_diagnostics(root):
+    base = {"event": "windows_observer_pair_diagnostic", "diagnostic_only": True, "acceptance": False}
+    try:
+        state = observer_json_lines(diagnostic_bytes(root, OBSERVER_STATE, 1024), 1024, 2)
+        observer_require(lookup_path_metadata(root, OBSERVER_STATE).st_nlink == 1, "nonregular-path")
+        observer_require(len(state) == 2, "observer-owner-not-settled")
+        prepared, settled = state
+        observer_require(prepared == {"v": 1, "phase": "prepared", "context_sha256": observer_context(root),
+                                      "all_six_absent": True}, "observer-freshness-unavailable")
+        observer_require(type(prepared["v"]) is int and prepared["all_six_absent"] is True
+                         and type(settled) is dict and set(settled) == {
+            "v", "phase", "status", "returncode",
+        })
+        observer_require(type(settled["v"]) is int and settled["v"] == 1 and settled["phase"] == "settled")
+        observer_require((settled["status"] == "exited" and observer_integer(settled["returncode"], -2147483648))
+                         or (settled["status"] in ("work-budget-exceeded", "output-budget-exceeded")
+                             and settled["returncode"] is None))
+    except (OSError, Refused) as error:
+        code = str(error) if isinstance(error, Refused) else "observer-state-unavailable"
+        print(json.dumps({**base, "carrier": "collection", "status": "refused", "code": code}, sort_keys=True), flush=True)
+        return 2
+    base["owning_command"] = {"status": settled["status"], "returncode": settled["returncode"]}
+    refused = False
+    for carrier, (relative, limit) in OBSERVER_FILES.items():
+        record = {**base, "carrier": carrier, "carrier_complete": False}
+        try:
+            observer_require(observer_context(root) == prepared["context_sha256"], "observer-freshness-unavailable")
+            data = diagnostic_bytes(root, relative, limit)
+            observer_require(len(data) <= limit, "file-limit")
+            metadata = lookup_path_metadata(root, relative)
+            observer_require(metadata.st_nlink == 1, "nonregular-path")
+            observer_require(observer_context(root) == prepared["context_sha256"], "observer-freshness-unavailable")
+            if carrier.endswith("-boundary"):
+                record.update(observation=observer_boundary(data), carrier_complete=True)
+            elif carrier.endswith("-lookup"):
+                records = lookup_records(data)
+                complete = bool(records and records[-1]["phase"] == "post")
+                if carrier == "auxiliary-lookup":
+                    observer_require(len(records) <= 1, "observer-auxiliary-records")
+                record.update(records=lookup_projection(records), capsule_complete=complete,
+                              carrier_complete=bool(records) if carrier == "auxiliary-lookup" else complete)
+            else:
+                parser = observer_pair_records if carrier == "pair" else observer_enclosure_records
+                records, complete = parser(data)
+                record.update(records=records, carrier_complete=complete)
+            record["status"] = "observed" if record["carrier_complete"] else "partial"
+        except FileNotFoundError:
+            record.update(status="unavailable", code="not-observed")
+        except Refused as error:
+            record.update(status="refused", code=str(error))
+        except OSError:
+            record.update(status="unavailable", code="read-error")
+        encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        if len(encoded.encode("ascii")) + len(os.linesep) > DIAGNOSTIC_BYTE_LIMIT:
+            record = {**base, "carrier": carrier, "carrier_complete": False,
+                      "status": "refused", "code": "projection-limit"}
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        refused |= record["status"] != "observed"
+        print(encoded, flush=True)
+    return 2 if refused else 0
+
+
+def observer_failed_result_outcomes(root, primary):
+    result = primary.result
+    try:
+        records = qualification_python_outcomes(root, result, result.stdout, result.stderr)
+        for record in records:
+            print(json.dumps(record, sort_keys=True))
+    except _PythonOutcomeRefused:
+        observer_secondary_failure(primary, "captured-python-outcomes-incomplete")
+    except (OSError, ValueError):
+        observer_secondary_failure(primary, "captured-python-outcome-report-unavailable")
+
+
+def qualify(root, require_prepared=False, api106_observer_pair=False):
+    if api106_observer_pair and not require_prepared:
+        raise Refused("observer-pair-requires-prepared")
     if (root / JUNIT).exists() or (root / JUNIT).is_symlink():
         raise Refused("preexisting-ordinary-junit-results")
     before = lookup_before(root)
     arguments = ["--require-prepared"] if require_prepared else []
-    print("+ python scripts\\quality.py test" + (" --require-prepared" if require_prepared else ""), flush=True)
+    print("+ python scripts\\quality.py test" + (" --require-prepared" if require_prepared else "")
+          + (" --api106-observer-pair" if api106_observer_pair else ""), flush=True)
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         try:
-            result = subprocess.run(
-                [sys.executable, str(root / "scripts" / "quality.py"), "test", *arguments],
-                cwd=root, stdout=stdout, stderr=stderr, check=False,
-            )
+            if api106_observer_pair:
+                try:
+                    result = observer_owning_command(root)
+                except _ObserverResultRefused as error:
+                    observer_failed_result_outcomes(root, error)
+                    raise
+                stdout.write(result.stdout)
+                stderr.write(result.stderr)
+            else:
+                result = subprocess.run(
+                    [sys.executable, str(root / "scripts" / "quality.py"), "test", *arguments],
+                    cwd=root, stdout=stdout, stderr=stderr, check=False,
+                )
             stdout.seek(0)
             stderr.seek(0)
-            print(json.dumps({"event": "windows_owning_suite_command", "exit_code": result.returncode}, sort_keys=True))
+            if not api106_observer_pair:
+                print(json.dumps({"event": "windows_owning_suite_command", "exit_code": result.returncode}, sort_keys=True))
         finally:
-            print(lookup_diagnostic_json(root, before), flush=True)
+            if not api106_observer_pair:
+                print(lookup_diagnostic_json(root, before), flush=True)
         output = stdout.read()
         errors = stderr.read()
-        try:
-            records = python_outcomes(errors)
-        except _PythonOutcomeRefused as error:
-            print(python_diagnostic_json({
-                "event": "windows_qualification_diagnostic", "diagnostic_only": True,
-                "inventory_complete": False, "exit_code": result.returncode,
-                "stdout": {"bytes": len(output), "sha256": hashlib.sha256(output).hexdigest()},
-                "stderr": {"bytes": len(errors), "sha256": hashlib.sha256(errors).hexdigest()},
-                "parser": {**error.diagnostic,
-                           "negative_prefix": python_error_diagnostics(root, errors, error.diagnostic)},
-            }), flush=True)
-            raise
+        records = qualification_python_outcomes(root, result, output, errors)
     for record in records:
         print(json.dumps(record, sort_keys=True))
     test_tasks = [line for line in output.splitlines() if re.fullmatch(rb"> Task :test(?: .*)?", line)]
@@ -815,11 +1387,21 @@ def qualify(root, require_prepared=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-prepared", action="store_true", help="Require existing verified interop inputs; never acquire")
+    observer = parser.add_mutually_exclusive_group()
+    observer.add_argument("--api106-observer-pair", action="store_true", help="Explicit diagnostic owning-suite route")
+    observer.add_argument("--collect-api106-observer-pair", action="store_true", help="Read only the settled fixed diagnostic files")
     args = parser.parse_args(argv)
     try:
         if sys.platform != "win32":
             raise Refused("windows-owning-suites-require-windows")
-        qualify(ROOT, require_prepared=args.require_prepared)
+        if args.collect_api106_observer_pair:
+            if args.require_prepared:
+                parser.error("collection does not accept --require-prepared")
+            return collect_observer_diagnostics(ROOT)
+        if args.api106_observer_pair:
+            qualify(ROOT, require_prepared=args.require_prepared, api106_observer_pair=True)
+        else:
+            qualify(ROOT, require_prepared=args.require_prepared)
         return 0
     except Refused as error:
         print(json.dumps({"event": "windows_qualification_refused", "code": str(error)}), file=sys.stderr)

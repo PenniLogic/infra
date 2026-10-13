@@ -30,6 +30,25 @@ COMMANDS = (
     "python -I -S -B scripts/prepare_database_admission.py prepare --fetch --native-fetch",
     "python -I -S -B scripts/money_client_interop.py prepare --native-fetch",
 )
+OBSERVER_CONDITION = "github.event_name == 'workflow_dispatch' && inputs.api106_observer_pair == true"
+OBSERVER_COMMAND = (
+    "if ($env:PENNILOGIC_API106_OBSERVER_PAIR -ceq 'true') { "
+    "python scripts\\qualify_windows.py --require-prepared --api106-observer-pair"
+    " } elseif ($env:PENNILOGIC_API106_OBSERVER_PAIR -ceq 'false') { "
+    "python scripts\\qualify_windows.py --require-prepared"
+    " } else { throw 'API106 observer selection must be a Boolean' }"
+)
+OBSERVER_RUNTIME_ENV = {
+    "PENNILOGIC_API106_GIT": "${{ steps.api106_git.outputs.path }}",
+    "PENNILOGIC_API106_GIT_SHA256": "${{ steps.api106_git.outputs.sha256 }}",
+    "PENNILOGIC_API106_CHECKOUT": "${{ steps.api106_checkout.outputs.commit }}",
+    "PENNILOGIC_API106_PYTHON": "${{ steps.api106_python.outputs.python-path }}",
+    "PENNILOGIC_API106_PYTHON_VERSION": "${{ steps.api106_python.outputs.python-version }}",
+    "PENNILOGIC_API106_JAVA": "${{ steps.api106_java.outputs.path }}",
+    "PENNILOGIC_API106_JAVA_VERSION": "${{ steps.api106_java.outputs.version }}",
+    "PENNILOGIC_API106_MONEY": "${{ steps.api106_money.outcome }}",
+    "PENNILOGIC_API106_TEMP": "${{ runner.temp }}",
+}
 
 
 def native_environment():
@@ -54,14 +73,70 @@ def native_step(windows=False, phase=0):
 
 
 def native_owning_script(workflow, windows=False):
-    steps = json.loads(workflow)["jobs"]["windows" if windows else "ci"]["steps"]
+    value = json.loads(workflow)
+    if windows:
+        value = remove_observer_runtime(unittest.TestCase(), value)
+    steps = value["jobs"]["windows" if windows else "ci"]["steps"]
     name = "Run Windows owning suites" if windows else "Run checks"
     owning = next(index for index, step in enumerate(steps) if step.get("name") == name)
     return "\n".join(steps[index]["run"] for index in (owning - 4, owning - 2, owning))
 
 
+def remove_observer_runtime(case, value):
+    steps = value["jobs"]["windows"]["steps"]
+    selection = steps.pop(0)
+    case.assertEqual({
+        "name": "Bind API106 checkout Git", "id": "api106_git",
+        "if": "${{ " + OBSERVER_CONDITION + " }}", "shell": "pwsh",
+    }, {key: item for key, item in selection.items() if key != "run"})
+    case.assertEqual("b086888144904494af86ae21311caa6aa71043f03dec71ad38159a219241c7ef",
+                     hashlib.sha256(selection["run"].encode("ascii")).hexdigest())
+    for name, identity in (("Checkout", "checkout"), ("Python", "python"), ("JDK", "java"),
+                           (PROVIDER_STEP, "money")):
+        step, = [step for step in steps if step["name"] == name]
+        case.assertEqual("api106_" + identity, step.pop("id"))
+    owning, = [step for step in steps if step["name"] == "Run Windows owning suites"]
+    for key, expected in OBSERVER_RUNTIME_ENV.items():
+        case.assertEqual(expected, owning["env"].pop(key))
+    command = support.generator.api_observer_command()
+    case.assertEqual("b8b8819e005066e07fb1616bee02a856969e252b3ca47b4296b4c02f00710a09",
+                     hashlib.sha256(command.encode("ascii")).hexdigest())
+    case.assertEqual(1, owning["run"].count(command))
+    owning["run"] = owning["run"].replace(command, OBSERVER_COMMAND, 1)
+    return value
+
+
+def remove_observer_pair(case, value):
+    value = remove_observer_runtime(case, value)
+    case.assertEqual({"inputs": {"api106_observer_pair": {
+        "description": "Opt in to the diagnostic observer pair; owning failures still fail CI",
+        "type": "boolean", "required": False, "default": False,
+    }}}, value["on"]["workflow_dispatch"])
+    value["on"]["workflow_dispatch"] = {}
+    steps = value["jobs"]["windows"]["steps"]
+    collection = steps.pop(-2)
+    case.assertEqual({
+        "name": "Read API106 observer-pair diagnostics",
+        "if": "${{ always() && " + OBSERVER_CONDITION + " }}",
+        "shell": "pwsh", "working-directory": "${{ github.workspace }}", "timeout-minutes": 1,
+        "run": script(["python scripts\\qualify_windows.py --collect-api106-observer-pair"], windows=True),
+    }, collection)
+    case.assertEqual("${{ always() && !(" + OBSERVER_CONDITION + ") }}", steps[-1]["if"])
+    steps[-1]["if"] = "always()"
+    owning = steps[-2]
+    case.assertEqual("Run Windows owning suites", owning["name"])
+    case.assertEqual({"PENNILOGIC_API106_OBSERVER_PAIR": "${{ " + OBSERVER_CONDITION + " }}"}, owning.pop("env"))
+    case.assertEqual(1, owning["run"].count(OBSERVER_COMMAND))
+    owning["run"] = owning["run"].replace(OBSERVER_COMMAND, "python scripts\\qualify_windows.py --require-prepared", 1)
+    return value
+
+
 def remove_native_steps(case, workflow, jobs=("ci", "windows")):
     value = json.loads(workflow)
+    windows = copy.deepcopy(value["jobs"]["windows"])
+    remove_observer_pair(case, value)
+    if "windows" not in jobs:
+        value["jobs"]["windows"] = windows
     for job in jobs:
         steps = value["jobs"][job]["steps"]
         windows = job == "windows"
@@ -127,10 +202,13 @@ class NativeWorkflowTests(unittest.TestCase):
         self.assertIn("money_client_interop.py prepare --require-prepared", windows)
         self.assertIn("qualify_windows.py --require-prepared", windows)
         self.assertNotIn("--fetch", windows)
+        owning = next(index for index, step in enumerate(windows_steps) if step["name"] == "Run Windows owning suites")
         self.assertEqual(12, sum(
             step.get("run", "").splitlines().count("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }")
-            for step in windows_steps
+            for step in windows_steps[:owning + 1]
         ))
+        self.assertEqual(1, sum(step.get("run", "").splitlines().count("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }")
+                                for step in windows_steps[owning + 1:]))
 
     def test_native_step_drift_is_refused_without_widening_the_expression_allowlist(self):
         checker = {"__name__": "native_source_checker", "__file__": str(support.GOVERNANCE.parent / "scripts/check_repository.py")}
@@ -166,7 +244,7 @@ class NativeWorkflowTests(unittest.TestCase):
             support.assert_powershell_failure_boundaries(self, native_step(windows=True, phase=phase)["run"], count)
 
     def test_complete_windows_native_order_retains_all_twelve_fail_fast_boundaries(self):
-        steps = json.loads(support.generator.workflow("api"))["jobs"]["windows"]["steps"]
+        steps = remove_observer_runtime(self, json.loads(support.generator.workflow("api")))["jobs"]["windows"]["steps"]
         owning = next(index for index, step in enumerate(steps) if step.get("name") == "Run Windows owning suites")
         steps = steps[owning - 4:owning + 1]
         combined = "\n".join(step["run"] for step in steps)
@@ -175,11 +253,11 @@ class NativeWorkflowTests(unittest.TestCase):
             profile[0], COMMANDS[0], profile[1] + " --verify-inputs", *profile[2:5],
             *COMMANDS[1:], profile[5].removesuffix(" --fetch"), profile[6],
             "python -I -S -B scripts/money_client_interop.py prepare --require-prepared",
-            "python scripts/qualify_windows.py --require-prepared",
+            OBSERVER_COMMAND,
         ]
         self.assertEqual([command.replace("/", "\\") for command in expected], combined.splitlines()[::2])
         self.assertEqual(["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"] * 12, combined.splitlines()[1::2])
-        support.assert_powershell_failure_boundaries(self, combined, 12)
+        support.assert_powershell_failure_boundaries(self, "$env:PENNILOGIC_API106_OBSERVER_PAIR = 'false'\n" + combined, 12)
 
 
 class NativeTransportTests(unittest.TestCase):

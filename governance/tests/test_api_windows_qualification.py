@@ -20,7 +20,10 @@ import xml.etree.ElementTree as ET
 import conformance_support as support
 from conformance import generator as generator_module, registry as registry_module
 import qualify as infra_qualification
-from test_api_native_source_fetch import native_owning_script, remove_native_steps
+from test_api_native_source_fetch import (
+    OBSERVER_COMMAND, OBSERVER_CONDITION, OBSERVER_RUNTIME_ENV, native_owning_script, remove_native_steps,
+    remove_observer_pair, remove_observer_runtime,
+)
 from test_baseline import CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND
 
 
@@ -51,7 +54,7 @@ def without_absent_lookup(test, records):
 
 class ApiWindowsWorkflowTests(unittest.TestCase):
     def test_optional_shell_readback_preserves_the_complete_accepted_workflow(self):
-        workflow = json.loads(generator.workflow("api"))
+        workflow = remove_observer_pair(self, json.loads(generator.workflow("api")))
         steps = workflow["jobs"]["windows"]["steps"]
         name = "Read approved-shell command boundary"
         self.assertEqual(1, sum(step.get("name") == name for step in steps))
@@ -100,8 +103,8 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         artifacts = generator.artifacts("api")
         self.assertEqual(25, len(artifacts))
         self.assertFalse(any("read_approved_shell_boundary" in path for path in artifacts))
-        self.assertEqual("0a073083148e670081eee72612fd9853a1a78100c2a50129ce89a2da9adfe1b3",
-                         hashlib.sha256(artifacts["scripts/qualify_windows.py"].encode("utf-8")).hexdigest())
+        self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(),
+                         artifacts["scripts/qualify_windows.py"].encode("utf-8"))
 
     def test_optional_shell_readback_drift_is_refused_without_policy_widening(self):
         original = json.loads(generator.workflow("api"))
@@ -126,7 +129,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             ("step-cap", lambda job: job["steps"][-1].update({"timeout-minutes": 2})),
             ("job-cap", lambda job: job.update({"timeout-minutes": 31})),
             ("collector-soft-failure", lambda job: job["steps"][-1].update({"continue-on-error": True})),
-            ("owner-soft-failure", lambda job: job["steps"][-2].update({"continue-on-error": True})),
+            ("owner-soft-failure", lambda job: job["steps"][-3].update({"continue-on-error": True})),
             ("reader", lambda job: job["steps"][-1].update(run="exit 0")),
             ("read-bound", lambda job: job["steps"][-1].update(
                 run=job["steps"][-1]["run"].replace("[byte[]]::new(8)", "[byte[]]::new(4096)"))),
@@ -208,7 +211,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         self.assertEqual(list(sources), reads)
 
     def test_parallel_owning_suites_and_always_running_required_native_result(self):
-        workflow = json.loads(generator.workflow("api"))
+        workflow = remove_observer_runtime(self, json.loads(generator.workflow("api")))
         jobs = workflow["jobs"]
         self.assertEqual({"ci", "windows", "ci-result"}, set(jobs))
         self.assertEqual("Linux qualification", jobs["ci"]["name"])
@@ -222,7 +225,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         preparation[5] = preparation[5].removesuffix(" --fetch")
         self.assertEqual([command.replace("/", "\\") for command in preparation]
                          + [INPUT_PREPARATION + " --require-prepared",
-                            "python scripts\\qualify_windows.py --require-prepared"],
+                            OBSERVER_COMMAND],
                          windows.splitlines()[::2])
         self.assertEqual(["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"] * 9, windows.splitlines()[1::2])
         self.assertNotIn("--node", windows)
@@ -251,7 +254,8 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             lambda value: value["jobs"]["windows"].update({"runs-on": "windows-latest"}),
             lambda value: next(step for step in value["jobs"]["windows"]["steps"]
                                if step["name"] == "Run Windows owning suites").update(run="echo skipped"),
-            lambda value: value["jobs"]["windows"]["steps"][0].update(uses="actions/checkout@" + "a" * 40),
+            lambda value: next(step for step in value["jobs"]["windows"]["steps"]
+                               if step["name"] == "Checkout").update(uses="actions/checkout@" + "a" * 40),
             lambda value: value.update(permissions={"contents": "write"}),
             lambda value: value["jobs"]["ci"]["steps"][-1].pop("env"),
         )
@@ -291,12 +295,40 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
 
     def test_windows_powershell_stops_at_each_failed_native_command(self):
         source = native_owning_script(generator.workflow("api"), windows=True)
-        support.assert_powershell_failure_boundaries(self, source, 9)
+        support.assert_powershell_failure_boundaries(self, "$env:PENNILOGIC_API106_OBSERVER_PAIR = 'false'\n" + source, 9)
+
+    def test_observer_pair_is_typed_explicit_and_preserves_every_default_workflow_byte(self):
+        current = json.loads(generator.workflow("api"))
+        without = remove_observer_pair(self, copy.deepcopy(current))
+        self.assertEqual("51bf74f97dbb427e68c4db320ebd69bf9daadcc116c9ca628fcbd33f2349fceb",
+                         hashlib.sha256(generator.encoded(without).encode("utf-8")).hexdigest())
+        for repo in generator.PROFILES["repositories"]:
+            for setup in (False, True):
+                if repo != "api" or setup:
+                    self.assertNotIn("api106_observer_pair", generator.workflow(repo, setup=setup))
+        validate = api_checker()
+        mutations = (
+            lambda value: value["on"]["workflow_dispatch"]["inputs"]["api106_observer_pair"].update(type="string"),
+            lambda value: value["on"]["workflow_dispatch"]["inputs"]["api106_observer_pair"].update(default=True),
+            lambda value: value["jobs"]["windows"]["steps"][-3].pop("env"),
+            lambda value: value["jobs"]["windows"]["steps"][-3]["env"].update(PENNILOGIC_API106_OBSERVER_PAIR="true"),
+            lambda value: value["jobs"]["windows"]["steps"][-2].pop("if"),
+            lambda value: value["jobs"]["windows"]["steps"][-2].update({"if": "${{ " + OBSERVER_CONDITION + " }}"}),
+            lambda value: value["jobs"]["windows"]["steps"][-2].update({"continue-on-error": True}),
+            lambda value: value["jobs"]["windows"]["steps"][-2].update({"timeout-minutes": 2}),
+            lambda value: value["jobs"]["windows"]["steps"][-1].update({"if": "always()"}),
+        )
+        for mutation in mutations:
+            changed = copy.deepcopy(current)
+            mutation(changed)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, "API CI must match"):
+                validate(CI, generator.encoded(changed).encode("utf-8"))
 
     def test_input_preparation_omission_stub_reordering_and_missing_guard_are_refused(self):
         validate = api_checker()
         original = json.loads(generator.workflow("api"))
-        owning = next(step for step in original["jobs"]["windows"]["steps"]
+        projected = remove_observer_runtime(self, copy.deepcopy(original))
+        owning = next(step for step in projected["jobs"]["windows"]["steps"]
                       if step["name"] == "Run Windows owning suites")
         commands = owning["run"].splitlines()[::2]
         self.assertEqual(INPUT_PREPARATION + " --require-prepared", commands[-2])
@@ -373,11 +405,16 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             support.git(support.GOVERNANCE.parent, "show", f"{historical_source}:governance/templates/qualify_windows.py"),
             support.git(support.GOVERNANCE.parent, "show", f"{historical_accepted}:governance/templates/qualify_windows.py"),
         )
-        current_digest = "0a073083148e670081eee72612fd9853a1a78100c2a50129ce89a2da9adfe1b3"
+        accepted_digest = "0a073083148e670081eee72612fd9853a1a78100c2a50129ce89a2da9adfe1b3"
+        accepted_template = subprocess.run(
+            ["git", "--no-pager", "show",
+             "0f5f7b7ce4baa8206add295ce0adee03292a5b20:governance/templates/qualify_windows.py"],
+            cwd=support.GOVERNANCE.parent, capture_output=True, check=True, timeout=30,
+        ).stdout
+        self.assertEqual(accepted_digest, hashlib.sha256(accepted_template).hexdigest())
         current_template = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
         current_generated = generator.artifacts("api")["scripts/qualify_windows.py"].encode("utf-8")
-        self.assertEqual(current_digest, hashlib.sha256(current_template).hexdigest())
-        self.assertEqual(current_digest, hashlib.sha256(current_generated).hexdigest())
+        self.assertEqual(current_template, current_generated)
 
 
 class WindowsShellBoundaryReaderTests(unittest.TestCase):
@@ -983,6 +1020,1272 @@ class WindowsOutcomeTests(unittest.TestCase):
             self.assertEqual(1, qualification.main([]))
             child.assert_not_called()
         self.assertEqual("windows-owning-suites-require-windows", json.loads(stderr.getvalue())["code"])
+
+
+class WindowsObserverPairDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        environment = mock.patch.dict(qualification.os.environ, {}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.runtime_inputs = qualification.observer_runtime_inputs
+        inputs = mock.patch.object(qualification, "observer_runtime_inputs",
+                                   return_value=({"CI": "true", "JAVA_HOME": "synthetic-jdk"},
+                                                 [Path("synthetic-git-directory")]))
+        self.runtime_selection = inputs.start()
+        self.addCleanup(inputs.stop)
+
+    def encode(self, records):
+        return b"".join(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
+                        for record in records)
+
+    def pair(self):
+        envelope = {"event": "api106_approved_shell_observer_pair", "v": 1, "diagnostic_only": True}
+        return [{**envelope, **fields} for fields in (
+            {"phase": "begin", "order": "required-then-auxiliary", "enclosing_seconds": 60,
+             "cleanup_reserve_seconds": 12, "arm_work_seconds": 10, "arm_cleanup_seconds": 10},
+            {"phase": "started", "role": "required"},
+            {"phase": "arm", "role": "required", "outcome": "work-budget-exceeded", "elapsed_ms": 10001,
+             "returncode": None, "stdout": None},
+            {"phase": "started", "role": "auxiliary-no-lookup-delegates"},
+            {"phase": "arm", "role": "auxiliary-no-lookup-delegates", "outcome": "passed", "elapsed_ms": 123,
+             "returncode": 0, "stdout": {"text_bytes": 15, "sha256": "a" * 64}},
+            {"phase": "complete", "required": "work-budget-exceeded", "auxiliary": "passed", "acceptance": False},
+        )]
+
+    def enclosure(self):
+        envelope = {"event": "api106_approved_shell_enclosure", "v": 1, "diagnostic_only": True}
+        return [{**envelope, **fields} for fields in (
+            {"phase": "admitted", "binding_sha256": "b" * 64, "sources": 51, "python": "c" * 64,
+             "work_seconds": 48, "total_seconds": 60, "cleanup_reserve_seconds": 12},
+            {"phase": "armed", "elapsed_ms": 1, "known_live_discovery_members": 1, "suite_job_retained": True},
+            {"phase": "body-left", "elapsed_ms": 10126, "known_live_discovery_members": 1, "suite_job_retained": True},
+            {"phase": "case-closed", "elapsed_ms": 10128, "known_live_discovery_members": 1, "suite_job_retained": True},
+            {"phase": "suite-exit", "exit_code": 1, "tests_run": 541, "tests_discovered": 541, "inventory_complete": True},
+            {"phase": "cleanup", "owned_tree_and_control_released": True, "report_close_not_attested_by_this_record": True},
+        )]
+
+    def write(self, root, relative, data):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def custody(self, root, *, settle=True, returncode=1):
+        records = [{"v": 1, "phase": "prepared", "context_sha256": qualification.observer_context(root),
+                    "all_six_absent": True}]
+        if settle:
+            records.append({"v": 1, "phase": "settled", "status": "exited", "returncode": returncode})
+        return self.write(root, qualification.OBSERVER_STATE, self.encode(records))
+
+    def carriers(self, root):
+        lookup = WindowsShellLookupDiagnosticTests()
+        data = {
+            "required-boundary": b"ES111C",
+            "required-lookup": lookup.encode(lookup.v2_records()),
+            "pair": self.encode(self.pair()),
+            "enclosure": self.encode(self.enclosure()),
+            "auxiliary-boundary": b"ES111X",
+            "auxiliary-lookup": lookup.encode(lookup.v2_records()[:1]),
+        }
+        for name, (relative, _) in qualification.OBSERVER_FILES.items():
+            self.write(root, relative, data[name])
+
+    def collect(self, root):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = qualification.collect_observer_diagnostics(root)
+        self.assertNotIn(MARKER, output.getvalue())
+        self.assertNotIn(str(root), output.getvalue())
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+        for line, record in zip(output.getvalue().splitlines(), records, strict=True):
+            self.assertLessEqual(len(line.encode("ascii")) + len(os.linesep), 4096)
+            self.assertIs(record["diagnostic_only"], True)
+            self.assertIs(record["acceptance"], False)
+            self.assertNotIn("ok", record)
+        return result, records
+
+    def budget(self, result=None):
+        class BudgetExceeded(TimeoutError):
+            def __init__(self):
+                self.streams = {}
+
+        class OutputExceeded(BudgetExceeded):
+            pass
+
+        temporary = tempfile.TemporaryDirectory(prefix="observer-inert-system-")
+        self.addCleanup(temporary.cleanup)
+        system = Path(temporary.name)
+        for path in (system / "cmd.exe", system / "WindowsPowerShell" / "v1.0" / "powershell.exe"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic system image, never execute\n")
+        selections = {"python": sys.executable, "git": str(Path("synthetic-git-directory") / "git.exe"),
+                      "java": str(Path("synthetic-jdk") / "bin" / "java.exe")}
+        return mock.Mock(
+            BudgetExceeded=BudgetExceeded, OutputExceeded=OutputExceeded,
+            environment=mock.Mock(return_value={"PATH": "synthetic-approved-path", "COMSPEC": str(system / "cmd.exe")}),
+            resolve_command=mock.Mock(side_effect=lambda command, environment: [selections[command[0]]]),
+            capture_observation=mock.Mock(return_value=(
+                'process_budget_capture_state={"schema":"pennilogic.process-budget-capture-state/1","status":"unavailable"}'
+            )),
+            run=mock.Mock(return_value=result or subprocess.CompletedProcess([], 1, b"", b"")),
+        )
+
+    @contextlib.contextmanager
+    def precedence_io(self, root, failures=(), reporter_error=OSError):
+        original_open, original_record = Path.open, qualification.observer_state_record
+        observed = {"events": [], "streams": [], "stdout": io.StringIO(), "stderr": io.StringIO()}
+        observed["errors"] = {
+            name: reporter_error(MARKER) for name in
+            ("owning-failure", "owning-result", "interval", "secondary", "projection")
+        } | {name: OSError(MARKER) for name in ("settlement", "close")}
+
+        def record(stream, directory, fields):
+            if fields["phase"] == "settled":
+                observed["events"].append("settlement")
+                if "settlement" in failures:
+                    raise observed["errors"]["settlement"]
+            original_record(stream, directory, fields)
+
+        def opening(path, *arguments, **options):
+            stream = original_open(path, *arguments, **options)
+            if path != root / qualification.OBSERVER_STATE:
+                return stream
+            observed["streams"].append(stream)
+            wrapped = mock.Mock(wraps=stream)
+
+            def close():
+                observed["events"].append("close")
+                stream.close()
+                if "close" in failures:
+                    raise observed["errors"]["close"]
+
+            wrapped.close.side_effect = close
+            return wrapped
+
+        def report(value, **options):
+            event = json.loads(value).get("event") if value.startswith("{") else None
+            operation = {
+                "windows_observer_owning_failure": "owning-failure",
+                "windows_owning_suite_command": "owning-result",
+                "windows_observer_owning_interval": "interval",
+                "windows_observer_secondary_failure": "secondary",
+                "windows_qualification_diagnostic": "projection",
+                "test_outcome": "projection",
+            }.get(event)
+            if operation:
+                observed["events"].append("report:" + operation)
+                if operation in failures:
+                    raise observed["errors"][operation]
+            observed["stderr" if options.get("file") is sys.stderr else "stdout"].write(value + "\n")
+
+        with mock.patch.object(Path, "open", autospec=True, side_effect=opening), \
+                mock.patch.object(qualification, "observer_state_record", side_effect=record), \
+                mock.patch("builtins.print", side_effect=report):
+            yield observed
+        self.assertTrue(all(stream.closed for stream in observed["streams"]))
+        public = observed["stdout"].getvalue() + observed["stderr"].getvalue()
+        self.assertNotIn(MARKER, public)
+        self.assertNotIn(str(root), public)
+        self.assertNotIn('"ok": true', public)
+
+    def late_result(self, root, result, elapsed, failures=(), reporter_error=OSError):
+        budget = self.budget(result)
+        with self.precedence_io(root, failures, reporter_error) as observed, \
+                mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, elapsed)), \
+                mock.patch.object(qualification.subprocess, "run") as direct, \
+                mock.patch.object(qualification, "junit_outcomes") as junit:
+            with self.assertRaises(qualification._ObserverResultRefused) as caught:
+                qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+        direct.assert_not_called()
+        junit.assert_not_called()
+        self.assertEqual(1, budget.run.call_count)
+        self.assertEqual(270, budget.run.call_args.args[2])
+        self.assertEqual("owning-suite-command-failed", str(caught.exception))
+        self.assertIs(result, caught.exception.result)
+        self.assertNotIn(MARKER, "\n".join(caught.exception.__notes__))
+        self.assertEqual(1, observed["events"].count("settlement"))
+        self.assertEqual(1, observed["events"].count("close"))
+        self.assertLess(observed["events"].index("close"), observed["events"].index("report:interval"))
+        records = [json.loads(line) for line in observed["stdout"].getvalue().splitlines() if line.startswith("{")]
+        return caught.exception, observed, records
+
+    @contextlib.contextmanager
+    def runtime_fixture(self):
+        with tempfile.TemporaryDirectory(prefix="observer-runtime-source-") as temporary:
+            base = Path(temporary)
+            root, python, git, java, runner = (
+                base / "checkout", base / "python" / "python.exe", base / "git" / "git.exe",
+                base / "jdk", base / "runner-temp",
+            )
+            runner.mkdir()
+            for path in (python, git, java / "bin" / "java.exe", java / "bin" / "javac.exe"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"synthetic image, never execute\n")
+            (python.parent / "Scripts").mkdir()
+            (java / "release").write_bytes(b'JAVA_VERSION="21.0.9"\r\nIMPLEMENTOR="Eclipse Adoptium"\r\n')
+            for relative in (".git/objects", "build/source-materialization", "build/contracts-money",
+                             "build/money-client-interop/inputs", "build/database-admission"):
+                (root / relative).mkdir(parents=True, exist_ok=True)
+            environment = {
+                "GITHUB_ACTIONS": "true", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_REPOSITORY": "PenniLogic/api", "GITHUB_REPOSITORY_ID": "1394134582",
+                "GITHUB_REPOSITORY_OWNER_ID": "335295566", "GITHUB_JOB": "windows",
+                "GITHUB_SHA": "a" * 40, "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_WORKSPACE": str(root), "RUNNER_TEMP": str(runner), "JAVA_HOME": str(java),
+                "PENNILOGIC_API106_CHECKOUT": "a" * 40, "PENNILOGIC_API106_TREE": "b" * 40,
+                "PENNILOGIC_API106_PYTHON": str(python),
+                "PENNILOGIC_API106_PYTHON_VERSION": ".".join(map(str, sys.version_info[:3])),
+                "PENNILOGIC_API106_JAVA": str(java), "PENNILOGIC_API106_JAVA_VERSION": "21.0.9+10",
+                "PENNILOGIC_API106_GIT": str(git),
+                "PENNILOGIC_API106_GIT_SHA256": hashlib.sha256(git.read_bytes()).hexdigest(),
+                "PENNILOGIC_API106_MONEY": "success", "PENNILOGIC_API106_PREPARED": "verified",
+                "PENNILOGIC_API106_TEMP": str(runner),
+            }
+            for name in ("HEAD", "index", "config"):
+                data = ("synthetic " + name + "\n").encode("ascii")
+                (root / ".git" / name).write_bytes(data)
+                environment["PENNILOGIC_API106_" + name.upper() + "_SHA256"] = hashlib.sha256(data).hexdigest()
+            budget = self.budget()
+            budget.sys = mock.Mock(executable=str(python), base_prefix=str(python.parent))
+            with mock.patch.dict(qualification.os.environ, environment, clear=True), \
+                    mock.patch.multiple(qualification.sys, executable=str(python), prefix=str(python.parent),
+                                        base_prefix=str(python.parent)), \
+                    mock.patch.object(qualification.subprocess, "run") as direct:
+                yield root, budget, environment
+                direct.assert_not_called()
+                budget.run.assert_not_called()
+
+    def test_runtime_workflow_uses_same_setup_outputs_and_exact_preparation_chain(self):
+        current = json.loads(generator.workflow("api"))
+        steps = current["jobs"]["windows"]["steps"]
+        self.assertEqual(["Bind API106 checkout Git", "Checkout", "Python", "Node", "JDK"],
+                         [step["name"] for step in steps[:5]])
+        self.assertEqual("api106_git", steps[0]["id"])
+        self.assertEqual("${{ " + OBSERVER_CONDITION + " }}", steps[0]["if"])
+        self.assertIn("[IO.File]::AppendAllText($env:GITHUB_PATH,", steps[0]["run"])
+        owning = next(step for step in steps if step["name"] == "Run Windows owning suites")
+        self.assertEqual({"PENNILOGIC_API106_OBSERVER_PAIR": "${{ " + OBSERVER_CONDITION + " }}",
+                          **OBSERVER_RUNTIME_ENV}, owning["env"])
+        command = generator.api_observer_command()
+        preparation = generator.powershell_commands([
+            "python -I -S -B scripts\\prepare_database_admission.py prepare",
+            "python -I -S -B scripts\\prepare_database_admission.py verify",
+            "python -I -S -B scripts\\money_client_interop.py prepare --require-prepared",
+        ])
+        self.assertEqual(preparation + "\n" + generator.powershell_commands([command]), owning["run"])
+        provider = next(step for step in steps if step["name"] == "Prepare verified Money provider")
+        self.assertTrue(provider["run"].endswith(
+            "python scripts\\materialize_money_sources.py --verify\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"))
+        self.assertIn("& $env:PENNILOGIC_API106_PYTHON -I -S -B scripts\\qualify_windows.py --require-prepared "
+                      "--api106-observer-pair", command)
+        self.assertTrue(command.endswith(
+            "} elseif ($env:PENNILOGIC_API106_OBSERVER_PAIR -ceq 'false') {\n"
+            "    python scripts\\qualify_windows.py --require-prepared\n"
+            "} else { throw 'API106 observer selection must be a Boolean' }"))
+        for forbidden in ("--offline", "resolveDependencies", "quality.py install", "--tests", "continue-on-error"):
+            self.assertNotIn(forbidden, command)
+        previous = remove_observer_runtime(self, copy.deepcopy(current))
+        self.assertEqual(current["jobs"]["ci"], previous["jobs"]["ci"])
+        self.assertEqual(current["jobs"]["ci-result"], previous["jobs"]["ci-result"])
+        without = remove_observer_pair(self, copy.deepcopy(current))
+        self.assertEqual("51bf74f97dbb427e68c4db320ebd69bf9daadcc116c9ca628fcbd33f2349fceb",
+                         hashlib.sha256(generator.encoded(without).encode("utf-8")).hexdigest())
+        self.assertEqual(30, current["jobs"]["windows"]["timeout-minutes"])
+
+    def test_runtime_workflow_binding_drift_is_not_a_new_expression_allowlist(self):
+        current = json.loads(generator.workflow("api"))
+        validate = api_checker()
+        mutations = [
+            lambda steps: steps.pop(0),
+            lambda steps: steps[0].pop("if"),
+            lambda steps: steps[0].update(run="exit 0"),
+            lambda steps: steps.insert(1, steps.pop(0)),
+            lambda steps: steps[1].pop("id"),
+            lambda steps: steps[2].pop("id"),
+            lambda steps: steps[4].pop("id"),
+        ]
+        for name in OBSERVER_RUNTIME_ENV:
+            mutations.append(lambda steps, name=name: steps[-3]["env"].update({name: MARKER}))
+        for text in ("$env:PENNILOGIC_API106_PREPARED = 'verified'", "--no-optional-locks",
+                     "core.fsmonitor=false", "--git-common-dir", "--no-ext-diff --no-textconv",
+                     "$env:PENNILOGIC_API106_INDEX_SHA256", "$env:PENNILOGIC_API106_CONFIG_SHA256"):
+            mutations.append(lambda steps, text=text: steps[-3].update(run=steps[-3]["run"].replace(text, MARKER)))
+        for mutate in mutations:
+            changed = copy.deepcopy(current)
+            mutate(changed["jobs"]["windows"]["steps"])
+            with self.subTest(mutate=mutate), self.assertRaisesRegex(ValueError, "API CI must match"):
+                validate(CI, generator.encoded(changed).encode())
+        namespace = {"__file__": str(support.GOVERNANCE.parent / "scripts/check_repository.py")}
+        exec(compile(generator.standard_checker("api"), "standard checker", "exec"), namespace)
+        for value in OBSERVER_RUNTIME_ENV.values():
+            with self.subTest(expression=value), self.assertRaises(ValueError):
+                namespace["validate_expressions"]({"env": {"RUNTIME": value}})
+
+    def test_runtime_environment_is_finite_and_adds_only_the_bound_git_parent(self):
+        with self.runtime_fixture() as (root, budget, environment):
+            injected = {
+                name: MARKER for name in (
+                    "PATH", "HOME", "USERPROFILE", "TEMP", "TMP", "GRADLE_USER_HOME",
+                    "GH_TOKEN", "GITHUB_TOKEN", "PENNILOGIC_NATIVE_SOURCE_TOKEN", "HTTPS_PROXY",
+                    "PYTHONPATH", "PYTHONHOME", "NODE_OPTIONS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS",
+                    "GRADLE_OPTS", "JAVA_OPTS", "PSModulePath", "GIT_CONFIG_PARAMETERS", "GIT_DIR",
+                )
+            }
+            with mock.patch.dict(qualification.os.environ, injected):
+                supplied, directories = self.runtime_inputs(root, budget)
+            self.assertEqual([Path(environment["PENNILOGIC_API106_GIT"]).parent], directories)
+            self.assertEqual({"HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR", "JAVA_HOME", "GRADLE_USER_HOME",
+                              "CI", "GITHUB_ACTIONS"}, set(supplied))
+            self.assertEqual(("true", "true"), (supplied["CI"], supplied["GITHUB_ACTIONS"]))
+            self.assertEqual(environment["PENNILOGIC_API106_JAVA"], supplied["JAVA_HOME"])
+            self.assertEqual(supplied["HOME"], supplied["USERPROFILE"])
+            self.assertEqual(supplied["TEMP"], supplied["TMP"])
+            self.assertEqual(supplied["TEMP"], supplied["TMPDIR"])
+            self.assertNotIn(MARKER, json.dumps(supplied))
+            for name in ("HOME", "TEMP", "GRADLE_USER_HOME"):
+                self.assertTrue(Path(supplied[name]).is_relative_to(Path(environment["RUNNER_TEMP"])))
+            self.assertEqual([], list(Path(supplied["HOME"]).iterdir()))
+            self.assertEqual([], list(Path(supplied["TEMP"]).iterdir()))
+            budget.environment.assert_not_called()
+
+    def test_runtime_jdk_selection_uses_fresh_cache_without_offline_or_sdk_acquisition(self):
+        with self.runtime_fixture() as (root, budget, environment):
+            supplied, _ = self.runtime_inputs(root, budget)
+            cache = Path(supplied["GRADLE_USER_HOME"])
+            self.assertEqual(["gradle.properties"], [path.name for path in cache.iterdir()])
+            java = environment["PENNILOGIC_API106_JAVA"].replace("\\", "\\\\")
+            self.assertEqual(
+                "org.gradle.java.installations.auto-detect=false\n"
+                "org.gradle.java.installations.auto-download=false\n"
+                "org.gradle.java.installations.paths=" + java + "\n",
+                (cache / "gradle.properties").read_text(encoding="utf-8"),
+            )
+            with self.assertRaises(FileExistsError):
+                self.runtime_inputs(root, budget)
+            self.assertTrue(cache.is_dir())
+        for name, value in (("JAVA_VERSION", "17.0.1"), ("IMPLEMENTOR", "unselected-vendor")):
+            with self.subTest(field=name), self.runtime_fixture() as (root, budget, environment):
+                release = Path(environment["PENNILOGIC_API106_JAVA"]) / "release"
+                lines = {"JAVA_VERSION": "21.0.9", "IMPLEMENTOR": "Eclipse Adoptium"}
+                lines[name] = value
+                release.write_text("".join(f'{key}="{item}"\n' for key, item in lines.items()), encoding="utf-8")
+                with self.assertRaisesRegex(qualification.Refused, "observer-java-selection"):
+                    self.runtime_inputs(root, budget)
+
+    def test_runtime_selection_and_preparation_provenance_refuse_before_work(self):
+        mutations = (
+            ("GITHUB_ACTIONS", "false"), ("PENNILOGIC_API106_MONEY", "skipped"),
+            ("PENNILOGIC_API106_PREPARED", ""), ("PENNILOGIC_API106_CHECKOUT", "b" * 40),
+            ("PENNILOGIC_API106_TREE", "not-a-tree"), ("PENNILOGIC_API106_PYTHON", "python.exe"),
+            ("PENNILOGIC_API106_PYTHON_VERSION", "3.13.0"), ("PENNILOGIC_API106_GIT_SHA256", "0" * 64),
+            ("PENNILOGIC_API106_JAVA_VERSION", "17.0.1"), ("PENNILOGIC_API106_TEMP", "relative"),
+            ("PENNILOGIC_API106_HEAD_SHA256", "0" * 64), ("PENNILOGIC_API106_INDEX_SHA256", "0" * 64),
+            ("PENNILOGIC_API106_CONFIG_SHA256", "0" * 64),
+        )
+        for name, value in mutations:
+            with self.subTest(input=name), self.runtime_fixture() as (root, budget, environment):
+                with mock.patch.dict(qualification.os.environ, {name: value}), \
+                        self.assertRaises((qualification.Refused, OSError)):
+                    self.runtime_inputs(root, budget)
+                self.assertEqual([], list(Path(environment["RUNNER_TEMP"]).iterdir()))
+        for relative in ("build/source-materialization", "build/contracts-money",
+                         "build/money-client-interop/inputs", "build/database-admission"):
+            with self.subTest(preparation=relative), self.runtime_fixture() as (root, budget, environment):
+                (root / relative).rmdir()
+                with self.assertRaises(FileNotFoundError):
+                    self.runtime_inputs(root, budget)
+                self.assertEqual([], list(Path(environment["RUNNER_TEMP"]).iterdir()))
+
+    def test_runtime_requires_outer_target_and_base_prefix_agreement(self):
+        for subject, name in (("target", "executable"), ("target", "prefix"), ("target", "base_prefix"),
+                              ("owner", "executable"), ("owner", "base_prefix")):
+            with self.subTest(subject=subject, field=name), self.runtime_fixture() as (root, budget, environment):
+                target = qualification.sys if subject == "target" else budget.sys
+                with mock.patch.object(target, name, str(root)), \
+                        self.assertRaisesRegex(qualification.Refused, "observer-python-selection"):
+                    self.runtime_inputs(root, budget)
+                self.assertEqual([], list(Path(environment["RUNNER_TEMP"]).iterdir()))
+
+    def test_runtime_changed_checkout_git_image_and_unowned_outputs_are_refused(self):
+        for target in ("HEAD", "index", "config", "git"):
+            with self.subTest(changed=target), self.runtime_fixture() as (root, budget, environment):
+                path = Path(environment["PENNILOGIC_API106_GIT"]) if target == "git" else root / ".git" / target
+                path.write_bytes(path.read_bytes() + b"changed")
+                with self.assertRaisesRegex(qualification.Refused, "observer-git-(state-changed|selection)"):
+                    self.runtime_inputs(root, budget)
+        for relative in (".gradle", ".kotlin", "git.exe", "python.exe", "java.exe"):
+            with self.subTest(output=relative), self.runtime_fixture() as (root, budget, environment):
+                path = root / relative
+                path.write_bytes(MARKER.encode())
+                with self.assertRaisesRegex(qualification.Refused, "observer-unadmitted-runtime-state"):
+                    self.runtime_inputs(root, budget)
+                self.assertEqual(MARKER.encode(), path.read_bytes())
+                self.assertEqual([], list(Path(environment["RUNNER_TEMP"]).iterdir()))
+
+    def test_runtime_path_reparse_and_relative_selections_never_open_an_image(self):
+        with self.runtime_fixture() as (root, budget, environment):
+            target = Path(environment["PENNILOGIC_API106_GIT"]).parent
+            lstat = Path.lstat
+
+            def metadata(path):
+                return mock.Mock(st_mode=qualification.stat.S_IFDIR, st_file_attributes=0x400) if path == target else lstat(path)
+
+            with mock.patch.object(Path, "lstat", autospec=True, side_effect=metadata), \
+                    mock.patch.object(qualification, "observer_runtime_bytes", wraps=qualification.observer_runtime_bytes) as read:
+                with self.assertRaisesRegex(qualification.Refused, "observer-runtime-path"):
+                    self.runtime_inputs(root, budget)
+                self.assertFalse(any(call.args[0].name == "git.exe" for call in read.call_args_list))
+        for value in (None, "", "relative", "bad\npath"):
+            with self.subTest(path=value), self.assertRaises(qualification.Refused):
+                qualification.observer_runtime_path(value, directory=False)
+
+    def test_closed_interval_enforces_the_actual_strict_300_boundary(self):
+        for returncode, elapsed in itertools.product(
+            (0, 1), (-1, 0, 280_000_000_000, 299_999_999_999, 300_000_000_000, 301_000_000_000),
+        ):
+            with self.subTest(returncode=returncode, elapsed=elapsed), \
+                    tempfile.TemporaryDirectory(prefix="observer-closed-time-") as temporary:
+                root, output, budget = Path(temporary), io.StringIO(), self.budget()
+                budget.run.return_value = subprocess.CompletedProcess([], returncode, b"", b"")
+                with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=(10**12, 10**12 + elapsed)), \
+                        contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                    if 0 <= elapsed < 300_000_000_000:
+                        self.assertEqual(returncode, qualification.observer_owning_command(root).returncode)
+                    else:
+                        with self.assertRaises(qualification.Refused) as caught:
+                            qualification.observer_owning_command(root)
+                        refusal = caught.exception
+                        if returncode:
+                            self.assertIs(budget.run.return_value, refusal.result)
+                            self.assertEqual("owning-suite-command-failed", str(refusal))
+                            refusal = refusal.__cause__
+                        self.assertEqual("observer-closed-command-budget-exceeded", str(refusal))
+                records = [json.loads(line) for line in output.getvalue().splitlines()]
+                interval = records[-1]
+                self.assertEqual({"event": "windows_observer_owning_interval", "diagnostic_only": True,
+                                  "elapsed_ns": elapsed, "limit_seconds": 300,
+                                  "within_limit": 0 <= elapsed < 300_000_000_000}, interval)
+                self.assertNotIn("ok", interval)
+                self.assertEqual(270, budget.run.call_args.args[2])
+                self.assertEqual(1, budget.run.call_count)
+
+    def test_closed_interval_includes_environment_owner_return_settlement_and_close(self):
+        for close_seconds in (4, 5):
+            with self.subTest(close_seconds=close_seconds), tempfile.TemporaryDirectory(prefix="observer-close-span-") as temporary:
+                root, budget = Path(temporary), self.budget()
+                admitted_environment = budget.environment.return_value
+                clock, events = [0], []
+                native_open, native_record = Path.open, qualification.observer_state_record
+
+                def environment(**arguments):
+                    events.append("environment")
+                    clock[0] += 1_000_000_000
+                    return admitted_environment
+
+                def run(*arguments, **options):
+                    events.append("owner-return-after-capture-and-cleanup")
+                    clock[0] += 280_000_000_000
+                    return subprocess.CompletedProcess([], 0, b"", b"")
+
+                def record(stream, directory, fields):
+                    native_record(stream, directory, fields)
+                    if fields["phase"] == "settled":
+                        events.append("settled")
+                        clock[0] += 14_000_000_000
+
+                def opening(path, *arguments, **options):
+                    stream = native_open(path, *arguments, **options)
+                    wrapped = mock.Mock(wraps=stream)
+
+                    def close():
+                        stream.close()
+                        events.append("closed")
+                        clock[0] += close_seconds * 1_000_000_000
+
+                    wrapped.close.side_effect = close
+                    return wrapped
+
+                budget.environment.side_effect, budget.run.side_effect = environment, run
+                output = io.StringIO()
+                with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=lambda: clock[0]), \
+                        mock.patch.object(qualification, "observer_state_record", side_effect=record), \
+                        mock.patch.object(Path, "open", autospec=True, side_effect=opening), \
+                        contextlib.redirect_stdout(output):
+                    if close_seconds == 4:
+                        qualification.observer_owning_command(root)
+                    else:
+                        with self.assertRaisesRegex(qualification.Refused, "observer-closed-command-budget-exceeded"):
+                            qualification.observer_owning_command(root)
+                self.assertEqual(["environment", "owner-return-after-capture-and-cleanup", "settled", "closed"], events)
+                interval = json.loads(output.getvalue().splitlines()[-1])
+                self.assertEqual((295 + close_seconds) * 1_000_000_000, interval["elapsed_ns"])
+                self.assertEqual(close_seconds == 4, interval["within_limit"])
+
+    def test_closed_interval_cannot_replace_existing_budget_or_unconfirmed_cleanup_failure(self):
+        for failure in ("budget", "cleanup"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="observer-closed-failure-") as temporary:
+                root, budget, output = Path(temporary), self.budget(), io.StringIO()
+                primary = budget.BudgetExceeded() if failure == "budget" else OSError(MARKER)
+                budget.run.side_effect = primary
+                with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 301_000_000_000)), \
+                        contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(qualification.Refused if failure == "budget" else OSError) as caught:
+                        qualification.observer_owning_command(root)
+                self.assertTrue(caught.exception is primary or caught.exception.__cause__ is primary)
+                self.assertNotIn(MARKER, output.getvalue())
+                self.assertIs(json.loads(output.getvalue().splitlines()[-1])["within_limit"], False)
+                self.assertEqual(2 if failure == "budget" else 1,
+                                 len((root / qualification.OBSERVER_STATE).read_bytes().splitlines()))
+
+    def test_closed_interval_is_enforced_inside_an_unrelated_caller_exception_handler(self):
+        with tempfile.TemporaryDirectory(prefix="observer-caller-error-") as temporary:
+            root = Path(temporary)
+            budget = self.budget(subprocess.CompletedProcess([], 0, b"", b""))
+            with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                    mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 300_000_000_000)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    raise ValueError("unrelated synthetic caller error")
+                except ValueError:
+                    with self.assertRaisesRegex(qualification.Refused, "observer-closed-command-budget-exceeded"):
+                        qualification.observer_owning_command(root)
+
+    def test_closed_interval_reporting_failure_preserves_the_primary_owner_failure(self):
+        with tempfile.TemporaryDirectory(prefix="observer-report-error-") as temporary:
+            root, budget = Path(temporary), self.budget()
+            primary = budget.BudgetExceeded()
+            budget.run.side_effect = primary
+            output = io.StringIO()
+
+            def report(value, **options):
+                if "windows_observer_owning_interval" in value:
+                    raise OSError(MARKER)
+                output.write(value + "\n")
+
+            with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                    mock.patch("builtins.print", side_effect=report):
+                with self.assertRaises(qualification.Refused) as caught:
+                    qualification.observer_owning_command(root)
+            self.assertIs(primary, caught.exception.__cause__)
+            self.assertIn("Closed observer interval reporting also failed", caught.exception.__notes__)
+            self.assertNotIn(MARKER, output.getvalue())
+
+    def test_inner_failure_report_io_keeps_owner_identity_and_custody_attempts(self):
+        for kind, reporter_error, secondary_failure in itertools.product(
+            ("budget", "output", "cleanup"), (OSError, ValueError), (False, True),
+        ):
+            with self.subTest(kind=kind, reporter=reporter_error, secondary=secondary_failure), \
+                    tempfile.TemporaryDirectory(prefix="observer-primary-report-") as temporary:
+                root, budget = Path(temporary), self.budget()
+                primary = (budget.BudgetExceeded() if kind == "budget" else
+                           budget.OutputExceeded() if kind == "output" else OSError(MARKER))
+                budget.run.side_effect = primary
+                failures = ("owning-failure", "secondary") if secondary_failure else ("owning-failure",)
+                with self.precedence_io(root, failures, reporter_error) as observed, \
+                        mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 1)):
+                    with self.assertRaises(qualification.Refused if kind != "cleanup" else OSError) as caught:
+                        qualification.observer_owning_command(root)
+                self.assertIs(primary, caught.exception if kind == "cleanup" else caught.exception.__cause__)
+                self.assertIn("Observer secondary failure: owning-failure-report-unavailable", caught.exception.__notes__)
+                if secondary_failure:
+                    self.assertIn("Observer secondary failure reporting also failed", caught.exception.__notes__)
+                self.assertNotIn(MARKER, "\n".join(caught.exception.__notes__))
+                self.assertEqual(int(kind != "cleanup"), observed["events"].count("settlement"))
+                self.assertEqual(1, observed["events"].count("close"))
+                state = [json.loads(line) for line in (root / qualification.OBSERVER_STATE).read_bytes().splitlines()]
+                self.assertEqual(1 if kind == "cleanup" else 2, len(state))
+                if kind != "cleanup":
+                    reason = "work-budget-exceeded" if kind == "budget" else "output-budget-exceeded"
+                    self.assertEqual("observer-owning-" + reason, str(caught.exception))
+                    self.assertEqual(reason, state[-1]["status"])
+
+    def test_settlement_and_close_report_io_preserve_active_owner_failure(self):
+        cases = [(kind, failures) for kind in ("budget", "output") for failures in (
+            ("settlement", "secondary"), ("close", "secondary"),
+            ("owning-failure", "settlement", "close", "secondary", "interval"),
+        )] + [("cleanup", ("owning-failure", "close", "secondary", "interval"))]
+        for kind, failures in cases:
+            with self.subTest(kind=kind, failures=failures), \
+                    tempfile.TemporaryDirectory(prefix="observer-compound-finalization-") as temporary:
+                root, budget = Path(temporary), self.budget()
+                primary = (budget.BudgetExceeded() if kind == "budget" else
+                           budget.OutputExceeded() if kind == "output" else OSError(MARKER))
+                budget.run.side_effect = primary
+                with self.precedence_io(root, failures) as observed, \
+                        mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 300_000_000_000)):
+                    with self.assertRaises(qualification.Refused if kind != "cleanup" else OSError) as caught:
+                        qualification.observer_owning_command(root)
+                self.assertIs(primary, caught.exception if kind == "cleanup" else caught.exception.__cause__)
+                notes = caught.exception.__notes__
+                for operation, code in (("settlement", "state-finalization"), ("close", "state-close-unconfirmed"),
+                                        ("interval", "interval-report-unavailable"),
+                                        ("owning-failure", "owning-failure-report-unavailable")):
+                    if operation in failures:
+                        self.assertIn("Observer secondary failure: " + code, notes)
+                self.assertIn("Observer secondary failure: closed-command-budget-exceeded", notes)
+                self.assertIn("Observer secondary failure reporting also failed", notes)
+                self.assertNotIn(MARKER, "\n".join(notes))
+                self.assertEqual(int(kind != "cleanup"), observed["events"].count("settlement"))
+                self.assertEqual(1, observed["events"].count("close"))
+                self.assertIn("report:interval", observed["events"])
+                expected_records = 1 if kind == "cleanup" or "settlement" in failures else 2
+                self.assertEqual(expected_records, len((root / qualification.OBSERVER_STATE).read_bytes().splitlines()))
+
+    def test_prepared_state_refusal_survives_close_and_secondary_report_failure(self):
+        with tempfile.TemporaryDirectory(prefix="observer-prepared-compound-") as temporary:
+            root, budget = Path(temporary), self.budget()
+            primary = qualification.Refused("observer-state-short-write")
+            with self.precedence_io(root, ("close", "secondary")) as observed, \
+                    mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                    mock.patch.object(qualification, "observer_state_record", side_effect=primary), \
+                    mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 1)):
+                with self.assertRaises(qualification.Refused) as caught:
+                    qualification.observer_owning_command(root)
+            self.assertIs(primary, caught.exception)
+            budget.run.assert_not_called()
+            self.assertEqual(1, observed["events"].count("close"))
+            self.assertNotIn("settlement", observed["events"])
+            self.assertIn("Observer secondary failure: state-close-unconfirmed", primary.__notes__)
+            self.assertIn("Observer secondary failure reporting also failed", primary.__notes__)
+
+    def test_returned_results_finalize_custody_despite_command_report_failure(self):
+        for returncode, reporter_error, failures in itertools.product(
+            (0, 1), (OSError, ValueError),
+            (("owning-result",), ("owning-result", "settlement", "close", "secondary")),
+        ):
+            with self.subTest(returncode=returncode, reporter=reporter_error, failures=failures), \
+                    tempfile.TemporaryDirectory(prefix="observer-result-report-") as temporary:
+                root = Path(temporary)
+                result = subprocess.CompletedProcess([], returncode, MARKER.encode(), MARKER.encode())
+                budget = self.budget(result)
+                with self.precedence_io(root, failures, reporter_error) as observed, \
+                        mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 1)):
+                    with self.assertRaises(qualification.Refused if returncode else reporter_error) as caught:
+                        qualification.observer_owning_command(root)
+                failure = caught.exception
+                if returncode:
+                    self.assertIs(result, failure.result)
+                    failure = failure.__cause__
+                self.assertIs(observed["errors"]["owning-result"], failure)
+                self.assertEqual(1, observed["events"].count("settlement"))
+                self.assertEqual(1, observed["events"].count("close"))
+                self.assertLess(observed["events"].index("report:owning-result"), observed["events"].index("settlement"))
+                self.assertLess(observed["events"].index("settlement"), observed["events"].index("close"))
+                rows = (root / qualification.OBSERVER_STATE).read_bytes().splitlines()
+                self.assertEqual(1 if "settlement" in failures else 2, len(rows))
+                self.assertIn("Observer secondary failure: owning-command-report-unavailable", caught.exception.__notes__)
+                for operation, code in (("settlement", "state-finalization"), ("close", "state-close-unconfirmed")):
+                    if operation in failures:
+                        self.assertIn("Observer secondary failure: " + code, caught.exception.__notes__)
+
+    def test_returned_nonzero_late_failure_keeps_complete_safe_outcomes(self):
+        for elapsed, failures in ((300_000_000_000, ()), (301_000_000_000, ()),
+                                  (1, ("interval",)), (300_000_000_000, ("interval",))):
+            with self.subTest(elapsed=elapsed, failures=failures), \
+                    tempfile.TemporaryDirectory(prefix="observer-late-outcomes-") as temporary:
+                root = Path(temporary)
+                report = WindowsOutcomeTests().python_report("FAIL").replace("OK (skipped=1)", "FAILED (failures=1, skipped=1)")
+                result = subprocess.CompletedProcess([], 7, (MARKER + str(root)).encode(), report.encode())
+                primary, observed, records = self.late_result(root, result, elapsed, failures)
+                outcomes = [record for record in records if record["event"] == "test_outcome"]
+                self.assertEqual(2, len(outcomes))
+                self.assertEqual({"failed", "skipped"}, {record["outcome"] for record in outcomes})
+                self.assertEqual(hashlib.sha256(qualification.PYTHON_TARGET.encode()).hexdigest(), outcomes[0]["id_sha256"])
+                self.assertEqual(qualification.PYTHON_TARGET, outcomes[0]["required_test"])
+                self.assertLess(observed["events"].index("report:interval"), observed["events"].index("report:projection"))
+                if elapsed >= 300_000_000_000:
+                    self.assertEqual("observer-closed-command-budget-exceeded", str(primary.__cause__))
+                else:
+                    self.assertIs(observed["errors"]["interval"], primary.__cause__)
+                if "interval" in failures:
+                    self.assertIn("Observer secondary failure: interval-report-unavailable", primary.__notes__)
+
+    def test_returned_nonzero_late_failure_keeps_bounded_negative_prefix(self):
+        for elapsed, failures in ((300_000_000_000, ()), (301_000_000_000, ()),
+                                  (1, ("interval",)), (300_000_000_000, ("interval",))):
+            with self.subTest(elapsed=elapsed, failures=failures), \
+                    tempfile.TemporaryDirectory(prefix="observer-late-prefix-") as temporary:
+                root, identity = Path(temporary), qualification.PYTHON_TARGET
+                report = f"{identity.rsplit('.', 1)[-1]} ({identity}) ... ERROR\n{MARKER} {root}\n"
+                result = subprocess.CompletedProcess([], 1, (MARKER + str(root)).encode(), report.encode())
+                primary, observed, records = self.late_result(root, result, elapsed, failures)
+                diagnostic, = [record for record in records if record["event"] == "windows_qualification_diagnostic"]
+                self.assertEqual(1, diagnostic["exit_code"])
+                self.assertIs(diagnostic["diagnostic_only"], True)
+                self.assertIs(diagnostic["inventory_complete"], False)
+                self.assertLess(len(json.dumps(diagnostic).encode()), 4096)
+                for name in ("stdout", "stderr"):
+                    data = getattr(result, name)
+                    self.assertEqual({"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}, diagnostic[name])
+                self.assertEqual("ambiguous-python-outcome", diagnostic["parser"]["code"])
+                self.assertEqual(1, diagnostic["parser"]["negative_prefix_count"])
+                self.assertIs(diagnostic["parser"]["negative_prefix_truncated"], False)
+                prefix, = diagnostic["parser"]["negative_prefix"]
+                self.assertEqual(hashlib.sha256(identity.encode()).hexdigest(), prefix["id_sha256"])
+                self.assertEqual("error", prefix["outcome"])
+                self.assertFalse(any(record["event"] == "test_outcome" for record in records))
+                self.assertIn("Observer secondary failure: captured-python-outcomes-incomplete", primary.__notes__)
+                self.assertLess(observed["events"].index("report:interval"), observed["events"].index("report:projection"))
+
+    def test_returned_nonzero_inner_finalization_errors_keep_safe_projection(self):
+        for operation, secondary in itertools.product(("owning-result", "settlement", "close"), (False, True)):
+            with self.subTest(operation=operation, secondary=secondary), \
+                    tempfile.TemporaryDirectory(prefix="observer-inner-result-") as temporary:
+                root, identity = Path(temporary), qualification.PYTHON_TARGET
+                report = f"{identity.rsplit('.', 1)[-1]} ({identity}) ... FAIL\n{MARKER}\n"
+                result = subprocess.CompletedProcess([], 1, MARKER.encode(), report.encode())
+                failures = (operation, "secondary") if secondary else (operation,)
+                primary, observed, records = self.late_result(root, result, 1, failures)
+                self.assertIs(observed["errors"][operation], primary.__cause__)
+                diagnostic, = [record for record in records if record["event"] == "windows_qualification_diagnostic"]
+                self.assertEqual([{"id_sha256": hashlib.sha256(identity.encode()).hexdigest(), "outcome": "failed"}],
+                                 diagnostic["parser"]["negative_prefix"])
+                rows = (root / qualification.OBSERVER_STATE).read_bytes().splitlines()
+                self.assertEqual(1 if operation == "settlement" else 2, len(rows))
+                if secondary:
+                    self.assertIn("Observer secondary failure reporting also failed", primary.__notes__)
+
+    def test_failed_result_projection_io_cannot_replace_retained_nonzero(self):
+        for complete, reporter_error, secondary in itertools.product((False, True), (OSError, ValueError), (False, True)):
+            with self.subTest(complete=complete, reporter=reporter_error, secondary=secondary), \
+                    tempfile.TemporaryDirectory(prefix="observer-projection-report-") as temporary:
+                root, identity = Path(temporary), qualification.PYTHON_TARGET
+                report = (WindowsOutcomeTests().python_report("FAIL") if complete else
+                          f"{identity.rsplit('.', 1)[-1]} ({identity}) ... FAIL\n{MARKER}\n")
+                report = report.replace("OK (skipped=1)", "FAILED (failures=1, skipped=1)")
+                result = subprocess.CompletedProcess([], 1, MARKER.encode(), report.encode())
+                failures = ("projection", "secondary") if secondary else ("projection",)
+                primary, observed, records = self.late_result(root, result, 300_000_000_000, failures, reporter_error)
+                self.assertEqual("observer-closed-command-budget-exceeded", str(primary.__cause__))
+                self.assertIn("Observer secondary failure: captured-python-outcome-report-unavailable", primary.__notes__)
+                self.assertFalse(any(record["event"] in ("test_outcome", "windows_qualification_diagnostic")
+                                     for record in records))
+                self.assertEqual(1, observed["events"].count("report:projection"))
+                if secondary:
+                    self.assertIn("Observer secondary failure reporting also failed", primary.__notes__)
+
+    def test_successful_result_late_reporting_or_finalization_failure_still_refuses(self):
+        for operation, reporter_error, secondary in itertools.product(
+            ("interval", "settlement", "close"), (OSError, ValueError), (False, True),
+        ):
+            with self.subTest(operation=operation, reporter=reporter_error, secondary=secondary), \
+                    tempfile.TemporaryDirectory(prefix="observer-zero-refusal-") as temporary:
+                root = Path(temporary)
+                result = subprocess.CompletedProcess([], 0, b"", b"")
+                budget = self.budget(result)
+                failures = (operation, "secondary") if secondary else (operation,)
+                with self.precedence_io(root, failures, reporter_error) as observed, \
+                        mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 1)):
+                    with self.assertRaises(reporter_error if operation == "interval" else OSError) as caught:
+                        qualification.observer_owning_command(root)
+                self.assertIs(observed["errors"][operation], caught.exception)
+                self.assertEqual(1, observed["events"].count("settlement"))
+                self.assertEqual(1, observed["events"].count("close"))
+        with tempfile.TemporaryDirectory(prefix="observer-zero-overrun-report-") as temporary:
+            root, budget = Path(temporary), self.budget(subprocess.CompletedProcess([], 0, b"", b""))
+            with self.precedence_io(root, ("interval", "secondary")), \
+                    mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                    mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 300_000_000_000)):
+                with self.assertRaisesRegex(qualification.Refused, "observer-closed-command-budget-exceeded") as caught:
+                    qualification.observer_owning_command(root)
+            self.assertIn("Observer secondary failure: interval-report-unavailable", caught.exception.__notes__)
+            self.assertIn("Observer secondary failure reporting also failed", caught.exception.__notes__)
+
+    def test_runtime_shadowed_tools_or_missing_system_shell_refuse_before_owner_creation(self):
+        for name in ("python", "git", "java", "cmd", "powershell"):
+            with self.subTest(tool=name), tempfile.TemporaryDirectory(prefix="observer-shadowed-") as temporary:
+                root, budget = Path(temporary), self.budget()
+                resolve = budget.resolve_command.side_effect
+                if name in ("python", "git", "java"):
+                    budget.resolve_command.side_effect = (
+                        lambda command, environment: [str(root / "unadmitted.exe")] if command[0] == name
+                        else resolve(command, environment)
+                    )
+                else:
+                    system = Path(budget.environment.return_value["COMSPEC"]).parent
+                    path = system / "cmd.exe" if name == "cmd" else system / "WindowsPowerShell/v1.0/powershell.exe"
+                    path.unlink()
+                with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        contextlib.redirect_stdout(io.StringIO()), self.assertRaises((qualification.Refused, OSError)):
+                    qualification.observer_owning_command(root)
+                budget.run.assert_not_called()
+                self.assertFalse((root / qualification.OBSERVER_STATE).exists())
+
+    def test_every_valid_pair_prefix_is_nonaccepting_and_whole_records_are_preserved(self):
+        records = self.pair()
+        for count in range(7):
+            with self.subTest(count=count):
+                observed, complete = qualification.observer_pair_records(self.encode(records[:count]))
+                self.assertEqual(records[:count], observed)
+                self.assertEqual(count == 6, complete)
+        records = self.pair()[:3]
+        records[-1]["outcome"] = "process-or-cleanup-error"
+        records.append({**self.pair()[4], "outcome": "not-executed",
+                        "reason": "required-process-or-cleanup-error"})
+        for key in ("elapsed_ms", "returncode", "stdout"):
+            del records[-1][key]
+        records.append({**self.pair()[-1], "required": "process-or-cleanup-error", "auxiliary": "not-executed"})
+        self.assertEqual((records, True), qualification.observer_pair_records(self.encode(records)))
+        for started in (False, True):
+            prefix = self.pair()[:2 if started else 1]
+            prefix.append({**records[-2], "role": "required", "reason": "insufficient-complete-arm-budget"})
+            self.assertEqual((prefix, False), qualification.observer_pair_records(self.encode(prefix)))
+
+    def test_pair_order_types_envelopes_caps_and_acceptance_drift_refuse_the_whole_input(self):
+        changes = (
+            lambda rows: rows[0].update(v=True),
+            lambda rows: rows[0].update(event=MARKER),
+            lambda rows: rows[0].update(enclosing_seconds=61),
+            lambda rows: rows[0].update(arm_cleanup_seconds=True),
+            lambda rows: rows[1].update(role="auxiliary-no-lookup-delegates"),
+            lambda rows: rows[2].update(elapsed_ms=-1),
+            lambda rows: rows[2].update(returncode=True),
+            lambda rows: rows[2].update(stdout={"text_bytes": 0, "sha256": "a" * 64}),
+            lambda rows: rows[2].update(outcome="process-or-cleanup-error"),
+            lambda rows: rows[4].update(returncode=1),
+            lambda rows: rows[5].update(acceptance=True),
+            lambda rows: rows[5].update(auxiliary="work-budget-exceeded"),
+            lambda rows: rows.insert(2, copy.deepcopy(rows[1])),
+            lambda rows: rows.append(copy.deepcopy(rows[-1])),
+        )
+        for change in changes:
+            records = self.pair()
+            change(records)
+            with self.subTest(change=change), self.assertRaises(qualification.Refused):
+                qualification.observer_pair_records(self.encode(records))
+        valid = self.encode(self.pair())
+        for data in (valid[:-1], valid + b"\n", valid.replace(b"\n", b"\r\n"), b"\xff\n", b"\x1b\n",
+                     b" " * 4097, b" " * 1024 + b"\n", valid.replace(b'"v":1', b'"v":1,"v":1', 1),
+                     valid + self.encode(self.pair()[:1])):
+            with self.subTest(size=len(data)), self.assertRaises(qualification.Refused):
+                qualification.observer_pair_records(data)
+
+    def test_enclosure_prefix_cleanup_and_inventory_do_not_attest_report_close_or_success(self):
+        records = self.enclosure()
+        for count in range(7):
+            prefix = records[:count]
+            self.assertEqual((prefix, count == 6), qualification.observer_enclosure_records(self.encode(prefix)))
+        for count in range(5):
+            prefix = records[:count] + [records[-1]]
+            self.assertEqual((prefix, False), qualification.observer_enclosure_records(self.encode(prefix)))
+        records[-1]["owned_tree_and_control_released"] = False
+        self.assertEqual((records, True), qualification.observer_enclosure_records(self.encode(records)))
+        mutations = (
+            lambda rows: rows[0].update(work_seconds=60),
+            lambda rows: rows[0].update(binding_sha256=MARKER),
+            lambda rows: rows[1].update(suite_job_retained=False),
+            lambda rows: rows[1].update(known_live_discovery_members=True),
+            lambda rows: rows[3].update(elapsed_ms=0),
+            lambda rows: rows[4].update(inventory_complete=False),
+            lambda rows: rows[4].update(exit_code=True),
+            lambda rows: rows[5].update(report_close_not_attested_by_this_record=False),
+            lambda rows: rows.pop(1),
+            lambda rows: rows.append(rows[-1]),
+        )
+        for mutate in mutations:
+            records = self.enclosure()
+            mutate(records)
+            with self.subTest(mutate=mutate), self.assertRaises(qualification.Refused):
+                qualification.observer_enclosure_records(self.encode(records))
+        for data in (b"x" * 8193, b"x" * 1024 + b"\n", self.encode(self.enclosure()[:1] * 9)):
+            with self.assertRaises(qualification.Refused):
+                qualification.observer_enclosure_records(data)
+
+    def test_boundary_retains_every_legacy_and_c_shape_without_writer_success_inference(self):
+        valid = [b"", b"E", b"EU", b"EUX"]
+        valid += [("ES" + "".join(flags) + tail).encode("ascii")
+                  for flags in itertools.product("01", repeat=3) for tail in ("", "X", "C", "CX")]
+        for data in valid:
+            with self.subTest(data=data):
+                observed = qualification.observer_boundary(data)
+                self.assertEqual("observed" if b"C" in data else "not-observed",
+                                 observed["pre_record_writer_return"])
+                self.assertEqual("after-write-output" if data.endswith(b"X") else "none-observed" if not data
+                                 else "command-entry" if data == b"E" else "before-write-output",
+                                 observed["checkpoint"])
+                self.assertNotIn("write_success", observed)
+        for data in (b"C", b"EC", b"EUC", b"EUCX", b"ES1C11", b"ES111XC", b"ES111CC", b"ES111CX\n",
+                     b"ES111CXX", b"ES111CX" + b"x" * 8192):
+            with self.subTest(data=data[:8]), self.assertRaises(qualification.Refused):
+                qualification.observer_boundary(data)
+
+    def test_collector_reads_only_six_settled_carriers_and_keeps_failed_owning_result(self):
+        with tempfile.TemporaryDirectory(prefix="observer-collection-") as temporary:
+            root = Path(temporary)
+            self.custody(root)
+            self.carriers(root)
+            self.write(root, qualification.LOOKUP.with_name("arbitrary-private.json"), MARKER.encode())
+            read = qualification.diagnostic_bytes
+            with mock.patch.object(qualification, "diagnostic_bytes", wraps=read) as calls:
+                result, records = self.collect(root)
+            self.assertEqual(0, result)
+            self.assertEqual(list(qualification.OBSERVER_FILES), [row["carrier"] for row in records])
+            self.assertEqual([qualification.OBSERVER_STATE, *(path for path, _ in qualification.OBSERVER_FILES.values())],
+                             [call.args[1] for call in calls.call_args_list])
+            self.assertTrue(all(row["owning_command"] == {"status": "exited", "returncode": 1} for row in records))
+            self.assertEqual(self.pair(), records[2]["records"])
+            self.assertEqual(self.enclosure(), records[3]["records"])
+            self.assertIs(records[-1]["capsule_complete"], False)
+            self.assertIs(records[-1]["carrier_complete"], True)
+
+    def test_missing_stale_partial_or_unsettled_custody_never_reads_a_carrier(self):
+        for kind in ("missing", "unsettled", "foreign-context", "extra-line", "false-absence", "boolean-version"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="observer-custody-") as temporary:
+                root = Path(temporary)
+                self.carriers(root)
+                if kind != "missing":
+                    state = self.custody(root, settle=kind != "unsettled")
+                    data = state.read_bytes()
+                    if kind == "foreign-context":
+                        data = data.replace(qualification.observer_context(root).encode("ascii"), b"f" * 64)
+                    if kind == "extra-line":
+                        data += b"{}\n"
+                    if kind == "false-absence":
+                        data = data.replace(b'"all_six_absent":true', b'"all_six_absent":1')
+                    if kind == "boolean-version":
+                        data = data.replace(b'"v":1', b'"v":true')
+                    state.write_bytes(data)
+                with mock.patch.object(qualification, "diagnostic_bytes", wraps=qualification.diagnostic_bytes) as calls:
+                    result, rows = self.collect(root)
+                self.assertEqual(2, result)
+                self.assertEqual(["collection"], [row["carrier"] for row in rows])
+                self.assertEqual([qualification.OBSERVER_STATE], [call.args[1] for call in calls.call_args_list])
+
+    def test_partial_malformed_oversized_or_changed_carriers_never_publish_valid_prefixes_as_complete(self):
+        cases = (
+            ("pair", self.encode(self.pair()[:3]), "partial"),
+            ("pair", self.encode(self.pair()) + b"{}\n", "refused"),
+            ("enclosure", self.encode(self.enclosure()[:-1]), "partial"),
+            ("enclosure", b"x" * 8193, "refused"),
+            ("required-boundary", b"ES111CXX", "refused"),
+            ("required-lookup", WindowsShellLookupDiagnosticTests().encode(
+                WindowsShellLookupDiagnosticTests().v2_records()[:3]), "partial"),
+            ("auxiliary-lookup", WindowsShellLookupDiagnosticTests().encode(
+                WindowsShellLookupDiagnosticTests().v2_records()), "refused"),
+        )
+        for carrier, data, status in cases:
+            with self.subTest(carrier=carrier, status=status), tempfile.TemporaryDirectory(prefix="observer-refusal-") as temporary:
+                root = Path(temporary)
+                self.custody(root)
+                self.carriers(root)
+                self.write(root, qualification.OBSERVER_FILES[carrier][0], data)
+                result, rows = self.collect(root)
+                self.assertEqual(2, result)
+                selected, = [row for row in rows if row["carrier"] == carrier]
+                self.assertEqual(status, selected["status"])
+                self.assertIs(selected["carrier_complete"], False)
+                if status == "refused":
+                    self.assertNotIn("records", selected)
+                    self.assertNotIn("observation", selected)
+        with tempfile.TemporaryDirectory(prefix="observer-link-") as temporary:
+            root = Path(temporary)
+            state = self.custody(root)
+            os.link(state, state.with_suffix(".linked"))
+            self.assertEqual("nonregular-path", self.collect(root)[1][0]["code"])
+
+    def test_same_job_binding_rejects_context_drift_without_exporting_environment(self):
+        environment = {
+            "GITHUB_ACTIONS": "true", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_REPOSITORY": "PenniLogic/api", "GITHUB_REPOSITORY_ID": "1394134582",
+            "GITHUB_REPOSITORY_OWNER_ID": "335295566", "GITHUB_JOB": "windows", "GITHUB_SHA": "a" * 40,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GH_TOKEN": MARKER,
+        }
+        with tempfile.TemporaryDirectory(prefix="observer-context-") as temporary:
+            root = Path(temporary)
+            with mock.patch.dict(qualification.os.environ, environment, clear=True):
+                self.custody(root)
+                self.carriers(root)
+                self.assertEqual(0, self.collect(root)[0])
+                for key, replacement in (("GITHUB_RUN_ID", "124"), ("GITHUB_RUN_ATTEMPT", "2"),
+                                         ("GITHUB_JOB", "ci"), ("GITHUB_REPOSITORY_ID", "1394135059"),
+                                         ("GITHUB_REPOSITORY_OWNER_ID", "1"), ("GITHUB_SHA", "b" * 40),
+                                         ("GITHUB_EVENT_NAME", "pull_request"), ("GITHUB_ACTIONS", "false"),
+                                         ("GITHUB_ACTIONS", "True")):
+                    with self.subTest(key=key), mock.patch.dict(qualification.os.environ, {key: replacement}):
+                        self.assertEqual(2, self.collect(root)[0])
+
+    def test_each_fixed_read_uses_one_overflow_byte_and_checks_reparse_and_file_identity(self):
+        with tempfile.TemporaryDirectory(prefix="observer-read-bound-") as temporary:
+            root = Path(temporary)
+            native_open, native_lstat, native_fstat = qualification.os.fdopen, Path.lstat, qualification.os.fstat
+            readers = []
+
+            @contextlib.contextmanager
+            def bounded_read(descriptor, mode, **options):
+                with native_open(descriptor, mode, **options) as stream:
+                    reader = mock.Mock(wraps=stream)
+                    readers.append(reader)
+                    yield reader
+
+            for relative, limit in qualification.OBSERVER_FILES.values():
+                path = self.write(root, relative, b"x" * (limit + 20))
+                with mock.patch.object(qualification.os, "fdopen", side_effect=bounded_read):
+                    self.assertEqual(limit + 1, len(qualification.diagnostic_bytes(root, relative, limit)))
+                readers[-1].read.assert_called_once_with(limit + 1)
+
+            relative, limit = qualification.OBSERVER_FILES["auxiliary-boundary"]
+            path = root / relative
+            for guarded in (root, root / "build", path.parent, path):
+                def lstat(candidate):
+                    return (mock.Mock(st_mode=qualification.stat.S_IFREG, st_file_attributes=0x400)
+                            if candidate == guarded else native_lstat(candidate))
+
+                with self.subTest(reparse=guarded.name), mock.patch.object(Path, "lstat", autospec=True, side_effect=lstat), \
+                        mock.patch.object(qualification.os, "open") as reader:
+                    with self.assertRaisesRegex(qualification.Refused, "reparse-path"):
+                        qualification.diagnostic_bytes(root, relative, limit)
+                    reader.assert_not_called()
+            for field in ("st_ino", "st_size", "st_mtime_ns"):
+                calls = []
+
+                def fstat(descriptor):
+                    metadata = native_fstat(descriptor)
+                    calls.append(metadata)
+                    if len(calls) == 2:
+                        values = {key: getattr(metadata, key)
+                                  for key in ("st_mode", "st_dev", "st_ino", "st_size", "st_mtime_ns")}
+                        values[field] += 1
+                        return mock.Mock(**values)
+                    return metadata
+
+                with self.subTest(changed=field), mock.patch.object(qualification.os, "fstat", side_effect=fstat):
+                    with self.assertRaisesRegex(qualification.Refused, "file-changed"):
+                        qualification.diagnostic_bytes(root, relative, limit)
+
+    def test_worst_case_lookup_projection_remains_bounded_and_never_truncates_roots(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        records = lookup.v2_records()
+        records[0]["roots"] = [
+            {"i": index, "kind": "unknown", "sha256": hashlib.sha256(str(index).encode("ascii")).hexdigest(),
+             "duplicate_of": None} for index in range(32)
+        ]
+        records[2]["ms"] = 100000
+        records[3]["ms"] = 600000
+        records[4].update(ms=600000, lookup_ms=500000, command_type=256)
+        with tempfile.TemporaryDirectory(prefix="observer-public-bound-") as temporary:
+            root = Path(temporary)
+            self.custody(root)
+            self.carriers(root)
+            self.write(root, qualification.LOOKUP, lookup.encode(records))
+            result, rows = self.collect(root)
+            self.assertEqual(0, result)
+            required, = [row for row in rows if row["carrier"] == "required-lookup"]
+            self.assertEqual(32, len(required["records"][0]["roots"]))
+            size = len(json.dumps(required, sort_keys=True, separators=(",", ":")).encode("ascii")) + len(os.linesep)
+            self.assertLessEqual(size, 4096)
+            with mock.patch.object(qualification, "DIAGNOSTIC_BYTE_LIMIT", size - 1):
+                result, rows = self.collect(root)
+            self.assertEqual(2, result)
+            required, = [row for row in rows if row["carrier"] == "required-lookup"]
+            self.assertEqual("projection-limit", required["code"])
+            self.assertNotIn("records", required)
+
+    def test_cli_is_explicit_default_off_and_collection_never_launches_owning_work(self):
+        with mock.patch.object(qualification.sys, "platform", "win32"), \
+                mock.patch.object(qualification, "qualify") as qualify, \
+                mock.patch.object(qualification, "collect_observer_diagnostics", return_value=2) as collect:
+            with mock.patch.dict(qualification.os.environ, {"PENNILOGIC_API106_OBSERVER_PAIR": "true"}):
+                self.assertEqual(0, qualification.main(["--require-prepared"]))
+            qualify.assert_called_once_with(qualification.ROOT, require_prepared=True)
+            qualify.reset_mock()
+            self.assertEqual(0, qualification.main(["--require-prepared", "--api106-observer-pair"]))
+            qualify.assert_called_once_with(qualification.ROOT, require_prepared=True, api106_observer_pair=True)
+            qualify.reset_mock()
+            self.assertEqual(2, qualification.main(["--collect-api106-observer-pair"]))
+            collect.assert_called_once_with(qualification.ROOT)
+            qualify.assert_not_called()
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                qualification.main(["--api106-observer-pair", "--collect-api106-observer-pair"])
+
+    def test_unapproved_whole_command_budget_and_unprepared_inputs_refuse_before_work(self):
+        self.assertEqual((270, 300), (qualification.OBSERVER_COMMAND_SECONDS, qualification.OBSERVER_CLOSED_SECONDS))
+        with tempfile.TemporaryDirectory(prefix="observer-not-admitted-") as temporary:
+            root = Path(temporary)
+            self.runtime_selection.side_effect = qualification.Refused("observer-same-job-preparation")
+            with mock.patch.object(qualification, "observer_budget_module") as module, \
+                    mock.patch.object(qualification.subprocess, "run") as direct:
+                with self.assertRaisesRegex(qualification.Refused, "observer-same-job-preparation"):
+                    qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                module.assert_called_once_with(root)
+                module.reset_mock()
+                with self.assertRaisesRegex(qualification.Refused, "observer-pair-requires-prepared"):
+                    qualification.qualify(root, api106_observer_pair=True)
+                module.assert_not_called()
+                direct.assert_not_called()
+            self.assertFalse((root / qualification.OBSERVER_STATE).exists())
+            for invalid in (None, False, True, 0, -1, 269, 271, 300, "270", float("inf")):
+                with self.subTest(allowance=invalid), mock.patch.object(qualification, "OBSERVER_COMMAND_SECONDS", invalid), \
+                        mock.patch.object(qualification, "observer_budget_module") as module:
+                    with self.assertRaisesRegex(qualification.Refused, "observer-whole-command-budget-unapproved"):
+                        qualification.observer_owning_command(root)
+                    module.assert_not_called()
+
+    def test_mocked_whole_command_uses_existing_owner_capture_and_exact_full_suite_argv(self):
+        with tempfile.TemporaryDirectory(prefix="observer-command-") as temporary:
+            root = Path(temporary)
+            budget = self.budget()
+            with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                    mock.patch.object(qualification.subprocess, "run") as direct:
+                result = qualification.observer_owning_command(root)
+                direct.assert_not_called()
+            self.assertEqual(1, result.returncode)
+            budget.run.assert_called_once_with(
+                [sys.executable, str(root / "scripts/quality.py"), "test", "--require-prepared", "--api106-observer-pair"],
+                root, 270, capture=True, separate=True, env=budget.environment.return_value,
+            )
+            self.runtime_selection.assert_called_once_with(root, budget)
+            budget.environment.assert_called_once_with(supplied={"CI": "true", "JAVA_HOME": "synthetic-jdk"},
+                                                       runtime_dirs=[Path("synthetic-git-directory")])
+            state = [json.loads(line) for line in (root / qualification.OBSERVER_STATE).read_bytes().splitlines()]
+            self.assertEqual({"v": 1, "phase": "settled", "status": "exited", "returncode": 1}, state[-1])
+            before = (root / qualification.OBSERVER_STATE).read_bytes()
+            with mock.patch.object(qualification, "observer_budget_module") as module:
+                with self.assertRaisesRegex(qualification.Refused, "observer-preexisting-diagnostic"):
+                    qualification.observer_owning_command(root)
+                module.assert_not_called()
+            self.assertEqual(before, (root / qualification.OBSERVER_STATE).read_bytes())
+
+    def test_each_stale_carrier_and_wrong_budget_source_refuses_before_import_or_spawn(self):
+        for relative, _ in qualification.OBSERVER_FILES.values():
+            with self.subTest(relative=relative.name), tempfile.TemporaryDirectory(prefix="observer-stale-") as temporary:
+                root = Path(temporary)
+                path = self.write(root, relative, MARKER.encode())
+                with mock.patch.object(qualification, "observer_budget_module") as module:
+                    with self.assertRaisesRegex(qualification.Refused, "observer-preexisting-diagnostic"):
+                        qualification.observer_owning_command(root)
+                    module.assert_not_called()
+                self.assertEqual(MARKER.encode(), path.read_bytes())
+                self.assertFalse((root / qualification.OBSERVER_STATE).exists())
+        with tempfile.TemporaryDirectory(prefix="observer-owner-pin-") as temporary:
+            root = Path(temporary)
+            self.write(root, Path("scripts/process_budget.py"), b"raise AssertionError('must not import')\n")
+            with self.assertRaisesRegex(qualification.Refused, "observer-budget-source"):
+                qualification.observer_budget_module(root)
+
+    def test_state_finalization_and_close_failures_cannot_replace_the_primary_budget_failure(self):
+        for failed_operation in ("record", "close"):
+            with self.subTest(operation=failed_operation), tempfile.TemporaryDirectory(prefix="observer-state-error-") as temporary:
+                root = Path(temporary)
+                budget = self.budget()
+                primary = budget.BudgetExceeded()
+                budget.run.side_effect = primary
+                original_record = qualification.observer_state_record
+                original_open = Path.open
+                streams = []
+
+                def record(stream, directory, fields):
+                    if failed_operation == "record" and fields["phase"] == "settled":
+                        raise OSError(MARKER)
+                    original_record(stream, directory, fields)
+
+                def opening(path, *args, **kwargs):
+                    stream = original_open(path, *args, **kwargs)
+                    streams.append(stream)
+                    if failed_operation == "close":
+                        wrapped = mock.Mock(wraps=stream)
+
+                        def close():
+                            stream.close()
+                            raise OSError(MARKER)
+
+                        wrapped.close.side_effect = close
+                        return wrapped
+                    return stream
+
+                output, errors = io.StringIO(), io.StringIO()
+                with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification, "observer_state_record", side_effect=record), \
+                        mock.patch.object(Path, "open", autospec=True, side_effect=opening), \
+                        contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    with self.assertRaises((qualification.Refused, budget.BudgetExceeded)) as caught:
+                        qualification.observer_owning_command(root)
+                self.assertTrue(all(stream.closed for stream in streams))
+                self.assertTrue(caught.exception is primary or caught.exception.__cause__ is primary)
+                self.assertIn("state-finalization" if failed_operation == "record" else "state-close-unconfirmed",
+                              errors.getvalue())
+                self.assertNotIn(MARKER, output.getvalue() + errors.getvalue())
+
+    def test_a_short_prepared_record_never_releases_the_mocked_owner(self):
+        with tempfile.TemporaryDirectory(prefix="observer-short-state-") as temporary:
+            root = Path(temporary)
+            budget = self.budget()
+            original_open = Path.open
+            streams = []
+
+            def opening(path, *args, **kwargs):
+                stream = original_open(path, *args, **kwargs)
+                streams.append(stream)
+                wrapped = mock.Mock(wraps=stream)
+                wrapped.write.side_effect = lambda data: stream.write(data[:1])
+                return wrapped
+
+            with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                    mock.patch.object(Path, "open", autospec=True, side_effect=opening):
+                with self.assertRaisesRegex(qualification.Refused, "observer-state-short-write"):
+                    qualification.observer_owning_command(root)
+            budget.run.assert_not_called()
+            self.assertTrue(all(stream.closed for stream in streams))
+            self.assertEqual("partial-line", self.collect(root)[1][0]["code"])
+
+    def test_budget_and_cleanup_errors_keep_failure_precedence_and_unconfirmed_custody_closed(self):
+        for failure in ("budget", "output", "cleanup"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="observer-failure-") as temporary:
+                root = Path(temporary)
+                budget = self.budget()
+                error = (budget.BudgetExceeded() if failure == "budget" else
+                         budget.OutputExceeded() if failure == "output" else OSError(MARKER))
+                budget.run.side_effect = error
+                output = io.StringIO()
+                with mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        contextlib.redirect_stdout(output):
+                    with self.assertRaises(qualification.Refused if failure != "cleanup" else OSError) as caught:
+                        qualification.observer_owning_command(root)
+                self.assertNotIn(MARKER, output.getvalue())
+                state = (root / qualification.OBSERVER_STATE).read_bytes().splitlines()
+                self.assertEqual(1 if failure == "cleanup" else 2, len(state))
+                if failure == "cleanup":
+                    self.assertIs(error, caught.exception)
+                    self.assertEqual("observer-owner-not-settled", self.collect(root)[1][0]["code"])
+                else:
+                    self.assertIs(error, caught.exception.__cause__)
+                    record, = [json.loads(line) for line in output.getvalue().splitlines()
+                               if json.loads(line)["event"] == "windows_observer_owning_failure"]
+                    self.assertEqual(failure + "-budget-exceeded" if failure == "output" else "work-budget-exceeded",
+                                     record["code"])
+                    self.assertLessEqual(len(output.getvalue().encode("ascii")), 4096)
+
+    def test_paired_result_does_not_bypass_existing_complete_discovery_junit_or_exit_gates(self):
+        fixture = WindowsOutcomeTests()
+        for exit_code, task in ((0, "> Task :test"), (1, "> Task :test"), (0, "> Task :test FROM-CACHE")):
+            with self.subTest(exit_code=exit_code, task=task), tempfile.TemporaryDirectory(prefix="observer-outcomes-") as temporary:
+                root = Path(temporary)
+
+                def run(unused_root):
+                    fixture.write_junit(root)
+                    return subprocess.CompletedProcess([], exit_code, (task + "\n").encode(),
+                                                       fixture.python_report().encode())
+
+                output = io.StringIO()
+                with mock.patch.object(qualification, "observer_owning_command", side_effect=run) as owned, \
+                        mock.patch.object(qualification.subprocess, "run") as direct, contextlib.redirect_stdout(output):
+                    if exit_code or "FROM-CACHE" in task:
+                        with self.assertRaises(qualification.Refused):
+                            qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                        self.assertNotIn('"ok": true', output.getvalue())
+                    else:
+                        qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                        self.assertIn('"ok": true', output.getvalue())
+                    owned.assert_called_once_with(root)
+                    direct.assert_not_called()
 
 
 class WindowsShellLookupDiagnosticTests(unittest.TestCase):

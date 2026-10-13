@@ -279,14 +279,18 @@ described below. The lookup JSON grammar and its 4096-byte public bound remain
 unchanged by that extension.
 
 An optional `Read approved-shell command boundary` step follows `Run Windows owning
-suites` in that same job. Its `always()` condition retains reporting after an owning
-failure. It uses `pwsh` at `${{ github.workspace }}` and a one-minute step cap inside
+suites` in that same job. Its ordinary-route `always()` condition retains reporting
+after an owning failure. The explicit observer-pair route below instead collects
+this carrier together with the other five, only after confirmed command ownership
+has settled; the original reader is excluded on that route. The original reader
+uses `pwsh` at `${{ github.workspace }}` and a one-minute step cap inside
 the unchanged job cap. The reader is embedded in the generator, keeping historical
 CI rendering self-contained in the existing generator/profile pair. There is no
 `hashFiles` expression or extra helper: file hashing would read the whole marker
 before the step, outside the reader's bound. The owning result, all twelve native
 fail-fast guards and the required CI result remain unchanged; there is no
-`continue-on-error`, upload action or qualifier/parser change.
+`continue-on-error` or upload action. The ordinary reader's script bytes and
+qualifier behavior remain unchanged by observer-pair forwarding.
 
 The reader consumes at most eight bytes to detect overflow, accepts only the finite
 zero-to-seven-byte checkpoint protocol, and emits a fixed JSON record bounded to
@@ -325,6 +329,179 @@ cause, pipe identity, shell exit, EOF, cleanup or qualification. Runner loss or 
 hard timeout may prevent any readback. Instrumentation, fresh same-job custody,
 independent review, publication and any one-shot hosted use require separate release.
 
+The API-only Boolean `workflow_dispatch.inputs.api106_observer_pair` defaults to
+`false`. Only an explicit dispatch value `true` selects the qualifier's
+`--api106-observer-pair` argument, together with `--require-prepared`. Push/PR,
+ordinary Windows, Linux, setup and other repositories do not opt in. The qualifier
+does not promote an ambient environment variable into this selection. The paired
+argument forwards to the existing full
+`python scripts/quality.py test --require-prepared --api106-observer-pair` interface:
+full ordinary unittest discovery and, if that succeeds, the existing Gradle test
+and metrics path. It is not a selected-test proxy.
+
+**The paired route has source-level runtime wiring, not native activation or
+acceptance.** The explicit route uses the fixed `OBSERVER_COMMAND_SECONDS = 270`,
+with no environment or CLI allowance override, and the API's existing, byte-pinned
+`scripts/process_budget.py` at SHA-256
+`a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364`
+(30,820 bytes), loaded only at that explicit callsite. Its `run` interface owns
+creation, the release-gated Windows Job, separate stdout/stderr capture and
+cleanup. Its existing four-MiB combined capture bound and ten-second Job cleanup
+allowance are not changed. Existing capture/Job/timing exception-note parsers
+retain only their bounded public projections. No replacement controller, native
+operation at import time, raw output or environment dump is introduced.
+
+The workflow binds the actual job-selected Git image before checkout and places
+that exact directory first for checkout. The same pinned checkout/setup-Python/
+setup-Java actions supply the executed commit, Python image/version and JDK
+home/version to the opt-in call. Its same-job read-only Git admission requires a
+clean standalone checkout, matching workspace/Git/common directories and the
+dispatch commit, and binds the current HEAD, index and repository configuration
+bytes. The qualifier rejects changed metadata or a changed selected Git image,
+and requires outer-owner/target Python and base-prefix agreement. These setup
+selections, the hosted runner's installed runtimes and the checked-out source
+are provenance inputs; merely filtering an inherited PATH would not bind them.
+No path is copied from a developer's host or an earlier run.
+Only the opt-in qualifier driver uses `-I -S -B` to exclude inherited Python
+startup injection; the full `quality.py test` child retains its ordinary
+interpreter startup and exact existing argument list.
+
+The existing successful terminal `materialize_money_sources.py --verify`
+binds all eleven Money inputs and fourteen provider files. The immediately
+preceding no-fetch database `prepare`/`verify` and interop SOURCE
+`prepare --require-prepared` checks retain the exact five database payloads and
+39 interop inputs plus their acquisition receipt. Only their guarded same-job
+path reaches the prepared marker and qualifier; missing preparation is refusal,
+not a substitute for executing the intended prepared test paths. There is no
+client-runtime `interop verify`, selected-test replacement or new preparation
+framework.
+
+The finite owner environment has **one** explicit additional runtime directory:
+the bound Git executable's parent. The existing helper derives the same Python/
+base-prefix Scripts directories, the selected `JAVA_HOME` bin and actual
+System32/WindowsPowerShell/Wbem paths. The existing resolver must select the
+bound Python, Git and Java images; shadowed selections or missing approved
+System32 cmd/WindowsPowerShell images refuse before process creation.
+No Node, npm, Docker or oasdiff directory
+is needed by this command. The Docker-named native fixture copies `cmd.exe`; it
+does not need Docker. The parent passes a constructed mapping, never ambient
+PATH or `dict(os.environ)`: explicit CI flags, selected JDK and fresh,
+exclusive same-job HOME/USERPROFILE, TEMP/TMP/TMPDIR and GRADLE_USER_HOME roots.
+Credentials, proxies, Git selectors and Python/Java/Node/Gradle option injection
+variables are not carried into the owner. Existing tests may still construct
+their own source-defined synthetic child environments.
+
+The fresh Gradle home contains only toolchain-selection properties for the
+setup-Java JDK21; alternate JDK detection/download is disabled, not ordinary
+Gradle/dependency acquisition. Pre-existing project `.gradle`/`.kotlin` state
+or executable shadow files refuse this route. The job-owned runtime directories
+are retained rather than deleted on uncertain cleanup. This is intentionally
+not a claim of a warm cache or offline execution: the normal success-only
+wrapper distribution and locked/checksummed dependency downloads remain inside
+the full command's 270-second work allowance. There is no `--offline`, install/
+prewarming step, task filter, unrelated SDK or database-service graph. Ordinary
+JVM tests retain their loopback use and existing visible privilege/skip behavior.
+
+The work allowance plus the unchanged single ten-second outer cleanup is
+nominally 280 seconds, leaving twenty seconds below **300**, not establishing a
+timing result. A separate monotonic-nanosecond interval starts before owner
+environment construction and ends after owner return, capture EOF, custody
+settlement and custody close. Thus it includes child interpreter startup, the
+child's final printing/exit and physical owner cleanup. Qualification refuses
+an actual interval **at or above 300 seconds**, independently of a child exit
+code or the nominal budget. An existing primary budget/cleanup error is not
+replaced by this additional timing failure. The fixed
+`windows_observer_owning_interval` record is diagnostic-only; a fast failure or
+watchdog return is not suite acceptance.
+
+Owning budget/output failures retain their original exception as the explicit
+cause; an owning process/cleanup `OSError` retains its identity. Diagnostic I/O
+does not prevent the required custody settlement or close attempt, nor replace
+an active failure when either attempt also fails. Fixed-code
+`windows_observer_secondary_failure` records report these secondary facts on
+stderr; fixed exception notes retain them if that reporting also fails. No
+secondary exception text, host path or child output is published. Unconfirmed
+owner release still leaves prepared-only custody. A custody-close failure can
+occur after settled bytes are already visible; those bytes do not attest close.
+
+If a nonzero owning result was already captured before an interval, report or
+custody-finalization failure, qualification retains that failed result and uses
+the same Python outcome parser and bounded diagnostic projection: complete
+hashed outcomes or the existing incomplete negative prefix with capture byte
+counts and hashes. It then refuses with the owning command failure; no partial
+inventory can become acceptance. A further projection I/O failure retains the
+nonzero result and fixed secondary facts rather than replacing it. A successful
+child still refuses on a closed interval at or above 300 seconds or any required
+report/finalization failure. This adds neither an alternate acceptance parser
+nor another process owner.
+
+Runtime/source/preparation admission before that interval, subsequent outcome/
+JUnit parsing and the separate collector remain job/workflow costs. Inner
+`quality_duration` starts only after argparse and is not the closed owning-call
+measurement. The earlier less-than-230 arithmetic charged the collector to the
+suite; it was a conservative proposal, not the product's suite limit. The
+collector's one-minute ceiling remains separate. The pair's 48-second work /
+60-second total / 12-second reserve, both 10+10 arms and supervisor cleanup are
+nested inside the command, not added again. API's actual complete-suite
+under-300 and strict native job **and** whole-workflow under-600 requirements,
+the 30-minute platform cap, ordinary defaults and the both-success aggregate
+are unchanged. Source/synthetic checks do not demonstrate any native threshold;
+activation, actual history binding and native acceptance require their separate
+releases.
+
+The opt-in `Read API106 observer-pair diagnostics` step runs under `always()` in
+the same Windows job, including after an owning failure, at the workspace root
+with a one-minute cap. Its `--collect-api106-observer-pair` mode cannot run the
+owner. It reads only this fixed allowlist under `build/diagnostics`:
+
+| Carrier | File | Whole-input limit |
+| --- | --- | --- |
+| Required checkpoint | `api106-approved-shell-boundary.bin` | 7 bytes; read at most 8 |
+| Required lookup | `api106-approved-shell-module-lookup.jsonl` | 8,192 bytes |
+| Pair | `api106-approved-shell-observer-pair.jsonl` | 4,096 bytes; at most 6 records |
+| Enclosure | `api106-approved-shell-enclosure.jsonl` | 8,192 bytes; at most 8 records |
+| Auxiliary checkpoint | `api106-approved-shell-auxiliary-boundary.bin` | 7 bytes; read at most 8 |
+| Auxiliary lookup | `api106-approved-shell-auxiliary-module-lookup.jsonl` | 8,192 bytes |
+
+Pair/enclosure envelopes remain v1 with at most 1,024 bytes per LF-terminated
+record; the implementation being called v3 does not change their wire versions.
+The existing v1/v2 lookup grammar, five-record v2 and 6,144-byte line caps remain
+unchanged. The no-lookup-delegates auxiliary can have only its roots record; that
+is not a completed lookup capsule. Duplicate keys, extra fields, impossible
+ordering, changed budgets, truncated lines and oversized suffixes refuse the
+whole carrier. Valid prefixes are explicitly partial, never complete-pair credit.
+Pair `acceptance: false`, required failure, whole-command failure and all existing
+full-discovery/JUnit qualification gates remain authoritative. An enclosure's
+cleanup record explicitly does not attest report close; a complete sequence also
+does not turn a false release or failed suite into success.
+
+A seventh, collector-owned fixed file,
+`api106-observer-collection-state.jsonl`, carries only two custody records:
+prepared and settled, at most 512 bytes each / 1,024 bytes total, with a one-byte
+overflow read. Preparation requires all six carriers and this state file to be
+absent, and uses exclusive creation without deleting stale evidence. Its context
+digest binds the workspace directory identity and, on GitHub, the exact API
+numeric repository/organization, Windows job, run, attempt and executed SHA.
+Local explicit use is bound only to that workspace identity, not represented as
+hosted evidence. Confirmed return from the existing owner, including its
+post-cleanup budget exception, permits the settled record. A spawn, capture,
+cleanup or state-finalization error without that proof leaves collection closed.
+Missing, stale, linked, changed or incomplete custody does not authorize reading
+any carrier. Regular-file, reparse, identity, size and modification checks bracket
+each bounded read; no glob, arbitrary-file scan or timestamp-only freshness claim
+is used.
+
+The collector emits at most six diagnostic-only projections, each at most the
+unchanged 4,096-byte public bound. It repeats the actual owning return status,
+never raw streams, paths, values, handles or credentials. Missing, invalid or
+partial observations return a nonzero collection result; the owning failure is
+not caught, overwritten or converted to success. The default route retains the
+original independent readback. On the paired route, unconfirmed ownership refuses
+readback rather than falling through to that less restrictive legacy reader.
+Job cancellation or runner loss can still prevent collection. The existing
+10,001-ms approved-shell work expiration and its unknown cause are not repaired
+or explained by this plumbing.
+
 The shared unittest parser accepts an outcome only on its case line or the
 immediately following docstring line. Interleaved diagnostics, orphaned status
 lines and incomplete records refuse the entire outcome stream; they cannot be
@@ -348,12 +525,19 @@ the Infra extension below originally retained all three API output bytes. The
 shared outcome-parser correction changed only the generated qualifier. The
 input-only prerequisite correction changes API CI and its checker digest, leaving
 that qualifier, API Linux/setup/manual commands and every other profile unchanged.
-The API registry now binds the `C` reader to the real source commit
+The accepted API registry binds the `C` reader to the real source commit
 `822c5a501879b5224a4e0020c5e84157749e9071` through a separate binding change.
 Its historical generator must reproduce the current API workflow and checker;
 the prior `d31994d6` binding cannot represent this reader. Full-history validation
 remains required, and a prebinding mismatch remains an honest failure, not a
 placeholder reference or an acceptance waiver.
+The uncommitted observer-pair increment additionally changes the workflow and
+checker, so that old reference is not its binding. Official generation, an actual
+new source commit and a separate real-history registry update are still required;
+no future SHA is invented and the full-history equality controls are not skipped.
+The accepted `a40b9018` and `0f5f7b7c` workflow/checker/qualifier pins remain
+historical controls, and removing only the explicit observer additions must
+recover the entire accepted `0f5f7b7c` workflow byte for byte.
 Adopt all three atomically with the API-owned combined-build interface, only after
 separate producer/consumer review and protected acceptance. Synthetic Infra runner,
 parser and shell controls are not execution of the two API tests. Native Windows

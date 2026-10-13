@@ -15,6 +15,7 @@ from pathlib import Path
 import conformance_support as support
 from conformance import generator as generator_module
 from conformance import registry, schema, steps
+from test_api_native_source_fetch import remove_observer_pair
 
 
 class SchemaValidatorTests(unittest.TestCase):
@@ -161,7 +162,7 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(support.generator.checker("api"), historical.checker("api"))
 
     def test_previous_api_refs_cannot_bind_the_writer_return_reader(self):
-        current = json.loads(support.generator.workflow("api"))
+        current = remove_observer_pair(self, json.loads(support.generator.workflow("api")))
         for ref in ("d31994d63001f97a0fc78c411cca9380ca2a7dcd", "c33625aae38673e49c0ad2d57277116b8b79ba98"):
             with self.subTest(ref=ref):
                 rendered = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
@@ -176,6 +177,15 @@ class RegistryTests(unittest.TestCase):
                 self.assertNotIn("pre_record_writer_return", old_reader["run"])
                 previous["jobs"]["windows"]["steps"][-1] = new_reader
                 self.assertEqual(current, previous)
+
+    def test_previous_api_ref_cannot_bind_the_observer_pair_opt_in(self):
+        current = json.loads(support.generator.workflow("api"))
+        previous = registry.render_workflow_at(
+            support.GOVERNANCE.parent, "0f5f7b7ce4baa8206add295ce0adee03292a5b20", "api",
+        )
+        self.assertIsNotNone(previous, "the accepted pre-observer source must exist in real history")
+        self.assertNotEqual(current, json.loads(previous))
+        self.assertEqual(json.loads(previous), remove_observer_pair(self, copy.deepcopy(current)))
 
     def test_android_workflow_ref_exists_and_renders_the_exact_combined_caller(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")

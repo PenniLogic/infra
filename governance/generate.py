@@ -348,6 +348,64 @@ def powershell_commands(commands):
     return "\n".join(command + "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" for command in commands)
 
 
+def api_observer_git_step():
+    return {
+        "name": "Bind API106 checkout Git", "id": "api106_git",
+        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.api106_observer_pair == true }}",
+        "shell": "pwsh",
+        "run": r"""$ErrorActionPreference = 'Stop'
+try {
+    $git = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+    if (![IO.Path]::IsPathFullyQualified($git) -or [IO.Path]::GetFileName($git) -cne 'git.exe' -or
+        $git -match '[\x00-\x1f\x7f]') { throw 'selection' }
+    $hash = (Get-FileHash -LiteralPath $git -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "path=$git`nsha256=$hash`n")
+    [IO.File]::AppendAllText($env:GITHUB_PATH, [IO.Path]::GetDirectoryName($git) + "`n")
+} catch {
+    [Console]::Error.WriteLine('API106 checkout Git selection refused.')
+    exit 1
+}
+""",
+    }
+
+
+def api_observer_command():
+    return r"""if ($env:PENNILOGIC_API106_OBSERVER_PAIR -ceq 'true') {
+    $ErrorActionPreference = 'Stop'
+    try {
+        if (@(Get-ChildItem Env: | Where-Object { $_.Name -imatch '^GIT_' -and $_.Name -ine 'GIT_INSTALL_ROOT' }).Count -ne 0) { throw 'git selectors' }
+        $git = $env:PENNILOGIC_API106_GIT
+        if ((Get-FileHash -LiteralPath $git -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+            $env:PENNILOGIC_API106_GIT_SHA256) { throw 'git selection changed' }
+        $prefix = @('--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=false')
+        $binding = @(& $git @prefix rev-parse --path-format=absolute --show-toplevel --absolute-git-dir --git-common-dir HEAD 'HEAD^{tree}' 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $binding.Count -ne 5) { throw 'checkout binding' }
+        $root = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+        $metadata = Join-Path $root '.git'
+        if ([IO.Path]::GetFullPath($binding[0]) -cne $root -or
+            [IO.Path]::GetFullPath($binding[1]) -cne $metadata -or
+            [IO.Path]::GetFullPath($binding[2]) -cne $metadata -or
+            $binding[3] -cne $env:GITHUB_SHA -or $binding[3] -cne $env:PENNILOGIC_API106_CHECKOUT -or
+            $binding[4] -cnotmatch '\A[0-9a-f]{40}\z') { throw 'checkout mismatch' }
+        $status = @(& $git @prefix status --porcelain=v1 --untracked-files=normal 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'checkout not clean' }
+        & $git @prefix diff --no-ext-diff --no-textconv --quiet HEAD -- 2>$null
+        if ($LASTEXITCODE -ne 0) { throw 'checkout differs' }
+        $env:PENNILOGIC_API106_TREE = $binding[4]
+        $env:PENNILOGIC_API106_HEAD_SHA256 = (Get-FileHash -LiteralPath (Join-Path $metadata 'HEAD') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $env:PENNILOGIC_API106_INDEX_SHA256 = (Get-FileHash -LiteralPath (Join-Path $metadata 'index') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $env:PENNILOGIC_API106_CONFIG_SHA256 = (Get-FileHash -LiteralPath (Join-Path $metadata 'config') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $env:PENNILOGIC_API106_PREPARED = 'verified'
+    } catch {
+        [Console]::Error.WriteLine('API106 same-job source and preparation binding refused.')
+        exit 1
+    }
+    & $env:PENNILOGIC_API106_PYTHON -I -S -B scripts\qualify_windows.py --require-prepared --api106-observer-pair
+} elseif ($env:PENNILOGIC_API106_OBSERVER_PAIR -ceq 'false') {
+    python scripts\qualify_windows.py --require-prepared
+} else { throw 'API106 observer selection must be a Boolean' }"""
+
+
 def api_source_steps(profile, windows=False):
     def script(commands):
         return (powershell_commands([command.replace("/", "\\") for command in commands])
@@ -374,16 +432,39 @@ def api_windows_job(profile):
                                       profile["commands"].index("python scripts/quality.py build")]
     commands = [api_prepared_command(command).replace("/", "\\") for command in preparation]
     commands.append("python -I -S -B scripts\\money_client_interop.py prepare --require-prepared")
-    commands.append("python scripts\\qualify_windows.py --require-prepared")
+    commands.append(api_observer_command())
+    tools = tool_steps(profile)
+    for index, name in ((0, "checkout"), (1, "python"), (3, "java")):
+        tools[index]["id"] = "api106_" + name
+    sources = api_source_steps(profile, windows=True)
+    sources[2]["id"] = "api106_money"
     return {
         "name": "Windows qualification", "runs-on": "windows-2025",
         "timeout-minutes": profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES),
-        "steps": [*tool_steps(profile), *api_source_steps(profile, windows=True), {
+        "steps": [api_observer_git_step(), *tools, *sources, {
             "name": "Run Windows owning suites",
+            "env": {"PENNILOGIC_API106_OBSERVER_PAIR":
+                    "${{ github.event_name == 'workflow_dispatch' && inputs.api106_observer_pair == true }}",
+                    "PENNILOGIC_API106_GIT": "${{ steps.api106_git.outputs.path }}",
+                    "PENNILOGIC_API106_GIT_SHA256": "${{ steps.api106_git.outputs.sha256 }}",
+                    "PENNILOGIC_API106_CHECKOUT": "${{ steps.api106_checkout.outputs.commit }}",
+                    "PENNILOGIC_API106_PYTHON": "${{ steps.api106_python.outputs.python-path }}",
+                    "PENNILOGIC_API106_PYTHON_VERSION": "${{ steps.api106_python.outputs.python-version }}",
+                    "PENNILOGIC_API106_JAVA": "${{ steps.api106_java.outputs.path }}",
+                    "PENNILOGIC_API106_JAVA_VERSION": "${{ steps.api106_java.outputs.version }}",
+                    "PENNILOGIC_API106_MONEY": "${{ steps.api106_money.outcome }}",
+                    "PENNILOGIC_API106_TEMP": "${{ runner.temp }}"},
             "run": powershell_commands(commands),
         }, {
+            "name": "Read API106 observer-pair diagnostics",
+            "if": "${{ always() && github.event_name == 'workflow_dispatch' && inputs.api106_observer_pair == true }}",
+            "shell": "pwsh",
+            "working-directory": "${{ github.workspace }}",
+            "timeout-minutes": 1,
+            "run": powershell_commands(["python scripts\\qualify_windows.py --collect-api106-observer-pair"]),
+        }, {
             "name": "Read approved-shell command boundary",
-            "if": "always()",
+            "if": "${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.api106_observer_pair == true) }}",
             "shell": "pwsh",
             "working-directory": "${{ github.workspace }}",
             "timeout-minutes": 1,
@@ -507,6 +588,11 @@ def workflow(repo, setup=False):
             steps.append({"name": "Install dependencies", "run": "\n".join(profile["install"])})
         steps.append({"name": "Install managed hook", "run": "python scripts/setup.py"})
     events = {"workflow_dispatch": {}}
+    if repo == "api" and not setup:
+        events["workflow_dispatch"] = {"inputs": {"api106_observer_pair": {
+            "description": "Opt in to the diagnostic observer pair; owning failures still fail CI",
+            "type": "boolean", "required": False, "default": False,
+        }}}
     if not setup:
         events.update({"push": {"branches": ["main"]}, "pull_request": {"branches": ["main"]}})
     job = {
