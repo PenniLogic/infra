@@ -681,14 +681,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual((report["inputs"]["manifest_status"], report["inputs"]["ticket_creation"]), ("proposed", "held"))
 
     def test_cli_held_ticket_port_leaves_the_threshold_visibly_incomplete(self):
-        test = "unittest::test_integration_stack.StackLifecycleTests::test_x"
+        test = "unittest::test_rule_table.RuleTableTests::test_x"
         ledger = self.write("history.json", qs.encode({
             "schema": ledgers.SCHEMA, "repository": "PenniLogic/infra",
             "flake_events": [{"test": test, "job": "infra-ci-linux", "run_id": "synthetic-history",
                               "observed_on": qs.day(-1)}],
             "quarantines": [], "releases": [], "deletions": [],
         }))
-        first = [("test_integration_stack.StackLifecycleTests", "test_x", "failed"),
+        first = [("test_rule_table.RuleTableTests", "test_x", "failed"),
                  ("test_bootstrap.EnvFileTests", "test_y", "passed")]
         attempts = [self.write("i1.xml", qs.junit_xml(first, suite="unittest")),
                     self.write("i2.xml", qs.junit_xml([(first[0][0], "test_x", "passed")], suite="unittest"))]

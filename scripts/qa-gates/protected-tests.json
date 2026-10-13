@@ -35,8 +35,10 @@
       "kind": "package",
       "value": "test_api_build_coverage",
       "package": "infra.governance",
-      "tags": [],
-      "reason": "API build coverage hand-off plumbing"
+      "tags": [
+        "security"
+      ],
+      "reason": "API build coverage hand-off; security: asserts persist-credentials false and refuses a missing or altered base hand-off (check-bypass prevention)"
     },
     {
       "id": "PT-003",
@@ -55,8 +57,10 @@
       "kind": "package",
       "value": "test_api_node_runtime",
       "package": "infra.governance",
-      "tags": [],
-      "reason": "Pinned Node runtime hand-off to the API build"
+      "tags": [
+        "security"
+      ],
+      "reason": "Pinned Node runtime hand-off to the API build; security: refuses an expression as the runtime version and an altered hand-off (untrusted-input refusal)"
     },
     {
       "id": "PT-005",
@@ -87,7 +91,7 @@
       "value": "test_capability_paragraph",
       "package": "infra.governance",
       "tags": [],
-      "reason": "Generated reviewer-capability instruction text"
+      "reason": "Generated reviewer-capability instruction text; untagged: text rendering only, no security, privacy or money control"
     },
     {
       "id": "PT-008",
@@ -140,8 +144,11 @@
       "kind": "package",
       "value": "test_conformance_processes",
       "package": "infra.governance",
-      "tags": [],
-      "reason": "Finite process-lifetime behaviour of the conformance runner"
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Finite process-lifetime behaviour of the conformance runner; privacy and security: asserts a credential marker is redacted from bounded output"
     },
     {
       "id": "PT-013",
@@ -149,8 +156,10 @@
       "kind": "package",
       "value": "test_conformance_registry",
       "package": "infra.governance",
-      "tags": [],
-      "reason": "Check-name registry schema"
+      "tags": [
+        "security"
+      ],
+      "reason": "Check-name registry schema; security: strict JSON refuses duplicate keys and a BOM, and stale refs cannot bind (untrusted-input refusal, check-bypass prevention)"
     },
     {
       "id": "PT-014",
@@ -158,8 +167,11 @@
       "kind": "package",
       "value": "test_conformance_report",
       "package": "infra.governance",
-      "tags": [],
-      "reason": "Conformance report builder and orchestrator"
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Conformance report builder and orchestrator; privacy and security: redaction of local paths and credential-shaped strings"
     },
     {
       "id": "PT-015",
@@ -178,8 +190,10 @@
       "kind": "package",
       "value": "test_conformance_runtime_fixtures",
       "package": "infra.governance",
-      "tags": [],
-      "reason": "Unchanged consumer commands on minimal fake consumers"
+      "tags": [
+        "security"
+      ],
+      "reason": "Unchanged consumer commands on minimal fake consumers; security: an executed failing test or a removed suite is refused (check-bypass prevention)"
     },
     {
       "id": "PT-017",
@@ -187,8 +201,10 @@
       "kind": "package",
       "value": "test_conformance_steps",
       "package": "infra.governance",
-      "tags": [],
-      "reason": "Step detection and check-name production"
+      "tags": [
+        "security"
+      ],
+      "reason": "Step detection and check-name production; security: report drift refuses removed and stubbed tests (check-bypass prevention)"
     },
     {
       "id": "PT-018",
@@ -196,8 +212,11 @@
       "kind": "package",
       "value": "test_conformance_trends",
       "package": "infra.governance",
-      "tags": [],
-      "reason": "Offline CI history and publication"
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Offline CI history and publication; privacy and security: the Actions summary redacts the token and refuses annotation command injection"
     },
     {
       "id": "PT-019",
@@ -308,7 +327,7 @@
       "value": "test_rule_table",
       "package": "infra.governance",
       "tags": [],
-      "reason": "README rule table stays true to the documented code"
+      "reason": "README rule table stays true to the documented code; untagged: documentation order only, no security, privacy or money control"
     },
     {
       "id": "PT-029",
@@ -361,8 +380,10 @@
       "kind": "package",
       "value": "test_integration_stack",
       "package": "infra.tooling",
-      "tags": [],
-      "reason": "Compose stack lifecycle in self-owned projects; no security, privacy or money control"
+      "tags": [
+        "security"
+      ],
+      "reason": "Compose stack lifecycle in self-owned projects; security: credentials absent from bootstrap and container output, linked temporary root refused"
     },
     {
       "id": "PT-034",

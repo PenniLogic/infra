@@ -237,7 +237,9 @@ offline.
 `security` = credential, token or secret protection, untrusted-input refusal or check-bypass prevention;
 `privacy` = redaction or privacy inventories; `money` = money-path sources or arithmetic, or any test of a
 money-path package. Each committed test module of `scripts/tests` and `governance/tests` has one rule; a new test
-module needs a new rule, or its tests fail closed as unclassified.
+module needs a new rule, or its tests fail closed as unclassified. Rules are per module, so a module takes the
+union of its tests' tags. Every rule's `reason` records the basis of its tags; after review round 3 (ADVSEC-R3-02)
+only `test_capability_paragraph` and `test_rule_table` stay untagged (text rendering and documentation order).
 
 ## Observability
 

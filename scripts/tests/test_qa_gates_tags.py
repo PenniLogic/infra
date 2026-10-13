@@ -14,15 +14,15 @@ from qa_gates_common import Refused
 # The committed, separately reviewed classification (status "proposed"): weakening a tag must change this table.
 COMMITTED = {
     "infra.governance": {
-        "test_android_privacy_canonical": {"privacy"}, "test_api_build_coverage": set(),
-        "test_api_native_source_fetch": {"security"}, "test_api_node_runtime": set(),
+        "test_android_privacy_canonical": {"privacy"}, "test_api_build_coverage": {"security"},
+        "test_api_native_source_fetch": {"security"}, "test_api_node_runtime": {"security"},
         "test_api_windows_qualification": {"security"}, "test_baseline": {"security"},
         "test_capability_paragraph": set(), "test_conformance_api": {"security"},
         "test_conformance_capture_redaction": {"privacy", "security"}, "test_conformance_defects": {"security"},
-        "test_conformance_native_runtime": {"security"}, "test_conformance_processes": set(),
-        "test_conformance_registry": set(), "test_conformance_report": set(),
-        "test_conformance_runtime": {"security"}, "test_conformance_runtime_fixtures": set(),
-        "test_conformance_steps": set(), "test_conformance_trends": set(),
+        "test_conformance_native_runtime": {"security"}, "test_conformance_processes": {"privacy", "security"},
+        "test_conformance_registry": {"security"}, "test_conformance_report": {"privacy", "security"},
+        "test_conformance_runtime": {"security"}, "test_conformance_runtime_fixtures": {"security"},
+        "test_conformance_steps": {"security"}, "test_conformance_trends": {"privacy", "security"},
         "test_database_admission_installation": {"security"}, "test_generated_conformance_workflow": {"security"},
         "test_generated_pr_workflow_integrity": {"security"}, "test_infra_qualification": {"security"},
         "test_instruction_provenance": {"security"}, "test_money_source_fetch_reliability": {"money", "security"},
@@ -33,7 +33,7 @@ COMMITTED = {
     },
     "infra.tooling": {
         "test_bootstrap": {"security"}, "test_database_admission": {"privacy", "security"},
-        "test_integration_stack": set(), "test_qa_gates_cli": {"security"}, "test_qa_gates_junit": {"security"},
+        "test_integration_stack": {"security"}, "test_qa_gates_cli": {"security"}, "test_qa_gates_junit": {"security"},
         "test_qa_gates_ledger": {"security"}, "test_qa_gates_policy": {"security"},
         "test_qa_gates_quarantine": {"security"},
         "test_qa_gates_rate": {"security"}, "test_qa_gates_retry": {"security"},
@@ -66,6 +66,24 @@ class CommittedManifestTests(unittest.TestCase):
                     self.assertEqual((classification.state, classification.package.id, set(classification.tags)),
                                      ("known", package, expected))
         self.assertEqual(manifest.classify("unittest::test_not_listed.Case::test_case").state, "unknown")
+
+
+    def test_committed_redaction_tests_are_protected(self):
+        # Review round 3, ADVSEC-R3-02: modules holding credential or secret-redaction tests are tagged, so their
+        # tests cannot be quarantined; a documentation-only module stays untagged (control).
+        manifest = tags.load_manifest()
+        control = manifest.classify("unittest::test_rule_table.RuleTableTests::test_x")
+        self.assertEqual((control.state, control.protected), ("known", False))
+        for test in ("unittest::test_conformance_report.DocumentTests::"
+                     "test_redaction_removes_local_paths_and_credential_shaped_strings",
+                     "unittest::test_conformance_trends.Cases::"
+                     "test_actions_summary_is_redacted_and_annotation_cannot_inject_commands",
+                     "unittest::test_conformance_processes.Cases::"
+                     "test_missing_receipt_retains_timeout_result_and_redacted_bounded_output"):
+            with self.subTest(test=test):
+                classification = manifest.classify(test)
+                self.assertEqual((classification.state, classification.protected, set(classification.tags)),
+                                 ("known", True, {"privacy", "security"}))
 
 
 class ClassificationTests(unittest.TestCase):
