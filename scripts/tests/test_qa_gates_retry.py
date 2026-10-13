@@ -49,13 +49,14 @@ class DocumentConstructTests(unittest.TestCase):
     def test_keys_actions_and_commands_are_found(self):
         step = {"uses": "nick-fields/retry@0123456789012345678901234567890123456789",
                 "with": {"max_attempts": 3, "command": "pytest --reruns 1"}}
-        self.assertEqual(sorted(retry.constructs({"steps": [step]})), [("count", 1), ("count", 2)])
+        self.assertEqual(retry.constructs({"steps": [step]}), [("wrap", 2, (("count", 1),))])
+        self.assertEqual(sorted(retry.leaves(retry.constructs({"steps": [step]}))), [("count", 1), ("count", 2)])
         self.assertEqual(retry.re_executions(retry.constructs({"steps": [step]})), 5)
         self.assertEqual(retry.constructs({"test": {"retry": False}}), [("count", 0)])
 
     def test_retry_action_without_count_fails_closed(self):
         control = {"uses": "nick-fields/retry@v3", "with": {"max_attempts": 1}}
-        self.assertEqual(retry.constructs(control), [("count", 0)])
+        self.assertEqual(retry.constructs(control), [("wrap", 0, ())])
         self.assertEqual(retry.constructs({"uses": "nick-fields/retry@v3", "with": {}}), [("unknown", None)])
 
     def test_unreadable_key_value_fails_closed(self):
@@ -72,9 +73,10 @@ class DocumentConstructTests(unittest.TestCase):
         self.assertEqual(retry.constructs({"scripts": {"test:flaky": "vitest run --retry 2"}}), [("count", 2)])
 
     def test_compounded_count_is_capped(self):
-        self.assertEqual(retry.re_executions([("count", 1), ("count", 1)]), 3)
-        huge = [("count", 10 ** 5000)] * 3
-        self.assertEqual(retry.re_executions(huge), retry.EXECUTION_CAP)
+        self.assertEqual(retry.re_executions([("wrap", 1, (("count", 1),))]), 3)
+        huge = ("count", 10 ** 5000)
+        self.assertEqual(retry.re_executions([huge] * 3), retry.EXECUTION_CAP)
+        self.assertEqual(retry.re_executions([("wrap", 10 ** 5000, (huge,))]), retry.EXECUTION_CAP)
 
     def test_depth_is_bounded(self):
         node = {}
@@ -264,7 +266,8 @@ class IndependentStepsTests(unittest.TestCase):
 
     def test_independent_commands_and_scripts_take_the_largest(self):
         self.assertEqual(retry.re_executions(retry.command_constructs("pytest --reruns 1; pytest --reruns 1")), 1)
-        self.assertEqual(retry.re_executions(retry.command_constructs("pytest --reruns 1 --max-retries 1")), 3)
+        # Review round 2, PS-4: several retry flags of one command are alternatives too (the runner applies one).
+        self.assertEqual(retry.re_executions(retry.command_constructs("pytest --reruns 1 --max-retries 1")), 1)
         scripts = {"scripts": {"test": "vitest run --retry 1", "e2e": "playwright test --retries 1"}}
         self.assertEqual(retry.re_executions(retry.constructs(scripts)), 1)
         scripts["scripts"]["e2e"] = "playwright test --retries 2"
@@ -341,3 +344,96 @@ class UnmappedJobTests(unittest.TestCase):
                                          ("RETRY-MANIFEST-JOB-UNCHECKED", "ci", 1),
                                          ("RETRY-MANIFEST-JOB-UNCHECKED", "money", 1),
                                          ("RETRY-MONEY-PATH", "money-tests", 1)])
+
+
+NICK_FIELDS_INPUTS = {
+    # Every input of nick-fields/retry action.yml (read with `gh api repos/nick-fields/retry/contents/action.yml`).
+    "timeout_minutes": 10, "timeout_seconds": 600, "max_attempts": 2, "command": "python -m pytest",
+    "retry_wait_seconds": 5, "shell": "bash", "polling_interval_seconds": 1, "retry_on": "error",
+    "warning_on_retry": True, "on_retry_command": "echo again", "continue_on_error": False,
+    "new_command_on_retry": "python -m pytest --lf", "retry_on_exit_code": 2,
+}
+
+
+class RoundTwoRetryTests(unittest.TestCase):
+    # Review round 2, PS-5: every documented nick-fields/retry input other than the attempt count is a modifier.
+    def test_every_nick_fields_retry_input_is_read_as_documented(self):
+        control = {"uses": "nick-fields/retry@v3", "with": {"timeout_minutes": 10, "max_attempts": 2,
+                                                            "command": "python -m pytest"}}
+        self.assertEqual(judge(one_job(control), manifest_doc=plain_manifest())["decision"], "pass")
+        step = {"uses": "nick-fields/retry@v3", "with": dict(NICK_FIELDS_INPUTS)}
+        report = judge(one_job(step), manifest_doc=plain_manifest())
+        self.assertEqual((report["decision"], rules(report), report["checked"][0]["re_executions"]), ("pass", [], 1))
+        # Its command is still read: the action (two attempts) wraps it, so 2 x (3 + 1) executions.
+        step["with"]["new_command_on_retry"] = "python -m pytest --reruns 3"
+        self.assertEqual(rules(judge(one_job(step), manifest_doc=plain_manifest())),
+                         [("RETRY-LIMIT-EXCEEDED", "ci", 7)])
+
+    # Review round 2, ADVSEC-R2-10: a deep NAME=value chain is a CONFIG-DEPTH refusal, not a traceback.
+    def test_deep_name_value_chain_is_refused(self):
+        shallow = "A=" * retry.MAX_DEPTH + "--reruns=1 python -m pytest"
+        self.assertEqual(retry.command_constructs(shallow), [("count", 1)])
+        with self.assertRaises(retry.Refused) as caught:
+            retry.command_constructs("A=" * 3000 + "1 python -m pytest")
+        self.assertEqual(caught.exception.code, "CONFIG-DEPTH")
+
+    # Review round 2, ADVSEC-R2-03: spaced expressions, the job re-run endpoint and gh global flags.
+    def test_rerun_requests_in_every_spelling_fail_closed(self):
+        for control in ("gh api repos/o/r/actions/runs/${{ github.event.workflow_run.id }}/jobs",
+                        "gh --repo o/r run list", "gh api repos/o/r/actions/jobs/$JOB_ID/logs"):
+            with self.subTest(control=control):
+                self.assertEqual(retry.command_constructs(control), [])
+        for command in ("gh api -X POST repos/o/r/actions/runs/${{ github.event.workflow_run.id }}/rerun-failed-jobs",
+                        "gh api -X POST repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/rerun",
+                        "gh api -X POST repos/o/r/actions/jobs/$JOB_ID/rerun",
+                        "gh --repo o/r run rerun 123 --failed", "gh -R o/r run rerun 123"):
+            with self.subTest(command=command):
+                self.assertEqual(retry.command_constructs(command), [("unknown", None)])
+        self.assertEqual(retry.command_constructs("pytest --reruns ${{ inputs.n }}"), [("unknown", None)])
+
+    # Review round 2, PS-4: only a known wrapper multiplies; flags of one command and env against steps do not.
+    def test_only_a_wrapper_multiplies(self):
+        wrapped = {"uses": "nick-fields/retry@v3", "with": {"max_attempts": 2, "command": "python -m pytest --reruns 1"}}
+        report = judge(one_job(wrapped), manifest_doc=plain_manifest())
+        self.assertEqual(rules(report), [("RETRY-LIMIT-EXCEEDED", "ci", 3)])
+        shapes = (
+            one_job({"run": "mvn -Dsurefire.rerunFailingTestsCount=1 -Dfailsafe.rerunFailingTestsCount=1 verify"}),
+            one_job({"run": "pytest"}, {"run": "npx vitest run --retry=1"}, env={"PYTEST_ADDOPTS": "--reruns 1"}),
+            one_job({"run": "python -m pytest --reruns 1 --reruns 1"}),
+        )
+        for document in shapes:
+            with self.subTest(document=document["jobs"]["ci"]):
+                report = judge(document, manifest_doc=plain_manifest())
+                self.assertEqual((report["decision"], rules(report), report["checked"][0]["re_executions"]),
+                                 ("pass", [], 1))
+
+    # Review round 2, ADVSEC-R2-08: a retry-shaped command word of a command line is a wrapper; it fails closed.
+    def test_retry_wrapper_commands_fail_closed(self):
+        control = judge(one_job({"name": "Retry flaky tests", "run": "CI=1 python -m pytest", "shell": "bash -e {0}"}),
+                        manifest_doc=plain_manifest())
+        self.assertEqual((control["decision"], control["findings"]), ("pass", []))
+        for step in ({"run": "retry --times=3 -- python -m pytest"}, {"run": "CI=1 retry -t 3 python -m pytest"},
+                     {"run": "./scripts/retry.sh python -m pytest"},
+                     {"run": "python -m pytest", "shell": "retry --times 3 -- bash -e {0}"}):
+            with self.subTest(step=step):
+                report = judge(one_job(step), manifest_doc=plain_manifest())
+                self.assertEqual(rules(report), [("RETRY-UNKNOWN", "ci", 1)])
+        self.assertEqual(retry.constructs({"scripts": {"test:retry": "node --test"}}), [])
+        self.assertEqual(retry.constructs({"scripts": {"test": "retry -n 3 node --test"}}), [("unknown", None)])
+
+
+class WorkflowInputTests(unittest.TestCase):
+    # Review round 2, ADVSEC-R2-04: leaving out a workflow file the manifest maps refuses the check.
+    setUp, write, run_main = MainTests.setUp, MainTests.write, MainTests.run_main
+
+    def test_unchecked_manifest_workflow_is_refused(self):
+        other = ".github/workflows/other.yml"
+        self.write(CI, workflow({"run": "python -m pytest --reruns 9"}))
+        self.write(other, one_job({"run": "echo synthetic"}, key="other"))
+        self.write("package.json", {"scripts": {"test": "node --test"}})
+        code, report = self.run_main("--workflow", CI, "--workflow", other)
+        self.assertEqual((code, ("RETRY-LIMIT-EXCEEDED", "ci", 9) in rules(report)), (1, True))
+        refused = {"schema": retry.REPORT_SCHEMA, "decision": "refused", "reason": "INPUT-WORKFLOWS-MISSING"}
+        for arguments in (("--runner-config", "package.json"), ("--workflow", other)):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.run_main(*arguments), (2, refused))

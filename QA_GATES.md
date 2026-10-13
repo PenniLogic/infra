@@ -78,11 +78,12 @@ values; it never matches substrings of free text.
   `--max-runs`, `-D...rerunFailingTestsCount=N`, Gradle `-PmaxRetries=N`; keys with the same names (any case or separator, for example
   `max_attempts`, `retryTimes`, `test.retry`); a retry-shaped action such as `nick-fields/retry` with its
   `max_attempts` input. Attempt counts become re-executions (attempts minus one); `false` counts as 0.
-- Constructs compound only where one wraps the other: a retry action and the command it runs, several retry
-  flags of one command, and workflow-level or job-level keys (for example `env`) around every step. So a retry
-  action with two attempts around `pytest --reruns 1` is three re-executions. Independent steps of a job, scripts
-  of a `package.json` and commands of one shell string (separated by newlines, `;`, `&&`, `||` or `|`) do not
-  re-execute each other: the largest of them applies.
+- Constructs compound only where a known wrapper re-runs what it wraps: a retry action multiplies the rest of
+  its step, so a retry action with two attempts around `pytest --reruns 1` is three re-executions. Everything else
+  is an alternative and the largest applies: independent steps of a job, scripts of a `package.json`, commands of
+  one shell string (separated by newlines, `;`, `&&`, `||` or `|`), several retry flags or keys of one command (the
+  runner applies one of them, for example surefire and failsafe each re-run their own tests once), and
+  workflow-level or job-level keys (for example `env`) against the step commands.
 - Flags inside the value of a `NAME=value` token are read (`PYTEST_ADDOPTS=--reruns=5`, `export ...`,
   `echo "PYTEST_ADDOPTS=--reruns 5" >> "$GITHUB_ENV"`, `MAVEN_ARGS=-D...rerunFailingTestsCount=3`,
   `pytest -o addopts=--reruns=5`), and an empty quote pair inside a word (`--re''runs`) is joined as the shell does.
@@ -101,11 +102,15 @@ values; it never matches substrings of free text.
   manifest; an unmapped job is listed as `RETRY-JOB-UNMAPPED` when that limit is the money-path one, and a
   manifest job missing from a checked workflow file is listed as `RETRY-MANIFEST-JOB-UNCHECKED`.
 - Fail closed: a retry-shaped key, flag or action whose count cannot be read (a non-number, an expression, a
-  retry action without an attempt input, an unknown retry flag) is `RETRY-UNKNOWN`, and so is a request to re-run
-  a workflow run (`gh run rerun`, the `.../actions/runs/<id>/rerun` and `rerun-failed-jobs` endpoints). Gradle's
-  `--rerun-tasks` and `--rerun` force a task to run again and are not retries of a failure. Known non-count
-  modifiers of the named mechanisms (`--reruns-delay`, `--only-rerun`, and nick-fields/retry `retry_on`,
-  `retry_wait_seconds`, `retry_on_exit_code`, `on_retry_command`, `warning_on_retry`) are not retry counts.
+  retry action without an attempt input, an unknown retry flag) is `RETRY-UNKNOWN`, and so are a request to re-run
+  a workflow run or job (`gh run rerun`, also after gh global flags such as `--repo`; the
+  `.../actions/runs/<id>/rerun`, `rerun-failed-jobs` and `.../actions/jobs/<id>/rerun` endpoints, with a literal,
+  a shell variable or a `${{ ... }}` expression as the id) and a retry-shaped command word of a command line (a
+  workflow `run` or `shell` value or a `scripts` entry, for example `retry --times 3 -- pytest` or
+  `./retry.sh pytest`). Gradle's `--rerun-tasks` and `--rerun` force a task to run again and are not retries of a
+  failure. Known non-count modifiers of the named mechanisms (`--reruns-delay`, `--only-rerun`, and nick-fields/retry
+  `retry_on`, `retry_wait_seconds`, `retry_on_exit_code`, `on_retry_command`, `new_command_on_retry`,
+  `warning_on_retry`) are not retry counts; a command they carry is still read.
 - Reported only: a retry-shaped name inside a top-level dependency map of a runner configuration
   (`dependencies`, `devDependencies`, `overrides`, ...). In workflows and `env`, such keys are read like any other.
 - Script names in a `scripts` map (for example `test:flaky`) are labels: only the commands are read.
@@ -120,9 +125,12 @@ values; it never matches substrings of free text.
 | `RETRY-JOB-UNMAPPED` | report | A job the manifest does not map, checked under the money-path limit. |
 | `RETRY-MANIFEST-JOB-UNCHECKED` | report | A manifest job missing from its checked workflow file. |
 
-Refusals (exit 2): `USAGE`, `INPUT-NONE` (no input named), `INPUT-PATHS` (duplicate or more than 64 inputs),
+Refusals (exit 2): `USAGE`, `INPUT-NONE` (no input named), `INPUT-WORKFLOWS-MISSING` (a workflow file the manifest
+maps is not among the `--workflow` inputs: an unchecked workflow is never a passing one), `INPUT-PATHS` (duplicate or
+more than 64 inputs),
 `INPUT-PATH` (absolute, `..` or non-workflow path), `INPUT-UNREADABLE`, `CONFIG-SIZE`, `CONFIG-JSON` (not strict
-JSON, duplicate key, NaN), `CONFIG-DEPTH`, `CONFIG-SHAPE` (no `jobs` object), `CONFIG-JOB-KEY`, and the policy and
+JSON, duplicate key, NaN), `CONFIG-DEPTH` (also a `NAME=value` chain nested deeper than 64),
+`CONFIG-SHAPE` (no `jobs` object), `CONFIG-JOB-KEY`, and the policy and
 manifest refusals.
 
 ## Quarantine gate
@@ -223,7 +231,10 @@ per-rule warning switch with expiry is to be implemented with that wiring; it do
   repetition (`pytest || pytest`, a `for` loop around a test command); a `continue-on-error` test step followed by
   a conditional re-run step; a `workflow_run` workflow that re-runs failed runs through an action or script other
   than `gh run rerun` and the rerun endpoints; `npm run` scripts that call each other (each script is read on its
-  own); a retry inside the reusable workflows, composite actions and non-JSON files listed above.
+  own); a retry inside the reusable workflows, composite actions and non-JSON files listed above; a retry wrapper
+  started through a launcher (`npx retry-cli ...`, `uvx ...`, `python -m ...`: only the command word is read);
+  runner options read from a file (pytest `@args.txt` arguments, `pytest.ini`, `setup.cfg`) or injected from a
+  repository or organization variable (`PYTEST_ADDOPTS: ${{ vars.X }}`), whose value is not in the repository.
 - The quarantine gate relies on CI passing the base revision's ledger and manifest (`--base-ledger`,
   `--base-manifest`) and running the `rate` step after every manifest job; both are wiring preconditions.
 - The ticket idempotency key includes the run id, so a real `TicketPort` must also deduplicate open tickets per
