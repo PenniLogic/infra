@@ -1,7 +1,7 @@
 """Quarantine gate for PenniLogic/infra#28 (T-QA-04; E25-F01): flake events, quarantine and its limits.
 
     python scripts/qa_gates_quarantine.py --job JOB --run-id RUN --attempt FIRST.xml [--attempt RETRY.xml]
-        --base-ledger PATH --base-manifest PATH [--ledger PATH] [--manifest PATH]
+        --ledger PATH --manifest PATH --base-ledger PATH --base-manifest PATH
 
 Inputs are one JUnit XML report per attempt (the first run, then at most the policy's re-executions of the
 cases that failed), the committed quarantine ledger and the committed protected-tag manifest. The numbers come
@@ -41,7 +41,9 @@ import qa_gates_junit as junit
 import qa_gates_ledger as ledgers
 import qa_gates_policy as policies
 import qa_gates_tags as tags
-from qa_gates_common import REFERENCE, RUN_ID, Refused, canonical_sha256, read_bounded
+from qa_gates_common import (
+    REFERENCE, RUN_ID, Refused, canonical_sha256, read_bounded, refuse_embedded_help,
+)
 
 
 REPORT_SCHEMA = "pennilogic.qa-gates.quarantine-report/1"
@@ -326,15 +328,15 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _arguments(argv):
-    # Help only alone: a help token inside a gate command must not turn it into exit 0 without evaluation.
-    if any(argument in ("-h", "--help") for argument in argv) and len(argv) > 1:
-        raise Refused("USAGE")
+    refuse_embedded_help(argv)
     parser = _Parser(prog="qa_gates_quarantine.py", description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--job", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--attempt", action="append", required=True)
-    parser.add_argument("--ledger", default=str(ledgers.LEDGER_FILE))
-    parser.add_argument("--manifest", default=str(tags.MANIFEST_FILE))
+    # Head inputs are named explicitly: a default relative to this script would name the base checkout's
+    # files when CI runs the base code (review round 3, ADVSEC-R3-03).
+    parser.add_argument("--ledger", required=True)
+    parser.add_argument("--manifest", required=True)
     parser.add_argument("--base-ledger")
     parser.add_argument("--base-manifest")
     return parser.parse_args(argv)

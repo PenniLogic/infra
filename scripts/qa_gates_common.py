@@ -159,3 +159,12 @@ def split_test_id(value, code):
     if len(parts) != 3 or not all(component(part) for part in parts):
         raise Refused(code)
     return tuple(parts)
+
+
+def refuse_embedded_help(argv):
+    """Help only alone: a help token inside a gate command must not turn it into exit 0 without evaluation.
+
+    Any token starting with `-h` (argparse expands `-hh` into two help actions) or `--help` counts (review round 3,
+    ADVSEC-R3-08)."""
+    if len(argv) > 1 and any(argument.startswith(("-h", "--help")) for argument in argv):
+        raise Refused("USAGE")

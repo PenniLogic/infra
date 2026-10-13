@@ -222,6 +222,8 @@ class RateCliTests(unittest.TestCase):
             ("USAGE", self.argv("--attempt", "no-separator.xml")),
             ("USAGE", self.argv("--help")),
             ("USAGE", self.argv("-h")),
+            ("USAGE", self.argv("-hh")),  # review round 3, ADVSEC-R3-08
+            ("USAGE", self.argv("-hX")),
             ("INPUT-FIX-ONLY", self.argv("--fix-only", "infra#28")),
             ("INPUT-JOBS-MISSING", self.argv()[:-2]),
             ("MANIFEST-UNKNOWN-JOB", self.argv("--attempt", "synthetic-other-job=x.xml")),

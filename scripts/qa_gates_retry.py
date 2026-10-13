@@ -1,7 +1,7 @@
 """Retry-limit configuration check for PenniLogic/infra#28 (T-QA-04; E25-F01).
 
-    python scripts/qa_gates_retry.py [--root DIR] [--workflow .github/workflows/NAME.yml ...]
-        [--runner-config RELATIVE/PATH.json ...] [--manifest PATH]
+    python scripts/qa_gates_retry.py --root DIR --manifest PATH [--workflow .github/workflows/NAME.yml ...]
+        [--runner-config RELATIVE/PATH.json ...]
 
 Docs test-strategy 1.1.1 section 8, "Automatic retry limit": a pipeline step configured to retry beyond the limit
 fails the pipeline configuration check. The limits come only from the vendored, pinned docs flake policy
@@ -37,7 +37,7 @@ import sys
 
 import qa_gates_policy as policies
 import qa_gates_tags as tags
-from qa_gates_common import Refused, json_document, read_bounded
+from qa_gates_common import Refused, json_document, read_bounded, refuse_embedded_help
 
 
 REPORT_SCHEMA = "pennilogic.qa-gates.retry-report/1"
@@ -46,7 +46,6 @@ MAX_INPUTS = 64
 MAX_DEPTH = 64
 # Compounded re-executions are capped so a report stays printable; any value near the cap is far above every limit.
 EXECUTION_CAP = 1000000
-ROOT = Path(__file__).resolve().parent.parent
 RELATIVE = re.compile(r"(?!\.{1,2}(?:/|\Z))[A-Za-z0-9_.-]+(?:/(?!\.{1,2}(?:/|\Z))[A-Za-z0-9_.-]+)*")
 NUMBER = re.compile(r"[0-9]{1,6}")
 # Normalized (lower case, alphanumerics only) names whose value is a number of re-executions or of attempts.
@@ -476,14 +475,13 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _arguments(argv):
-    # Help only alone: a help token inside a check command must not turn it into exit 0 without evaluation.
-    if any(argument in ("-h", "--help") for argument in argv) and len(argv) > 1:
-        raise Refused("USAGE")
+    refuse_embedded_help(argv)
     parser = _Parser(prog="qa_gates_retry.py", description=__doc__.splitlines()[0], allow_abbrev=False)
-    parser.add_argument("--root", default=str(ROOT))
+    # Head inputs are named explicitly (review round 3, ADVSEC-R3-03), as in the quarantine gate.
+    parser.add_argument("--root", required=True)
     parser.add_argument("--workflow", action="append", default=[])
     parser.add_argument("--runner-config", action="append", default=[])
-    parser.add_argument("--manifest", default=str(tags.MANIFEST_FILE))
+    parser.add_argument("--manifest", required=True)
     return parser.parse_args(argv)
 
 

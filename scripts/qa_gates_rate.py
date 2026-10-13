@@ -1,7 +1,7 @@
 """Repository quarantine-rate ceiling for PenniLogic/infra#28 (T-QA-04; E25-F01).
 
     python scripts/qa_gates_rate.py --attempt JOB=FIRST.xml [--attempt JOB=RETRY.xml ...] --base-ledger PATH
-        [--ledger PATH] [--manifest PATH] [--fix-only PenniLogic/<repo>#N]
+        --ledger PATH --manifest PATH [--fix-only PenniLogic/<repo>#N]
 
 Docs governance/test-strategy.json 1.1.1 section 8 sets the quarantine rate ceiling as a share of "a repository's
 tests" and asks for a per-repository flake rate. This step therefore runs once per pipeline, after every job of
@@ -28,7 +28,7 @@ import qa_gates_junit as junit
 import qa_gates_ledger as ledgers
 import qa_gates_policy as policies
 import qa_gates_tags as tags
-from qa_gates_common import REFERENCE, Refused, read_bounded
+from qa_gates_common import REFERENCE, Refused, read_bounded, refuse_embedded_help
 
 
 REPORT_SCHEMA = "pennilogic.qa-gates.rate-report/1"
@@ -112,12 +112,13 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _arguments(argv):
-    if any(argument in ("-h", "--help") for argument in argv) and len(argv) > 1:
-        raise Refused("USAGE")
+    refuse_embedded_help(argv)
     parser = _Parser(prog="qa_gates_rate.py", description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--attempt", action="append", required=True)
-    parser.add_argument("--ledger", default=str(ledgers.LEDGER_FILE))
-    parser.add_argument("--manifest", default=str(tags.MANIFEST_FILE))
+    # Head inputs are named explicitly: a default relative to this script would name the base checkout's
+    # files when CI runs the base code (review round 3, ADVSEC-R3-03).
+    parser.add_argument("--ledger", required=True)
+    parser.add_argument("--manifest", required=True)
     parser.add_argument("--fix-only")
     parser.add_argument("--base-ledger")
     return parser.parse_args(argv)

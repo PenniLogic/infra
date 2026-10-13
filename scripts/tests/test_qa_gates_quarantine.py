@@ -651,6 +651,8 @@ class CliTests(unittest.TestCase):
             ("USAGE", self.synthetic_argv("--fix-only", qs.TICKET)),
             ("USAGE", self.synthetic_argv("--help")),
             ("USAGE", self.synthetic_argv("-h")),
+            ("USAGE", self.synthetic_argv("-hh")),  # review round 3, ADVSEC-R3-08
+            ("USAGE", self.synthetic_argv("-hX")),
             ("INPUT-ATTEMPTS", self.synthetic_argv(attempts=[attempt] * (gate.MAX_ATTEMPTS + 1))),
         ):
             with self.subTest(code=code_name):
@@ -667,13 +669,15 @@ class CliTests(unittest.TestCase):
         code, report = self.main(self.synthetic_argv(attempts=duplicate))
         self.assertEqual((code, report["reason"], report["test"]), (2, "JUNIT-DUPLICATE-CASE", A))
 
-    def test_cli_defaults_to_the_committed_manifest_and_ledger(self):
+    def test_cli_reads_the_committed_manifest_and_ledger_when_named(self):
+        # Review round 3, ADVSEC-R3-03: the head ledger and manifest have no default; naming them is required.
         infra_cases = [("test_integration_stack.StackLifecycleTests", "test_x", "passed"),
                        ("test_bootstrap.EnvFileTests", "test_y", "passed")]
         attempt = self.write("infra.xml", qs.junit_xml(infra_cases, suite="unittest"))
         committed = ["--base-ledger", str(ledgers.LEDGER_FILE), "--base-manifest", str(tags.MANIFEST_FILE)]
-        code, report = self.main(["--job", "infra-ci-linux", "--run-id", "synthetic-infra-run", "--attempt", attempt,
-                                  *committed])
+        argv = ["--job", "infra-ci-linux", "--run-id", "synthetic-infra-run", "--attempt", attempt, *committed]
+        self.assertEqual(self.main(argv)[1]["reason"], "USAGE")
+        code, report = self.main([*argv, "--ledger", str(ledgers.LEDGER_FILE), "--manifest", str(tags.MANIFEST_FILE)])
         self.assertEqual((code, report["decision"], report["findings"]), (0, "pass", []))
         self.assertEqual(report["inputs"]["manifest_sha256"],
                          hashlib.sha256(tags.MANIFEST_FILE.read_bytes()).hexdigest())
@@ -693,7 +697,7 @@ class CliTests(unittest.TestCase):
         attempts = [self.write("i1.xml", qs.junit_xml(first, suite="unittest")),
                     self.write("i2.xml", qs.junit_xml([(first[0][0], "test_x", "passed")], suite="unittest"))]
         argv = ["--job", "infra-ci-linux", "--run-id", "synthetic-infra-run", "--ledger", ledger,
-                "--base-ledger", ledger, "--base-manifest", str(tags.MANIFEST_FILE)]
+                "--manifest", str(tags.MANIFEST_FILE), "--base-ledger", ledger, "--base-manifest", str(tags.MANIFEST_FILE)]
         for path in attempts:
             argv += ["--attempt", path]
         code, report = self.main(argv, port=qs.FakeTicketPort())

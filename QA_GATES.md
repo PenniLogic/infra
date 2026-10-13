@@ -11,13 +11,20 @@ All gates run with the standard library of the repository's pinned Python, offli
 
 ```text
 python scripts/qa_gates.py policy
-python scripts/qa_gates.py retry [--root DIR] [--workflow .github/workflows/NAME.yml ...]
-                                 [--runner-config RELATIVE/PATH.json ...] [--manifest PATH]
+python scripts/qa_gates.py retry --root DIR --manifest PATH [--workflow .github/workflows/NAME.yml ...]
+                                 [--runner-config RELATIVE/PATH.json ...]
 python scripts/qa_gates.py quarantine --job JOB --run-id RUN --attempt FIRST.xml [--attempt RETRY.xml]
-                                      --base-ledger PATH --base-manifest PATH [--ledger PATH] [--manifest PATH]
-python scripts/qa_gates.py rate --attempt JOB=FIRST.xml [--attempt JOB=RETRY.xml ...] --base-ledger PATH
-                                [--ledger PATH] [--manifest PATH] [--fix-only PenniLogic/<repo>#N]
+                                      --ledger PATH --manifest PATH --base-ledger PATH --base-manifest PATH
+python scripts/qa_gates.py rate --attempt JOB=FIRST.xml [--attempt JOB=RETRY.xml ...] --ledger PATH --manifest PATH
+                                --base-ledger PATH [--fix-only PenniLogic/<repo>#N]
 ```
+
+`--ledger`, `--manifest` and `--root` name the candidate (head) inputs and have no default (review round 3,
+ADVSEC-R3-03): a default relative to the script would name the base checkout's own files when CI runs the gate
+code from a base checkout, and the head ledger, manifest and workflows would never be read. Locally, pass the
+committed files (`scripts/qa-gates/quarantine-ledger.json`, `scripts/qa-gates/protected-tests.json`, `--root .`).
+A help token is accepted only alone; any other argument starting with `-h` or `--help` in a gate command is
+refused (`USAGE`).
 
 In CI the gate code and the vendored policy must also come from the protected base revision (see the wiring
 precondition under [Known limits](#known-limits)); otherwise a change can edit the checks it is judged by.
@@ -73,8 +80,7 @@ it cannot notice that the docs strategy moved on. Only the re-pin trigger finds 
 
 Docs test-strategy 1.1.1, "Automatic retry limit": a pipeline step configured to retry beyond the limit fails the
 pipeline configuration check. `retry` reads JSON-syntax workflow files (every workflow of this repository is JSON
-syntax) and JSON runner configurations such as `package.json`, named relative to `--root` (default: the repository
-root). It looks only at object keys, `uses` action names and command-line flag or `name=value` tokens of string
+syntax) and JSON runner configurations such as `package.json`, named relative to `--root` (required; the head checkout). It looks only at object keys, `uses` action names and command-line flag or `name=value` tokens of string
 values; it never matches substrings of free text.
 
 - Counted constructs: flags `--reruns`, `--retry`, `--retries`, `--max-retries`, `--retry-count`, `--max-attempts`,
@@ -296,6 +302,8 @@ per-rule warning switch with expiry is to be implemented with that wiring; it do
   that enforce them are not the candidate's: CI must run `scripts/qa_gates*.py`, `scripts/qa-gates/flake-policy.json`
   and the base ledger and manifest from the pull request's base revision (for example a separate base checkout), or
   bind those files to the base the way the `pr-workflow-integrity` workflow binds `scripts/check_repository.py`.
+  With a base checkout, the head checkout's ledger, manifest and root must be passed explicitly (`--ledger`,
+  `--manifest`, `--root`; required arguments since review round 3).
   A step that runs the checked-out head code can re-pin the policy (for example `retry_limit` 5 with a recomputed
   digest and `PIN`) or drop a check in the same change, and then none of these protections hold.
 - The quarantine gate relies on CI passing the base revision's ledger and manifest (`--base-ledger`,

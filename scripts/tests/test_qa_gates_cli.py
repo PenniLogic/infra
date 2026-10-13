@@ -105,5 +105,72 @@ class CliTests(unittest.TestCase):
         self.assertEqual(json.loads(completed.stdout)["decision"], "pass")
 
 
+class HeadInputTests(unittest.TestCase):
+    """Review round 3, ADVSEC-R3-03: the head ledger, manifest and root are named explicitly, so a gate run from a
+    base checkout evaluates the head files and never its own checkout's copies."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.base = self.root / "base" / "scripts"
+        self.base.mkdir(parents=True)
+        for path in SCRIPT.parent.glob("qa_gates*.py"):
+            (self.base / path.name).write_bytes(path.read_bytes())
+        (self.base / "qa-gates").mkdir()
+        for path in (SCRIPT.parent / "qa-gates").iterdir():
+            (self.base / "qa-gates" / path.name).write_bytes(path.read_bytes())
+        self.head = self.root / "head"
+        self.head.mkdir()
+        self.base_manifest = self.head / "base-manifest.json"
+        self.base_manifest.write_bytes(qs.encode(qs.manifest_document()))
+        relaxed = qs.manifest_document()
+        relaxed["rules"][1]["tags"] = []  # the security rule loses its tag in the head
+        self.manifest = self.head / "manifest.json"
+        self.manifest.write_bytes(qs.encode(relaxed))
+        self.ledger = self.head / "ledger.json"
+        self.ledger.write_bytes(qs.encode(qs.ledger_document()))
+        self.attempt = self.head / "attempt.xml"
+        self.attempt.write_bytes(qs.junit_xml(qs.cases(("test_case", "passed"), classname=qs.SECURITY)))
+
+    def gate(self, *arguments):
+        environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        completed = subprocess.run([sys.executable, "-B", str(self.base / "qa_gates.py"), *map(str, arguments)],
+                                   capture_output=True, timeout=60, env=environment, cwd=self.head, check=False)
+        return completed.returncode, json.loads(completed.stdout)
+
+    def test_quarantine_from_a_base_checkout_reads_the_named_head_files(self):
+        common = ("quarantine", "--job", qs.JOB, "--run-id", qs.RUN, "--attempt", self.attempt,
+                  "--base-ledger", self.ledger, "--base-manifest", self.base_manifest)
+        control = self.gate(*common, "--ledger", self.ledger, "--manifest", self.base_manifest)
+        self.assertEqual((control[0], control[1]["decision"]), (0, "pass"))
+        code, report = self.gate(*common, "--ledger", self.ledger, "--manifest", self.manifest)
+        self.assertEqual((code, {finding["rule"] for finding in report["findings"]}), (1, {"QG-MANIFEST-RELAXED"}))
+        for missing in (("--ledger", self.ledger), ("--manifest", self.manifest)):
+            with self.subTest(missing=missing[0]):
+                self.assertEqual(self.gate(*common, *missing), (2, {"schema": "pennilogic.qa-gates.quarantine-report/1",
+                                                                     "decision": "refused", "reason": "USAGE",
+                                                                     "test": None}))
+
+    def test_rate_and_retry_require_the_head_inputs(self):
+        attempt = f"{qs.JOB}={self.attempt}"
+        rate = ("rate", "--attempt", attempt, "--attempt", f"{qs.MONEY_JOB}={self.attempt}",
+                "--base-ledger", self.ledger)
+        self.assertEqual(self.gate(*rate, "--ledger", self.ledger, "--manifest", self.base_manifest)[0], 0)
+        for missing in (("--ledger", self.ledger), ("--manifest", self.base_manifest)):
+            with self.subTest(rate=missing[0]):
+                self.assertEqual(self.gate(*rate, *missing)[1]["reason"], "USAGE")
+        workflows = self.head / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        document = {"jobs": {"ci": {"steps": [{"run": "pytest --reruns 5"}]}, "money": {"steps": [{"run": "x"}]}}}
+        (workflows / "ci.yml").write_text(json.dumps(document))
+        retry = ("retry", "--workflow", ".github/workflows/ci.yml")
+        code, report = self.gate(*retry, "--root", ".", "--manifest", self.base_manifest)
+        self.assertEqual((code, report["checked"][0]["re_executions"]), (1, 5))
+        for missing in (("--root", "."), ("--manifest", self.base_manifest)):
+            with self.subTest(retry=missing[0]):
+                self.assertEqual(self.gate(*retry, *missing)[1]["reason"], "USAGE")
+
+
 if __name__ == "__main__":
     unittest.main()
