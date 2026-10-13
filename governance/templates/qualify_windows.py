@@ -538,6 +538,23 @@ def junit_outcomes(root):
     return records
 
 
+def qualification_junit_outcomes(root, result, output):
+    test_tasks = [line for line in output.splitlines() if re.fullmatch(rb"> Task :test(?: .*)?", line)]
+    if test_tasks not in ([b"> Task :test"], [b"> Task :test FAILED"]):
+        raise Refused("ordinary-gradle-test-was-not-fresh")
+    if test_tasks == [b"> Task :test FAILED"] and result.returncode == 0:
+        raise Refused("inconsistent-gradle-task-result")
+    try:
+        junit = junit_outcomes(root)
+    except _JunitOutcomeRefused as error:
+        print(json.dumps({
+            "event": "windows_qualification_diagnostic", "diagnostic_only": True,
+            "inventory_complete": False, "exit_code": result.returncode, "junit": error.diagnostic,
+        }, sort_keys=True), flush=True)
+        raise
+    return junit
+
+
 def lookup_path_metadata(root, relative=LOOKUP):
     path = root
     for index, part in enumerate(("", *relative.parts)):
@@ -1307,7 +1324,7 @@ def collect_observer_diagnostics(root):
     return 2 if refused else 0
 
 
-def observer_failed_result_outcomes(root, primary):
+def observer_failed_result_outcomes(root, primary, include_junit=False):
     result = primary.result
     try:
         records = qualification_python_outcomes(root, result, result.stdout, result.stderr)
@@ -1315,8 +1332,20 @@ def observer_failed_result_outcomes(root, primary):
             print(json.dumps(record, sort_keys=True))
     except _PythonOutcomeRefused:
         observer_secondary_failure(primary, "captured-python-outcomes-incomplete")
+        return
     except (OSError, ValueError):
         observer_secondary_failure(primary, "captured-python-outcome-report-unavailable")
+        return
+    if include_junit:
+        try:
+            for record in qualification_junit_outcomes(root, result, result.stdout):
+                print(json.dumps(record, sort_keys=True))
+        except _JunitOutcomeRefused:
+            observer_secondary_failure(primary, "captured-junit-outcomes-incomplete")
+        except Refused:
+            observer_secondary_failure(primary, "captured-gradle-or-junit-outcomes-unavailable")
+        except (OSError, ValueError, ET.ParseError):
+            observer_secondary_failure(primary, "captured-junit-outcome-report-unavailable")
 
 
 def qualify(root, require_prepared=False, api106_observer_pair=False):
@@ -1328,46 +1357,36 @@ def qualify(root, require_prepared=False, api106_observer_pair=False):
     arguments = ["--require-prepared"] if require_prepared else []
     print("+ python scripts\\quality.py test" + (" --require-prepared" if require_prepared else "")
           + (" --api106-observer-pair" if api106_observer_pair else ""), flush=True)
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+    if api106_observer_pair:
         try:
-            if api106_observer_pair:
-                try:
-                    result = observer_owning_command(root)
-                except _ObserverResultRefused as error:
-                    observer_failed_result_outcomes(root, error)
-                    raise
-                stdout.write(result.stdout)
-                stderr.write(result.stderr)
-            else:
+            result = observer_owning_command(root)
+        except _ObserverResultRefused as error:
+            observer_failed_result_outcomes(root, error)
+            raise
+        if result.returncode != 0:
+            primary = _ObserverResultRefused(result, None)
+            observer_failed_result_outcomes(root, primary, include_junit=True)
+            raise primary
+        output, errors = result.stdout, result.stderr
+        records = qualification_python_outcomes(root, result, output, errors)
+    else:
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            try:
                 result = subprocess.run(
                     [sys.executable, str(root / "scripts" / "quality.py"), "test", *arguments],
                     cwd=root, stdout=stdout, stderr=stderr, check=False,
                 )
-            stdout.seek(0)
-            stderr.seek(0)
-            if not api106_observer_pair:
+                stdout.seek(0)
+                stderr.seek(0)
                 print(json.dumps({"event": "windows_owning_suite_command", "exit_code": result.returncode}, sort_keys=True))
-        finally:
-            if not api106_observer_pair:
+            finally:
                 print(lookup_diagnostic_json(root, before), flush=True)
-        output = stdout.read()
-        errors = stderr.read()
-        records = qualification_python_outcomes(root, result, output, errors)
+            output = stdout.read()
+            errors = stderr.read()
+            records = qualification_python_outcomes(root, result, output, errors)
     for record in records:
         print(json.dumps(record, sort_keys=True))
-    test_tasks = [line for line in output.splitlines() if re.fullmatch(rb"> Task :test(?: .*)?", line)]
-    if test_tasks not in ([b"> Task :test"], [b"> Task :test FAILED"]):
-        raise Refused("ordinary-gradle-test-was-not-fresh")
-    if test_tasks == [b"> Task :test FAILED"] and result.returncode == 0:
-        raise Refused("inconsistent-gradle-task-result")
-    try:
-        junit = junit_outcomes(root)
-    except _JunitOutcomeRefused as error:
-        print(json.dumps({
-            "event": "windows_qualification_diagnostic", "diagnostic_only": True,
-            "inventory_complete": False, "exit_code": result.returncode, "junit": error.diagnostic,
-        }, sort_keys=True), flush=True)
-        raise
+    junit = qualification_junit_outcomes(root, result, output)
     for record in junit:
         print(json.dumps(record, sort_keys=True))
     if result.returncode != 0:

@@ -435,6 +435,21 @@ child still refuses on a closed interval at or above 300 seconds or any required
 report/finalization failure. This adds neither an alternate acceptance parser
 nor another process owner.
 
+The opt-in qualifier consumes the owner's already captured bytes directly,
+without copying them through a second pair of temporary files. Thus outer
+temporary-file write, seek, read or close cannot replace a returned nonzero
+result or an active owning refusal. A normally returned nonzero result uses
+the same failure-retained Python projection and, when that inventory and the
+fresh Gradle task evidence are available, the preexisting JUnit outcomes or
+bounded duplicate-case diagnostic before refusing. These records are evidence,
+not acceptance. An active owning refusal keeps its existing Python-only
+projection; that path does not establish a normal settled return. Later JUnit read,
+parse, close or outcome-report failures retain the owning result and fixed
+secondary facts without replaying already emitted outcomes or falling back to
+raw captures. Zero-result parsing and required reporting remain strict,
+including later JUnit reporting. The ordinary non-opt-in subprocess, temporary
+captures, lookup diagnostic and all acceptance gates are unchanged.
+
 Runtime/source/preparation admission before that interval, subsequent outcome/
 JUnit parsing and the separate collector remain job/workflow costs. Inner
 `quality_duration` starts only after argparse and is not the closed owning-call

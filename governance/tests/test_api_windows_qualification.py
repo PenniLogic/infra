@@ -1211,6 +1211,24 @@ class WindowsObserverPairDiagnosticTests(unittest.TestCase):
         return caught.exception, observed, records
 
     @contextlib.contextmanager
+    def unused_outer_capture(self, operation):
+        streams = [mock.MagicMock(spec=io.BytesIO) for _ in range(2)]
+        for stream in streams:
+            stream.__enter__.return_value = stream
+            getattr(stream, operation).side_effect = OSError(MARKER)
+
+            def close(*unused, stream=stream):
+                stream.close()
+                return False
+
+            stream.__exit__.side_effect = close
+        with mock.patch.object(qualification.tempfile, "TemporaryFile", side_effect=streams) as capture:
+            yield
+        capture.assert_not_called()
+        for stream in streams:
+            self.assertEqual([], stream.mock_calls)
+
+    @contextlib.contextmanager
     def runtime_fixture(self):
         with tempfile.TemporaryDirectory(prefix="observer-runtime-source-") as temporary:
             base = Path(temporary)
@@ -1798,6 +1816,434 @@ class WindowsObserverPairDiagnosticTests(unittest.TestCase):
                     qualification.observer_owning_command(root)
             self.assertIn("Observer secondary failure: interval-report-unavailable", caught.exception.__notes__)
             self.assertIn("Observer secondary failure reporting also failed", caught.exception.__notes__)
+
+    def test_normal_nonzero_result_bypasses_outer_write_seek_read_and_close(self):
+        for complete, operation in itertools.product((False, True), ("write", "seek", "read", "close")):
+            with self.subTest(complete=complete, operation=operation), \
+                    tempfile.TemporaryDirectory(prefix="observer-no-restaging-") as temporary:
+                root, identity = Path(temporary), qualification.PYTHON_TARGET
+                report = (WindowsOutcomeTests().python_report("FAIL").replace(
+                    "OK (skipped=1)", "FAILED (failures=1, skipped=1)") if complete else
+                    f"{identity.rsplit('.', 1)[-1]} ({identity}) ... ERROR\n{MARKER} {root}\n")
+                result = subprocess.CompletedProcess([], 7, (MARKER + str(root)).encode(), report.encode())
+                budget = self.budget(result)
+                with self.unused_outer_capture(operation), self.precedence_io(root) as observed, \
+                        mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 1)), \
+                        mock.patch.object(qualification.subprocess, "run") as direct, \
+                        mock.patch.object(qualification, "junit_outcomes") as junit:
+                    with self.assertRaises(qualification._ObserverResultRefused) as caught:
+                        qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                primary = caught.exception
+                self.assertIs(result, primary.result)
+                self.assertIsNone(primary.__cause__)
+                self.assertEqual("owning-suite-command-failed", str(primary))
+                direct.assert_not_called()
+                junit.assert_not_called()
+                self.assertEqual(1, budget.run.call_count)
+                self.assertEqual(270, budget.run.call_args.args[2])
+                self.assertEqual(1, observed["events"].count("settlement"))
+                self.assertEqual(1, observed["events"].count("close"))
+                self.assertLess(observed["events"].index("close"), observed["events"].index("report:interval"))
+                self.assertLess(observed["events"].index("report:interval"), observed["events"].index("report:projection"))
+                records = [json.loads(line) for line in observed["stdout"].getvalue().splitlines()
+                           if line.startswith("{")]
+                if complete:
+                    outcomes = [record for record in records if record["event"] == "test_outcome"]
+                    self.assertEqual(["failed", "skipped"], [record["outcome"] for record in outcomes])
+                    self.assertEqual([hashlib.sha256(name.encode()).hexdigest() for name in
+                                      (identity, "test_fixture.OtherTest.test_other")],
+                                     [record["id_sha256"] for record in outcomes])
+                    self.assertEqual(identity, outcomes[0]["required_test"])
+                    self.assertFalse(any(record["event"] == "windows_qualification_diagnostic" for record in records))
+                else:
+                    diagnostic, = [record for record in records if record["event"] == "windows_qualification_diagnostic"]
+                    self.assertEqual(7, diagnostic["exit_code"])
+                    self.assertIs(diagnostic["diagnostic_only"], True)
+                    self.assertIs(diagnostic["inventory_complete"], False)
+                    self.assertLess(len(json.dumps(diagnostic).encode()), 4096)
+                    for name in ("stdout", "stderr"):
+                        data = getattr(result, name)
+                        self.assertEqual({"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}, diagnostic[name])
+                    self.assertEqual("ambiguous-python-outcome", diagnostic["parser"]["code"])
+                    self.assertEqual(1, diagnostic["parser"]["negative_prefix_count"])
+                    self.assertIs(diagnostic["parser"]["negative_prefix_truncated"], False)
+                    self.assertEqual([{
+                        "id_sha256": hashlib.sha256(identity.encode()).hexdigest(), "outcome": "error",
+                        "error": {"exception": "unclassified", "source_frames": [],
+                                  "incomplete": True, "truncated": False},
+                    }],
+                                     diagnostic["parser"]["negative_prefix"])
+                    self.assertFalse(any(record["event"] == "test_outcome" for record in records))
+                    self.assertIn("Observer secondary failure: captured-python-outcomes-incomplete", primary.__notes__)
+
+    def test_normal_nonzero_projection_io_preserves_result_without_replaying_partial_output(self):
+        for (complete, fail_at), reporter_error, secondary in itertools.product(
+            ((False, 1), (True, 1), (True, 2)), (OSError, ValueError), (False, True),
+        ):
+            with self.subTest(complete=complete, fail_at=fail_at, reporter=reporter_error, secondary=secondary), \
+                    tempfile.TemporaryDirectory(prefix="observer-normal-projection-") as temporary:
+                root, identity = Path(temporary), qualification.PYTHON_TARGET
+                text = (WindowsOutcomeTests().python_report("FAIL").replace(
+                    "OK (skipped=1)", "FAILED (failures=1, skipped=1)") if complete else
+                    f"{identity.rsplit('.', 1)[-1]} ({identity}) ... FAIL\n{MARKER} {root}\n")
+                result = subprocess.CompletedProcess([], 9, (MARKER + str(root)).encode(), text.encode())
+                output, errors, attempts, original_print = io.StringIO(), io.StringIO(), [], print
+
+                def report(value, **options):
+                    event = json.loads(value).get("event") if value.startswith("{") else None
+                    if event in ("test_outcome", "windows_qualification_diagnostic"):
+                        attempts.append(event)
+                        if len(attempts) == fail_at:
+                            raise reporter_error(MARKER + str(root))
+                    if event == "windows_observer_secondary_failure" and secondary:
+                        raise reporter_error(MARKER + str(root))
+                    original_print(value, **options)
+
+                with self.unused_outer_capture("close"), contextlib.redirect_stdout(output), \
+                        contextlib.redirect_stderr(errors), mock.patch("builtins.print", side_effect=report), \
+                        mock.patch.object(qualification, "observer_owning_command", return_value=result) as owned, \
+                        mock.patch.object(qualification, "junit_outcomes") as junit:
+                    with self.assertRaises(qualification._ObserverResultRefused) as caught:
+                        qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                owned.assert_called_once_with(root)
+                junit.assert_not_called()
+                primary = caught.exception
+                self.assertIs(result, primary.result)
+                self.assertIsNone(primary.__cause__)
+                self.assertEqual("owning-suite-command-failed", str(primary))
+                self.assertEqual(fail_at, len(attempts))
+                self.assertIn("Observer secondary failure: captured-python-outcome-report-unavailable", primary.__notes__)
+                if secondary:
+                    self.assertIn("Observer secondary failure reporting also failed", primary.__notes__)
+                records = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+                outcomes = [record for record in records if record["event"] == "test_outcome"]
+                self.assertEqual(fail_at - 1, len(outcomes))
+                if outcomes:
+                    self.assertEqual(identity, outcomes[0]["required_test"])
+                public = output.getvalue() + errors.getvalue() + "\n".join(primary.__notes__)
+                self.assertNotIn(MARKER, public)
+                self.assertNotIn(str(root), public)
+                self.assertNotIn('"ok": true', public)
+
+    def test_active_owner_refusal_is_not_replaced_by_outer_capture_close(self):
+        for kind in ("complete-result", "incomplete-result", "refused", "cleanup"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="observer-active-no-restaging-") as temporary:
+                root, identity = Path(temporary), qualification.PYTHON_TARGET
+                text = (WindowsOutcomeTests().python_report("FAIL").replace(
+                    "OK (skipped=1)", "FAILED (failures=1, skipped=1)") if kind == "complete-result" else
+                    f"{identity.rsplit('.', 1)[-1]} ({identity}) ... ERROR\n{MARKER}\n")
+                result = subprocess.CompletedProcess([], 1, MARKER.encode(), text.encode())
+                cause = OSError(MARKER)
+                primary = (qualification._ObserverResultRefused(result, cause) if kind.endswith("-result") else
+                           qualification.Refused("observer-state-short-write") if kind == "refused" else cause)
+                with self.unused_outer_capture("close"), self.precedence_io(root) as observed, \
+                        mock.patch.object(qualification, "observer_owning_command", side_effect=primary) as owned, \
+                        mock.patch.object(qualification, "junit_outcomes") as junit:
+                    with self.assertRaises(type(primary)) as caught:
+                        qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                self.assertIs(primary, caught.exception)
+                owned.assert_called_once_with(root)
+                junit.assert_not_called()
+                records = [json.loads(line) for line in observed["stdout"].getvalue().splitlines()
+                           if line.startswith("{")]
+                if kind.endswith("-result"):
+                    self.assertIs(result, caught.exception.result)
+                    self.assertIs(cause, caught.exception.__cause__)
+                    self.assertEqual("owning-suite-command-failed", str(caught.exception))
+                    self.assertEqual(2 if kind == "complete-result" else 1, len(records))
+                else:
+                    self.assertEqual([], records)
+
+    def test_normal_nonzero_result_preserves_failed_junit_outcome(self):
+        fixture = WindowsOutcomeTests()
+        for task, status in itertools.product(("> Task :test", "> Task :test FAILED"), ("failure", "error")):
+            with self.subTest(task=task, status=status), \
+                    tempfile.TemporaryDirectory(prefix="observer-nonzero-junit-") as temporary:
+                root = Path(temporary)
+                result = subprocess.CompletedProcess(
+                    [], 7, (task + "\n" + MARKER + str(root)).encode(), fixture.python_report().encode(),
+                )
+                budget = self.budget(result)
+
+                def run(*unused, **options):
+                    fixture.write_junit(root, status)
+                    return result
+
+                budget.run.side_effect = run
+                with self.unused_outer_capture("close"), self.precedence_io(root) as observed, \
+                        mock.patch.object(qualification, "observer_budget_module", return_value=budget), \
+                        mock.patch.object(qualification.time, "monotonic_ns", side_effect=(0, 1)), \
+                        mock.patch.object(qualification.subprocess, "run") as direct, \
+                        mock.patch.object(qualification, "junit_outcomes", wraps=qualification.junit_outcomes) as junit:
+                    with self.assertRaises(qualification._ObserverResultRefused) as caught:
+                        qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                primary = caught.exception
+                self.assertIs(result, primary.result)
+                self.assertIsNone(primary.__cause__)
+                self.assertEqual("owning-suite-command-failed", str(primary))
+                self.assertEqual([], getattr(primary, "__notes__", []))
+                direct.assert_not_called()
+                junit.assert_called_once_with(root)
+                self.assertEqual(1, budget.run.call_count)
+                self.assertEqual(270, budget.run.call_args.args[2])
+                self.assertEqual(1, observed["events"].count("settlement"))
+                self.assertEqual(1, observed["events"].count("close"))
+                self.assertLess(observed["events"].index("close"), observed["events"].index("report:projection"))
+                records = [json.loads(line) for line in observed["stdout"].getvalue().splitlines()
+                           if line.startswith("{")]
+                outcomes = [record for record in records if record["event"] == "test_outcome"]
+                self.assertEqual(["passed", "skipped", "failed" if status == "failure" else "error"],
+                                 [record["outcome"] for record in outcomes])
+                self.assertEqual(3, len({record["id_sha256"] for record in outcomes}))
+                self.assertEqual({
+                    "event": "test_outcome", "suite": "junit:test",
+                    "id_sha256": hashlib.sha256(
+                        (qualification.KOTLIN_CLASS + "\0" + qualification.KOTLIN_METHOD).encode()).hexdigest(),
+                    "outcome": "failed" if status == "failure" else "error",
+                    "required_test": qualification.KOTLIN_CLASS + "." + qualification.KOTLIN_METHOD,
+                }, outcomes[-1])
+                self.assertFalse(any(record["event"] == "windows_qualification_diagnostic" for record in records))
+
+    def test_normal_nonzero_junit_diagnostic_is_preserved_before_owning_refusal(self):
+        fixture = WindowsOutcomeTests()
+        with tempfile.TemporaryDirectory(prefix="observer-nonzero-junit-diagnostic-") as temporary:
+            root, output, errors, reports = Path(temporary), io.StringIO(), io.StringIO(), []
+            result = subprocess.CompletedProcess([], 7, b"> Task :test FAILED\n", fixture.python_report().encode())
+
+            def run(directory):
+                self.assertEqual(root, directory)
+                reports.append(fixture.write_junit_cases(root, "TEST-duplicate.xml", [
+                    (qualification.KOTLIN_CLASS, qualification.KOTLIN_METHOD),
+                    (qualification.KOTLIN_CLASS, qualification.KOTLIN_METHOD),
+                ])[1])
+                return result
+
+            with self.unused_outer_capture("close"), contextlib.redirect_stdout(output), \
+                    contextlib.redirect_stderr(errors), \
+                    mock.patch.object(qualification, "observer_owning_command", side_effect=run) as owned:
+                with self.assertRaises(qualification._ObserverResultRefused) as caught:
+                    qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+            owned.assert_called_once_with(root)
+            primary = caught.exception
+            self.assertIs(result, primary.result)
+            self.assertIsNone(primary.__cause__)
+            self.assertEqual("owning-suite-command-failed", str(primary))
+            self.assertIn("Observer secondary failure: captured-junit-outcomes-incomplete", primary.__notes__)
+            records = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+            outcomes = [record for record in records if record["event"] == "test_outcome"]
+            self.assertEqual(["passed", "skipped"], [record["outcome"] for record in outcomes])
+            diagnostic, = [record for record in records if record["event"] == "windows_qualification_diagnostic"]
+            metadata = {
+                "bytes": len(reports[0]), "sha256": hashlib.sha256(reports[0]).hexdigest(), "testcase_count": 2,
+                "suite_counts": {"tests": 2, "failures": 0, "errors": 0, "skipped": 0}, "metadata_complete": True,
+            }
+            self.assertEqual({
+                "event": "windows_qualification_diagnostic", "diagnostic_only": True,
+                "inventory_complete": False, "exit_code": 7, "junit": {
+                    "code": "duplicate-junit-case",
+                    "id_sha256": hashlib.sha256(
+                        (qualification.KOTLIN_CLASS + "\0" + qualification.KOTLIN_METHOD).encode()).hexdigest(),
+                    "classname_sha256": hashlib.sha256(qualification.KOTLIN_CLASS.encode()).hexdigest(),
+                    "name_sha256": hashlib.sha256(qualification.KOTLIN_METHOD.encode()).hexdigest(),
+                    "same_report": True,
+                    "first": {"report_position": 1, "case_position": 1, "report": metadata},
+                    "current": {"report_position": 1, "case_position": 2, "report": metadata},
+                    "prefix": {"selected_reports": 1, "completed_reports": 0, "completed_cases": 1,
+                               "encountered_cases": 2},
+                },
+            }, diagnostic)
+            self.assertLess(len(json.dumps(diagnostic).encode()), 4096)
+            public = output.getvalue() + errors.getvalue() + "\n".join(primary.__notes__)
+            self.assertNotIn(MARKER, public)
+            self.assertNotIn(str(root), public)
+            self.assertNotIn('"ok": true', public)
+
+    def test_normal_nonzero_junit_io_preserves_primary_without_replaying_outcomes(self):
+        fixture = WindowsOutcomeTests()
+        cases = [(stage, OSError) for stage in (
+            "open", "read", "close", "read-and-close", "parse", "parse-and-close",
+            "junit-first", "junit-last", "junit-diagnostic",
+        )] + [(stage, ValueError) for stage in ("junit-first", "junit-last", "junit-diagnostic")]
+        for (stage, reporter_error), secondary in itertools.product(cases, (False, True)):
+            with self.subTest(stage=stage, reporter=reporter_error, secondary=secondary), \
+                    tempfile.TemporaryDirectory(prefix="observer-nonzero-junit-io-") as temporary:
+                root, output, errors = Path(temporary), io.StringIO(), io.StringIO()
+                original_open, original_print = Path.open, print
+                failure, streams, attempts, operations = reporter_error(MARKER + str(root)), [], [], []
+                result = subprocess.CompletedProcess([], 7, b"> Task :test FAILED\n", fixture.python_report().encode())
+
+                def run(directory):
+                    self.assertEqual(root, directory)
+                    if stage == "junit-diagnostic":
+                        fixture.write_junit_cases(root, "TEST-duplicate.xml", [
+                            (qualification.KOTLIN_CLASS, qualification.KOTLIN_METHOD),
+                            (qualification.KOTLIN_CLASS, qualification.KOTLIN_METHOD),
+                        ])
+                    else:
+                        fixture.write_junit(root, "failure")
+                        fixture.write_junit_cases(root, "TEST-z.xml", [(MARKER, "test_" + MARKER)])
+                        if stage.startswith("parse"):
+                            (root / qualification.JUNIT / "TEST-fixture.xml").write_bytes(
+                                b"<testsuite>" + MARKER.encode() + b"\0</testsuite>")
+                    return result
+
+                def opening(path, *arguments, **options):
+                    if path.parent != root / qualification.JUNIT or arguments != ("rb",):
+                        return original_open(path, *arguments, **options)
+                    if stage == "open":
+                        raise failure
+                    stream = original_open(path, *arguments, **options)
+                    streams.append(stream)
+                    wrapped = mock.MagicMock(wraps=stream)
+                    wrapped.__enter__.return_value = wrapped
+
+                    def read(size):
+                        operations.append("read")
+                        if stage in ("read", "read-and-close"):
+                            raise failure
+                        return stream.read(size)
+
+                    def close(*unused):
+                        operations.append("close")
+                        stream.close()
+                        if stage in ("close", "read-and-close", "parse-and-close"):
+                            raise failure
+                        return False
+
+                    wrapped.read.side_effect = read
+                    wrapped.__exit__.side_effect = close
+                    return wrapped
+
+                def report(value, **options):
+                    record = json.loads(value) if value.startswith("{") else {}
+                    event = record.get("event")
+                    if event == "test_outcome" and record["suite"] == "junit:test":
+                        attempts.append("outcome")
+                        if len(attempts) == {"junit-first": 1, "junit-last": 2}.get(stage):
+                            raise failure
+                    if event == "windows_qualification_diagnostic" and stage == "junit-diagnostic":
+                        attempts.append("diagnostic")
+                        raise failure
+                    if event == "windows_observer_secondary_failure" and secondary:
+                        raise failure
+                    original_print(value, **options)
+
+                with self.unused_outer_capture("close"), contextlib.redirect_stdout(output), \
+                        contextlib.redirect_stderr(errors), mock.patch.object(Path, "open", autospec=True, side_effect=opening), \
+                        mock.patch("builtins.print", side_effect=report), \
+                        mock.patch.object(qualification, "observer_owning_command", side_effect=run) as owned:
+                    with self.assertRaises(qualification._ObserverResultRefused) as caught:
+                        qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                owned.assert_called_once_with(root)
+                primary = caught.exception
+                self.assertIs(result, primary.result)
+                self.assertIsNone(primary.__cause__)
+                self.assertEqual("owning-suite-command-failed", str(primary))
+                self.assertIn("Observer secondary failure: captured-junit-outcome-report-unavailable", primary.__notes__)
+                if secondary:
+                    self.assertIn("Observer secondary failure reporting also failed", primary.__notes__)
+                self.assertTrue(all(stream.closed for stream in streams))
+                self.assertEqual(len(streams), operations.count("close"))
+                self.assertEqual({"junit-first": 1, "junit-last": 2, "junit-diagnostic": 1}.get(stage, 0), len(attempts))
+                records = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+                outcomes = [record for record in records if record["event"] == "test_outcome"]
+                self.assertEqual(["passed", "skipped"] + (["failed"] if stage == "junit-last" else []),
+                                 [record["outcome"] for record in outcomes])
+                self.assertEqual(len(outcomes), len({record["id_sha256"] for record in outcomes}))
+                self.assertFalse(any(record["event"] == "windows_qualification_diagnostic" for record in records))
+                public = output.getvalue() + errors.getvalue() + "\n".join(primary.__notes__)
+                self.assertNotIn(MARKER, public)
+                self.assertNotIn(str(root), public)
+                self.assertNotIn('"ok": true', public)
+
+    def test_zero_result_reuses_owned_captures_without_outer_temporary_io(self):
+        fixture = WindowsOutcomeTests()
+        for operation in ("write", "seek", "read", "close"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory(prefix="observer-zero-no-restaging-") as temporary:
+                root, output = Path(temporary), io.StringIO()
+                result = subprocess.CompletedProcess([], 0, b"> Task :test\n", fixture.python_report().encode())
+
+                def run(directory):
+                    self.assertEqual(root, directory)
+                    fixture.write_junit(root)
+                    return result
+
+                with self.unused_outer_capture(operation), contextlib.redirect_stdout(output), \
+                        mock.patch.object(qualification, "observer_owning_command", side_effect=run) as owned, \
+                        mock.patch.object(qualification.subprocess, "run") as direct:
+                    qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                owned.assert_called_once_with(root)
+                direct.assert_not_called()
+                records = [json.loads(line) for line in output.getvalue().splitlines() if line.startswith("{")]
+                self.assertEqual(3, len([record for record in records if record["event"] == "test_outcome"]))
+                self.assertEqual({"event": "windows_qualification", "ok": True, "python_tests": 2, "junit_tests": 1},
+                                 records[-1])
+                self.assertNotIn(MARKER, output.getvalue())
+                self.assertNotIn(str(root), output.getvalue())
+
+    def test_zero_result_later_projection_and_junit_reporting_errors_still_refuse(self):
+        fixture = WindowsOutcomeTests()
+        for stage, reporter_error in itertools.product(
+            ("python-first", "python-last", "junit-outcome", "qualified", "negative-prefix", "junit-diagnostic"),
+            (OSError, ValueError),
+        ):
+            with self.subTest(stage=stage, reporter=reporter_error), \
+                    tempfile.TemporaryDirectory(prefix="observer-zero-required-report-") as temporary:
+                root, output, errors, original_print = Path(temporary), io.StringIO(), io.StringIO(), print
+                identity = qualification.PYTHON_TARGET
+                text = (f"{identity.rsplit('.', 1)[-1]} ({identity}) ... ERROR\n{MARKER}\n"
+                        if stage == "negative-prefix" else fixture.python_report())
+                result = subprocess.CompletedProcess([], 0, b"> Task :test\n", text.encode())
+                failure, outcomes = reporter_error(MARKER + str(root)), []
+
+                def run(directory):
+                    self.assertEqual(root, directory)
+                    if stage == "junit-diagnostic":
+                        identities = [(qualification.KOTLIN_CLASS, qualification.KOTLIN_METHOD)] * 2
+                        fixture.write_junit_cases(root, "TEST-duplicate.xml", identities)
+                    else:
+                        fixture.write_junit(root)
+                    return result
+
+                def report(value, **options):
+                    event = json.loads(value).get("event") if value.startswith("{") else None
+                    if event == "test_outcome":
+                        outcomes.append(event)
+                    if ((event == "test_outcome" and len(outcomes) == {
+                            "python-first": 1, "python-last": 2, "junit-outcome": 3,
+                        }.get(stage))
+                            or (event == "windows_qualification" and stage == "qualified")
+                            or (event == "windows_qualification_diagnostic"
+                                and stage in ("negative-prefix", "junit-diagnostic"))):
+                        raise failure
+                    original_print(value, **options)
+
+                with self.unused_outer_capture("close"), contextlib.redirect_stdout(output), \
+                        contextlib.redirect_stderr(errors), mock.patch("builtins.print", side_effect=report), \
+                        mock.patch.object(qualification, "observer_owning_command", side_effect=run) as owned:
+                    with self.assertRaises(reporter_error) as caught:
+                        qualification.qualify(root, require_prepared=True, api106_observer_pair=True)
+                self.assertIs(failure, caught.exception)
+                self.assertNotIsInstance(caught.exception, qualification._ObserverResultRefused)
+                owned.assert_called_once_with(root)
+                public = output.getvalue() + errors.getvalue()
+                self.assertNotIn(MARKER, public)
+                self.assertNotIn(str(root), public)
+                self.assertNotIn('"ok": true', public)
+
+    def test_ordinary_path_retains_its_two_serial_temporary_captures(self):
+        fixture, original_temporary_file = WindowsOutcomeTests(), qualification.tempfile.TemporaryFile
+        for require_prepared in (False, True):
+            with self.subTest(require_prepared=require_prepared), \
+                    tempfile.TemporaryDirectory(prefix="ordinary-capture-preserved-") as temporary:
+                with mock.patch.object(qualification.tempfile, "TemporaryFile", wraps=original_temporary_file) as capture, \
+                        mock.patch.object(qualification, "observer_owning_command") as observer:
+                    records = fixture.exercise(Path(temporary), require_prepared=require_prepared)
+                self.assertEqual([mock.call(), mock.call()], capture.call_args_list)
+                observer.assert_not_called()
+                self.assertEqual({"event": "windows_qualification", "ok": True, "python_tests": 2, "junit_tests": 1},
+                                 records[-1])
 
     def test_runtime_shadowed_tools_or_missing_system_shell_refuse_before_owner_creation(self):
         for name in ("python", "git", "java", "cmd", "powershell"):
