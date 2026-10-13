@@ -164,6 +164,17 @@ class RegistryTests(unittest.TestCase):
                 self.assertIsNotNone(rendered, "the prior Infra source must exist for this regression")
                 self.assertNotEqual(current[workflow_file].encode("utf-8"), rendered)
 
+    def test_pre_split_infra_ref_cannot_bind_the_independent_windows_suites(self):
+        current = support.generator.artifacts("infra")
+        for workflow_file in (registry.CI_WORKFLOW, registry.PR_GATE_WORKFLOW):
+            with self.subTest(workflow_file=workflow_file):
+                rendered = registry.render_workflow_at(
+                    support.GOVERNANCE.parent, "1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1", "infra",
+                    workflow_file=workflow_file,
+                )
+                self.assertIsNotNone(rendered, "the committed pre-split Infra source must exist")
+                self.assertNotEqual(current[workflow_file].encode("utf-8"), rendered)
+
     def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")

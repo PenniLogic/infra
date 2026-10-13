@@ -365,8 +365,11 @@ identity/mandatory-absence gap remain open.
 
 ## Infra Windows/Linux ordinary qualification (owner transition held)
 
-Infra adds the same two parallel standard-hosted qualification jobs and always-running
-native `CI` result gate, without changing its canonical manual command list. Linux
+Infra schedules `Linux qualification`, `Windows governance qualification` and
+`Windows scripts qualification` independently on standard hosted runners, with an
+always-running native `CI` result gate requiring all three explicit successes.
+Failure, cancellation, absence or skip of any job fails the result gate.
+The canonical manual command list is unchanged. Linux
 keeps every existing command in order, including Compose configuration and all nine
 real `StackLifecycleTests`. Windows uses `windows-2025`, the same immutable
 GitHub-owned checkout/Python/Node action pins, Python `3.14`, Node `24.14.0` and bundled
@@ -388,8 +391,11 @@ The detailed bounds, failures and retained tool-directory limitation are in
 Mocked download/archive tests and emitted-shell controls are not actual downloads
 or Linux/Windows hosted qualification.
 
-Both OS jobs execute full governance discovery followed serially by full scripts
-discovery. Only those two commands receive the transparent
+Linux executes full governance discovery followed serially by full scripts
+discovery. The two Windows jobs use separate checkouts and have no dependency on
+each other: each retains checkout, tools, security preparation, uv installation,
+repository checking and generation checking, then executes its one complete
+ordinary discovery. Only those two discovery commands receive the transparent
 `python governance/qualify.py -- <canonical discovery command>` wrapper; it executes
 the complete ordinary discovery once, using `-v` for per-test outcomes.
 It is not a selector, replacement test framework or optional gate.
@@ -499,7 +505,14 @@ bytes. The source/checker/validator change needs the
 real source/registry bindings, separate review and exact-final-source qualification.
 The ten-minute OS job bounds remain; actual complete job **and** whole-workflow
 times must each be strictly below 600 seconds. Aggregator duration is not a proxy.
-Those timings, native qualification and independent cleanup evidence are unverified.
+The split addresses [PR88's native attempt](https://github.com/PenniLogic/infra/actions/runs/38359922860/attempts/1):
+Windows completed governance before the provider's ten-minute job timeout interrupted
+scripts. That job took 605 seconds and the whole run 612 seconds; the failure remains
+preserved. Moving the complete suites into independent jobs is not proof of a passing
+budget or cleanup. Exact-final-source native qualification and independent cleanup
+evidence remain required. Existing registry source references are not advanced by
+generation: a separately reviewed source commit and subsequent real-source binding
+must precede any positive current-history or protected integration claim.
 
 ## API Node SDK prerequisite (consumer adoption held)
 

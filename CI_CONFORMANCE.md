@@ -1139,12 +1139,19 @@ Infra's directly related standard-hosted Windows route in the same exclusive
 canonical checkout. No frozen [#72](https://github.com/PenniLogic/infra/pull/72)
 Contracts runner source, bcf/ebc branch, approval or qualification is imported.
 
-Infra's former single CI job becomes parallel `Linux qualification` and
-`Windows qualification` jobs plus the small always-running native job named `CI`.
-Only two explicit OS successes satisfy it; failure, cancellation, absence or skip
+Infra schedules independent `Linux qualification`, `Windows governance qualification`
+and `Windows scripts qualification` jobs plus the small always-running native job
+named `CI`. Only all three explicit successes satisfy it; failure, cancellation, absence or skip
 does not. Every PowerShell native-command exit is propagated immediately. Linux
 retains all canonical commands and real-stack coverage. Windows runs the ordinary
-full governance and scripts discoveries serially, not isolated control selectors.
+full governance and scripts discoveries in separate standard-hosted `windows-2025`
+jobs with independent checkouts and no dependency between them, not filtered control
+selectors or concurrent consumers of a shared checkout. Both retain identical
+preparation, repository and generation checks and the existing ten-minute cap.
+This source-only scheduling change addresses PR88's observed serial Windows timeout;
+it does not establish full-suite completion, cleanup or strict each-job AND whole
+under-600-second qualification. Existing registry references remain held for a
+separate reviewed real-source commit and binding step.
 The transparent Infra qualifier launches those same discoveries once with additional
 verbosity, checks full source/ID inventories and emits only safe per-test outcomes
 and version/image metadata. Missing historical objects cannot become qualifying skips.

@@ -694,14 +694,19 @@ exit $exitCode
     }
 
 
-def infra_windows_job(profile):
+def infra_windows_job(profile, suite):
+    if suite not in ("governance", "scripts"):
+        raise ValueError("Infra Windows qualification requires one complete ordinary suite")
+    other_suite = "scripts" if suite == "governance" else "governance"
+    excluded = {"docker compose -f docker-compose.yml config --quiet",
+                f"python -m unittest discover -s {other_suite}/tests"}
     commands = [infra_ci_command(command).replace("/", "\\") for command in profile["commands"]
-                if command != "docker compose -f docker-compose.yml config --quiet"]
+                if command not in excluded]
     return {
-        "name": "Windows qualification", "runs-on": "windows-2025",
+        "name": f"Windows {suite} qualification", "runs-on": "windows-2025",
         "timeout-minutes": profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES),
         "steps": [*tool_steps(profile), infra_security_step(windows=True), uv_install_step(windows=True), {
-            "name": "Run Windows owning suites", "run": powershell_commands(commands),
+            "name": f"Run Windows {suite} suite", "run": powershell_commands(commands),
         }],
     }
 
@@ -710,13 +715,21 @@ def ci_result_job(repo):
     if repo not in ("api", "infra"):
         raise ValueError("Only API and Infra have OS qualification results")
     label = "API" if repo == "api" else "Infra"
+    needs = ["ci", "windows"] if repo == "api" else ["ci", "windows-governance", "windows-scripts"]
+    results = ({"LINUX_RESULT": "${{ needs.ci.result }}", "WINDOWS_RESULT": "${{ needs.windows.result }}"}
+               if repo == "api" else {
+                   "LINUX_RESULT": "${{ needs.ci.result }}",
+                   "WINDOWS_GOVERNANCE_RESULT": "${{ needs.windows-governance.result }}",
+                   "WINDOWS_SCRIPTS_RESULT": "${{ needs.windows-scripts.result }}",
+               })
+    refused = " || ".join(f'[ "${{{name}-}}" != success ]' for name in results)
     return {
         "name": "CI", "runs-on": PROFILES["runner"], "timeout-minutes": 1,
-        "needs": ["ci", "windows"], "if": "always()",
+        "needs": needs, "if": "always()",
         "steps": [{
-            "name": "Require both qualification results",
-            "env": {"LINUX_RESULT": "${{ needs.ci.result }}", "WINDOWS_RESULT": "${{ needs.windows.result }}"},
-            "run": f"""if [ "${{LINUX_RESULT-}}" != success ] || [ "${{WINDOWS_RESULT-}}" != success ]; then
+            "name": "Require both qualification results" if repo == "api" else "Require all qualification results",
+            "env": results,
+            "run": f"""if {refused}; then
   echo "::error::{label} CI requires successful Linux and Windows qualification." >&2
   exit 1
 fi""",
@@ -768,8 +781,12 @@ def workflow(repo, setup=False):
     jobs = {"copilot-setup-steps" if setup else "ci": job}
     if repo in ("api", "infra") and not setup:
         job["name"] = "Linux qualification"
-        windows = api_windows_job(profile) if repo == "api" else infra_windows_job(profile)
-        jobs.update({"windows": windows, "ci-result": ci_result_job(repo)})
+        if repo == "api":
+            jobs["windows"] = api_windows_job(profile)
+        else:
+            for suite in ("governance", "scripts"):
+                jobs["windows-" + suite] = infra_windows_job(profile, suite)
+        jobs["ci-result"] = ci_result_job(repo)
     return encoded({
         "name": "Copilot Setup Steps" if setup else "CI",
         "on": events,

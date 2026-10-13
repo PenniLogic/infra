@@ -143,8 +143,11 @@ class ProducedCheckTests(unittest.TestCase):
                 artifacts = support.generator.artifacts(name)
                 workflow = artifacts[".github/workflows/ci.yml"].encode("utf-8")
                 policy = json.loads(artifacts[".github/agent-policy.json"])
-                expected_checks = ({policy["required_native_check"], "Linux qualification", "Windows qualification"}
-                                   if name in ("api", "infra") else {policy["required_native_check"]})
+                expected_checks = ({policy["required_native_check"], "Linux qualification",
+                                    "Windows governance qualification", "Windows scripts qualification"}
+                                   if name == "infra" else
+                                   {policy["required_native_check"], "Linux qualification", "Windows qualification"}
+                                   if name == "api" else {policy["required_native_check"]})
                 self.assertEqual(expected_checks, steps.produced_check_names(workflow))
                 manual = support.generator.PROFILES["repositories"][name]["commands"]
                 expected = [
@@ -223,8 +226,9 @@ class ProducedCheckTests(unittest.TestCase):
             files = {path: text.encode("utf-8") for path, text in support.generator.artifacts(name).items()
                      if path.startswith(".github/workflows/")}
             with self.subTest(profile=name):
-                native = ({"CI", "Linux qualification", "Windows qualification"}
-                          if name in ("api", "infra") else {"CI"})
+                native = ({"CI", "Linux qualification", "Windows governance qualification", "Windows scripts qualification"}
+                          if name == "infra" else
+                          {"CI", "Linux qualification", "Windows qualification"} if name == "api" else {"CI"})
                 expected = native | {"PR workflow integrity"} if name == "infra" else native
                 self.assertEqual(expected, steps.produced_pr_check_names(files))
                 files.pop(".github/workflows/pr-workflow-integrity.yml", None)

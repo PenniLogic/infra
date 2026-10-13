@@ -382,8 +382,13 @@ or removed. Safe receipts contain only project labels, resource counts and confi
 temporary removal, never credentials or command/fixture payloads. Synthetic cleanup
 regressions do not prove actual Docker resource absence.
 
-The proposed native Infra route runs **full** governance discovery, then **full**
-scripts discovery, serially within each parallel Linux/Windows job. A thin
+The proposed native Infra route keeps **full** governance then **full** scripts
+discovery serial on Linux. Independent `windows-2025` jobs run the complete
+governance and scripts directories in separate checkouts, each retaining the same
+preparation, repository and generation checks. Neither Windows job depends on the
+other. The native `CI` result requires explicit success from Linux and both Windows
+jobs; their ten-minute caps and the strict each-job **and** whole-workflow
+under-600-second acceptance requirement are unchanged. A thin
 `governance/qualify.py` wrapper adds verbose per-test collection without selectors or
 changed assertions. On Windows it permits only the nine existing real-stack skips
 and the existing POSIX-flock skip; on Linux all nine real-stack tests must pass at

@@ -48,9 +48,21 @@ def without_python_location(environment):
 
 class InfraQualificationWorkflowTests(unittest.TestCase):
     def test_both_ordinary_suites_preserve_the_linux_graph_and_windows_preparation(self):
+        self.test_independent_windows_jobs_keep_complete_suites_and_all_preparation()
+        jobs = json.loads(generator.workflow("infra"))["jobs"]
+        governance = jobs["windows-governance"]["steps"][-1]["run"]
+        scripts = jobs["windows-scripts"]["steps"][-1]["run"]
+        installer = jobs["windows-governance"]["steps"][4]["run"]
+        support.assert_powershell_failure_boundaries(self, installer, 1)
+        # Both emitted suites share the checked prefix; retain every original failure boundary.
+        combined = governance + "\n" + "\n".join(scripts.splitlines()[-2:])
+        support.assert_powershell_failure_boundaries(self, combined, 4)
+
+    def test_independent_windows_jobs_keep_complete_suites_and_all_preparation(self):
         document = json.loads(generator.workflow("infra"))
         jobs = document["jobs"]
-        self.assertEqual({"ci", "windows", "ci-result"}, set(jobs))
+        windows_jobs = ("windows-governance", "windows-scripts")
+        self.assertEqual({"ci", *windows_jobs, "ci-result"}, set(jobs))
         profile = generator.profile_for("infra")
         expected = [generator.infra_ci_command(command) for command in profile["commands"]]
         self.assertEqual(expected, jobs["ci"]["steps"][-1]["run"].splitlines())
@@ -61,27 +73,46 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
             "docker compose -f docker-compose.yml config --quiet",
             "python governance/qualify.py -- python -m unittest discover -s scripts/tests",
         ], expected)
-        self.assertEqual("windows-2025", jobs["windows"]["runs-on"])
-        self.assertEqual(generator.tool_steps(profile), jobs["windows"]["steps"][:3])
-        windows = jobs["windows"]["steps"][-1]["run"]
-        self.assertEqual([line.replace("/", "\\") for line in expected if not line.startswith("docker ")],
-                         windows.splitlines()[::2])
+        for suite, discovery in (("governance", expected[2]), ("scripts", expected[4])):
+            job = jobs["windows-" + suite]
+            with self.subTest(suite=suite):
+                self.assertEqual({"name", "runs-on", "timeout-minutes", "steps"}, set(job))
+                self.assertEqual("Windows " + suite + " qualification", job["name"])
+                self.assertEqual("windows-2025", job["runs-on"])
+                self.assertEqual(generator.tool_steps(profile), job["steps"][:3])
+                self.assertEqual({
+                    "name": "Checkout",
+                    "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                    "with": {"persist-credentials": False, "fetch-depth": 0},
+                }, job["steps"][0])
+                self.assertEqual(6, len(job["steps"]))
+                self.assertEqual(generator.uv_install_step(windows=True), job["steps"][4])
+                self.assertEqual("Run Windows " + suite + " suite", job["steps"][-1]["name"])
+                windows = job["steps"][-1]["run"].splitlines()
+                self.assertEqual([line.replace("/", "\\") for line in [*expected[:2], discovery]], windows[::2])
+                self.assertEqual(["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"] * 3, windows[1::2])
+                self.assertNotIn("if", job)
+                self.assertNotIn("needs", job)
+        self.assertIsNot(jobs[windows_jobs[0]]["steps"], jobs[windows_jobs[1]]["steps"])
         self.assertNotIn("PENNILOGIC_SKIP_DOCKER_TESTS", json.dumps(document))
         self.assertEqual("always()", jobs["ci-result"]["if"])
-        self.assertEqual(["ci", "windows"], jobs["ci-result"]["needs"])
+        self.assertEqual(["ci", *windows_jobs], jobs["ci-result"]["needs"])
+        self.assertEqual({
+            "LINUX_RESULT": "${{ needs.ci.result }}",
+            "WINDOWS_GOVERNANCE_RESULT": "${{ needs.windows-governance.result }}",
+            "WINDOWS_SCRIPTS_RESULT": "${{ needs.windows-scripts.result }}",
+        }, jobs["ci-result"]["steps"][0]["env"])
         self.assertEqual("CI", jobs["ci-result"]["name"])
         self.assertEqual(1, sum(job["name"] == "CI" for job in jobs.values()))
-        for name in ("ci", "windows"):
+        for name in ("ci", *windows_jobs):
             self.assertNotIn("needs", jobs[name])
             self.assertEqual(10, jobs[name]["timeout-minutes"])
         self.assertEqual({"contents": "read"}, document["permissions"])
-        installer = jobs["windows"]["steps"][4]["run"]
+        installer = jobs["windows-governance"]["steps"][4]["run"]
         self.assertIn("uv-0.11.33-py3-none-win_amd64.whl", installer)
         self.assertIn("#sha256=521229afa69ad5f57127de800120cb2bea1ac729a05a0851aaf920124f8edf66", installer)
         self.assertIn("--only-binary :all: --require-hashes --no-deps", installer)
-        support.assert_powershell_failure_boundaries(self, installer, 1)
-        support.assert_powershell_failure_boundaries(self, windows, 4)
-        for name, windows_os in (("ci", False), ("windows", True)):
+        for name, windows_os in (("ci", False), *((name, True) for name in windows_jobs)):
             preparation = jobs[name]["steps"][3]
             self.assertEqual(generator.infra_security_step(windows_os), preparation)
             self.assertEqual({"name", "run"}, set(preparation))
@@ -90,6 +121,11 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
             self.assertIn("-I -S", preparation["run"])
         for document in (generator.workflow("infra", setup=True), generator.conformance_workflow()):
             self.assertNotIn("Prepare security tools", document)
+
+    def test_windows_suite_selection_refuses_partial_or_unknown_directories(self):
+        for suite in ("", "governance/tests", "scripts/tests", "governance -p test_*", "security"):
+            with self.subTest(suite=suite), self.assertRaisesRegex(ValueError, "complete ordinary suite"):
+                generator.infra_windows_job(generator.profile_for("infra"), suite)
 
     def test_api_caller_checker_and_qualifier_match_their_exact_source_bindings(self):
         historical = {
@@ -144,16 +180,43 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
                 continue
             original = json.loads(generator.workflow(repo))
             validate(".github/workflows/ci.yml", generator.encoded(original).encode())
+            windows_jobs = ("windows",) if repo == "api" else ("windows-governance", "windows-scripts")
+            for job_name in windows_jobs:
+                for mutate in (
+                    lambda value: value["jobs"].pop(job_name),
+                    lambda value: value["jobs"]["ci-result"].pop("if"),
+                    lambda value: value["jobs"]["ci-result"].update(needs=["ci"]),
+                    lambda value: value["jobs"][job_name].update({"continue-on-error": True}),
+                    lambda value: value["jobs"][job_name]["steps"][-1].update(run="echo skipped"),
+                ):
+                    changed = copy.deepcopy(original)
+                    mutate(changed)
+                    with self.subTest(repo=repo, job=job_name, mutate=mutate), self.assertRaisesRegex(ValueError, "CI must match"):
+                        validate(".github/workflows/ci.yml", generator.encoded(changed).encode())
+
+    def test_split_windows_jobs_refuse_serialization_partial_suites_or_weakened_result_gate(self):
+        namespace = {"__file__": str(support.GOVERNANCE.parent / "scripts/check_repository.py")}
+        exec(compile(generator.checker("infra"), "rendered split checker", "exec"), namespace)
+        original = json.loads(generator.workflow("infra"))
+        validate = namespace["validate_workflow"]
+        validate(".github/workflows/ci.yml", generator.encoded(original).encode())
+        for job_name in ("windows-governance", "windows-scripts"):
+            other = "windows-scripts" if job_name == "windows-governance" else "windows-governance"
             for mutate in (
-                lambda value: value["jobs"].pop("windows"),
-                lambda value: value["jobs"]["ci-result"].pop("if"),
-                lambda value: value["jobs"]["ci-result"].update(needs=["ci"]),
-                lambda value: value["jobs"]["windows"].update({"continue-on-error": True}),
-                lambda value: value["jobs"]["windows"]["steps"][-1].update(run="echo skipped"),
+                lambda value: value["jobs"][job_name].update(needs=[other]),
+                lambda value: value["jobs"][job_name].update({"if": "success()"}),
+                lambda value: value["jobs"][job_name].update({"runs-on": "windows-latest"}),
+                lambda value: value["jobs"][job_name].update({"timeout-minutes": 11}),
+                lambda value: value["jobs"][job_name]["steps"][-1].update(run="python -m unittest test_one"),
+                lambda value: value["jobs"][job_name]["steps"][-1].update(
+                    run=value["jobs"][job_name]["steps"][-1]["run"].replace(
+                        "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", "", 1)),
+                lambda value: value["jobs"]["ci-result"]["needs"].remove(job_name),
+                lambda value: value["jobs"]["ci-result"]["steps"][0].update(run="true"),
             ):
                 changed = copy.deepcopy(original)
                 mutate(changed)
-                with self.subTest(repo=repo, mutate=mutate), self.assertRaisesRegex(ValueError, "CI must match"):
+                with self.subTest(job=job_name, mutate=mutate), self.assertRaisesRegex(ValueError, "CI must match"):
                     validate(".github/workflows/ci.yml", generator.encoded(changed).encode())
 
     def test_security_preparation_shells_require_bound_python_and_propagate_the_native_exit(self):

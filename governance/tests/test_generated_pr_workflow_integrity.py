@@ -20,13 +20,14 @@ from test_baseline import CONTRACTS_STATE, contracts_command_delta
 GATE = ".github/workflows/pr-workflow-integrity.yml"
 SOURCE = "f3331d5bc24556d11b9f3ad0b517db37e9caac9d"
 SECURITY_PREPARATION_BASE = "0f5f7b7ce4baa8206add295ce0adee03292a5b20"
+WINDOWS_SPLIT_BASE = "7298eaf4fa145b0000835395b90bdfd4c33be337"
 generator = support.generator
 
 
 def historical_generator(root, source=SOURCE):
     paths = ["governance/generate.py", "governance/repository-profiles.json",
              "governance/templates/check_repository.py", "governance/templates/setup.py"]
-    if source == SECURITY_PREPARATION_BASE:
+    if source in (SECURITY_PREPARATION_BASE, WINDOWS_SPLIT_BASE):
         paths.extend(("governance/api-money-sources.json", "governance/api-database-admission-installation.json"))
         paths.extend(support.git(support.GOVERNANCE.parent, "ls-tree", "-r", "--name-only",
                                  source, "--", "governance/templates").splitlines())
@@ -205,7 +206,10 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                         checks["run"] = "\n".join(generator.infra_ci_command(command)
                                                   for command in checks["run"].split("\n"))
                         linux["steps"].insert(3, generator.infra_security_step())
-                        value["jobs"]["windows"] = generator.infra_windows_job(generator.profile_for("infra"))
+                        for suite in ("governance", "scripts"):
+                            value["jobs"]["windows-" + suite] = generator.infra_windows_job(
+                                generator.profile_for("infra"), suite,
+                            )
                         value["jobs"]["ci-result"] = generator.ci_result_job("infra")
                         expected = generator.encoded(value)
                     self.assertEqual(expected, actual, (name, relative))
@@ -250,6 +254,27 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     self.assertEqual({GATE, "scripts/check_repository.py", ".github/workflows/ci.yml"}
                                      if name == "infra" else set(), changed)
 
+    def test_windows_suite_split_preserves_linux_and_every_other_repository_artifact(self):
+        with tempfile.TemporaryDirectory(prefix="infra-windows-split-scope-") as temporary:
+            accepted = historical_generator(Path(temporary), WINDOWS_SPLIT_BASE)
+            self.assertEqual(accepted.PROFILES, generator.PROFILES)
+            for name in generator.PROFILES["repositories"]:
+                old, new = accepted.artifacts(name), generator.artifacts(name)
+                changed = {path for path in set(old) | set(new) if old.get(path) != new.get(path)}
+                with self.subTest(repository=name):
+                    self.assertEqual({GATE, "scripts/check_repository.py", ".github/workflows/ci.yml"}
+                                     if name == "infra" else set(), changed)
+                    if name == "infra":
+                        previous = json.loads(old[".github/workflows/ci.yml"])
+                        current = json.loads(new[".github/workflows/ci.yml"])
+                        self.assertEqual(previous["jobs"]["ci"], current["jobs"]["ci"])
+                        self.assertEqual({key: value for key, value in previous.items() if key != "jobs"},
+                                         {key: value for key, value in current.items() if key != "jobs"})
+                        self.assertEqual(previous["jobs"]["windows"]["steps"][:-1],
+                                         current["jobs"]["windows-governance"]["steps"][:-1])
+                        self.assertEqual(previous["jobs"]["windows"]["steps"][:-1],
+                                         current["jobs"]["windows-scripts"]["steps"][:-1])
+
     def test_accepted_protected_base_explicitly_refuses_the_security_preparation_transition(self):
         with tempfile.TemporaryDirectory(prefix="infra-security-protected-base-") as temporary:
             accepted = historical_generator(Path(temporary), SECURITY_PREPARATION_BASE)
@@ -268,7 +293,7 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     self.assertIn({"path": path, "matches": False}, report["bindings"])
 
     def test_generated_security_preparation_cannot_be_removed_stubbed_or_rebound(self):
-        for job_name in ("ci", "windows"):
+        for job_name in ("ci", "windows-governance", "windows-scripts"):
             for mutation in ("remove", "stub", "digest", "condition", "mask"):
                 document = json.loads(generator.workflow("infra"))
                 job = document["jobs"][job_name]
