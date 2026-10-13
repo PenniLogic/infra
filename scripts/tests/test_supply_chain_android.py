@@ -123,6 +123,31 @@ class XmlRefusalTests(unittest.TestCase):
         self.refused("SC-ANDROID-NSC-XML", network=replaced(NETWORK, '<network-security-config>',
                                                             '<!doctype n>\n<network-security-config>'))
 
+    def test_utf16_and_utf32_input_cannot_bypass_the_declaration_scan(self):
+        doctype = ('<!DOCTYPE manifest [<!ENTITY dbg "true">]>'
+                   '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+                   '<uses-sdk android:targetSdkVersion="35"/><application android:allowBackup="false" '
+                   'android:usesCleartextTraffic="false" android:debuggable="&dbg;"/></manifest>')
+        for encoding in ("utf-16-le", "utf-16-be", "utf-32-le"):
+            with self.subTest(encoding=encoding):
+                control = doctype.split("]>", 1)[1].replace("&dbg;", "false").encode("utf-8")
+                self.assertEqual(config.android_findings(control, "android/release"), [])
+                with self.assertRaises(Refused) as caught:
+                    config.android_findings(doctype.encode(encoding), "android/release")
+                self.assertEqual(caught.exception.code, "SC-ANDROID-XML")
+                with self.assertRaises(Refused) as caught:
+                    config.android_findings(MANIFEST.encode("utf-8"), "android/release",
+                                            ('<!DOCTYPE n [<!ENTITY t "true">]><network-security-config>'
+                                             '<base-config cleartextTrafficPermitted="&t;" />'
+                                             '</network-security-config>').encode(encoding))
+                self.assertEqual(caught.exception.code, "SC-ANDROID-NSC-XML")
+
+    def test_encoding_declaration_cannot_change_how_the_text_is_read(self):
+        declared = '<?xml version="1.0" encoding="UTF-16"?>\n' + MANIFEST.split("?>", 1)[-1].lstrip()
+        self.assertEqual(rules(declared), [])
+        self.assertEqual(rules(declared.replace('android:label=', 'android:debuggable="true" android:label=', 1)),
+                         ["SC-ANDROID-DEBUGGABLE"])
+
     def test_malformed_and_wrong_root_are_refused(self):
         self.refused("SC-ANDROID-XML", manifest=MANIFEST.replace("</manifest>", ""))
         self.refused("SC-ANDROID-SHAPE", manifest=replaced(MANIFEST, '</application>', '</application><application />'))

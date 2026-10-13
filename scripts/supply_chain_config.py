@@ -95,22 +95,27 @@ def compose_findings(data, artifact_id):
 
 ANDROID = "{http://schemas.android.com/apk/res/android}"
 COMPONENTS = ("activity", "activity-alias", "service", "receiver", "provider")
-XML_DECLARATIONS = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+XML_DECLARATIONS = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 CLEARTEXT_DEFAULT_OFF_FROM = 28
 
 
 def _xml(data, prefix):
-    """Parse bounded UTF-8 XML; DTDs and entity declarations are refused before parsing."""
+    """Parse bounded UTF-8 XML; DTDs and entity declarations are refused before parsing.
+
+    The bytes are decoded as UTF-8 and the decoded text is what is both scanned and parsed: expat is handed a
+    ``str``, which pins its encoding to UTF-8 whatever an XML declaration or byte pattern suggests, so UTF-16/32
+    input cannot slip a DTD past the scan. NUL characters (never legal in XML 1.0) are refused.
+    """
     if not isinstance(data, bytes) or not data or len(data) > DOCUMENT_LIMIT:
         raise Refused(prefix + "-SIZE")
     try:
-        data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise Refused(prefix + "-XML") from None
-    if XML_DECLARATIONS.search(data):
+    if "\x00" in text or XML_DECLARATIONS.search(text):
         raise Refused(prefix + "-XML")
     try:
-        return ElementTree.fromstring(data)
+        return ElementTree.fromstring(text)
     except (ElementTree.ParseError, ValueError, RecursionError):
         raise Refused(prefix + "-XML") from None
 
