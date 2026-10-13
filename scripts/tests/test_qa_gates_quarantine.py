@@ -6,6 +6,7 @@ All identities, owners, tickets and run ids are synthetic (see qa_gates_support)
 
 import contextlib
 import copy
+import dataclasses
 import datetime
 import hashlib
 import io
@@ -130,6 +131,26 @@ class QuarantineTriggerTests(GateCase):
                     copied["flake_events"] += proposal["ledger_delta"]["flake_events"]
                     copied["quarantines"] += proposal["ledger_delta"]["quarantines"]
                     qs.parse_inputs(ledger_doc=copied)
+
+    def test_todays_event_does_not_count_on_the_day_of_a_closure(self):
+        # Review round 2, PS-2: the ledger counts only events strictly after a closure, so the gate must not count
+        # today's event on the closure's own day. With the pinned trigger (2) that case cannot reach a proposal, so
+        # the trigger definition is checked with a one-event trigger.
+        policy, manifest, _ledger = qs.parse_inputs()
+        policy = dataclasses.replace(policy, quarantine_after_flakes=1)
+        events, record = qs.justified(A, -10)
+        for offset, proposed in ((-1, 1), (0, 0)):
+            with self.subTest(closed_on=offset):
+                document = qs.ledger_document(events=events, quarantines=[record], releases=[qs.release(A, offset)])
+                ledger = ledgers.parse_ledger(qs.encode(document), manifest=manifest, policy=policy, today=qs.TODAY)
+                attempts = [qs.junit.parse_attempt(qs.junit_xml(items)) for items in self.flaky()]
+                report = gate.evaluate(policy=policy, manifest=manifest, ledger=ledger, attempts=attempts,
+                                       job_id=qs.JOB, run_id=qs.RUN, today=qs.TODAY, ticket_port=qs.FakeTicketPort(),
+                                       base_ledger=ledger, base_manifest=manifest)
+                self.assertEqual(len(report["ledger_delta"]["quarantines"]), proposed)
+                document["flake_events"] += report["ledger_delta"]["flake_events"]
+                document["quarantines"] += report["ledger_delta"]["quarantines"]
+                ledgers.parse_ledger(qs.encode(document), manifest=manifest, policy=policy, today=qs.TODAY)
 
     def test_flakes_outside_window_not_quarantined(self):
         inside = qs.run_gate(*self.flaky(), ledger_doc=qs.ledger_document(events=[qs.event(A, -14)]))
