@@ -17,7 +17,7 @@ proposal awaiting owner confirmation.
 | `android` | merged release `AndroidManifest.xml` (+ network security config) | debuggable, backup allowed, cleartext traffic, unprotected exported components, legacy storage, user CAs |
 | `trivy` | `trivy image` or `trivy config` JSON (SchemaVersion 2) | `image`: container package (`os-pkgs`, `lang-pkgs`) vulnerabilities at or above the threshold; the report must name the expected `sha256:` digest and contain a package result. `config`: misconfigurations at or above the threshold; every result must be Class `config` with a `MisconfSummary` |
 | `checkov` | `checkov -o json` report (infrastructure-as-code frameworks only) | failed or skipped checks at or above the threshold |
-| `sbom` | artifact file + CycloneDX 1.4-1.6 JSON | incomplete components (name, version, `pkg:` purl, strong hash), duplicate `bom-ref`, dangling dependency, missing serial number, `metadata.component` SHA-256 not equal to the artifact digest |
+| `sbom` | artifact file + CycloneDX 1.4-1.6 JSON | incomplete components (name, version, printable `pkg:` purl with a name, strong hash), subject without name or version, a composition declared `incomplete*` or `unknown`, duplicate `bom-ref`, dangling dependency, missing serial number, `metadata.component` SHA-256 not equal to the artifact digest |
 | `provenance` | artifact file + in-toto Statement v1 / SLSA provenance v1 | artifact digest not a subject, missing builder id or build type |
 | `deploy` | artifact + SBOM + provenance + detached signatures | any `sbom`/`provenance` finding, and any member (artifact, SBOM, provenance) unsigned or not accepted by the verifier |
 

@@ -3,9 +3,11 @@
 Input is one CycloneDX JSON document (specVersion 1.4-1.6) as bytes plus the SHA-256 the caller computed from the
 artifact bytes. A document that is not strict JSON, not a CycloneDX object or structurally malformed is refused.
 Completeness gaps are findings (``SC-SBOM-*``, high): every component, at any nesting depth, needs a name,
-version, ``pkg:`` purl and at least one well-formed strong hash; ``bom-ref`` values are unique and every
-dependency reference resolves. The binding to the artifact is a never-exceptable critical finding
-(``SC-SUBJECT-SBOM-*``): ``metadata.component`` must carry a SHA-256 hash equal to the artifact digest.
+version, ``pkg:`` purl (printable, with a non-empty name) and at least one well-formed strong hash; the
+subject (``metadata.component``) needs a name and version; ``bom-ref`` values are unique, every dependency
+reference resolves, and no composition declares the inventory incomplete or unknown. The binding to the
+artifact is a never-exceptable critical finding (``SC-SUBJECT-SBOM-*``): ``metadata.component`` must carry a
+SHA-256 hash equal to the artifact digest.
 
 Linking the SBOM from the release record is owned by PenniLogic/docs#23 and is held.
 """
@@ -27,6 +29,21 @@ HEX = re.compile(r"[0-9a-fA-F]+")
 COMPONENT_LIMIT = 100000
 DEPTH_LIMIT = 16
 LIST_LIMIT = 10000
+# CycloneDX composition aggregates that declare the inventory incomplete or of unknown completeness.
+COMPLETE_AGGREGATES = ("complete", "not_specified")
+INCOMPLETE_AGGREGATES = ("incomplete", "incomplete_first_party_only", "incomplete_first_party_proprietary_only",
+                         "incomplete_first_party_opensource_only", "incomplete_third_party_only",
+                         "incomplete_third_party_proprietary_only", "incomplete_third_party_opensource_only",
+                         "unknown")
+
+
+def _purl(value):
+    """A printable ``pkg:type/[namespace/]name[@version][?qualifiers][#subpath]`` with a non-empty name."""
+    if not printable(value) or any(character.isspace() for character in value) or PURL.fullmatch(value) is None:
+        return False
+    path = value.split("/", 1)[1].split("#", 1)[0].split("?", 1)[0]
+    path = path.rsplit("@", 1)[0] if "@" in path else path
+    return all(segment for segment in path.split("/"))
 
 
 def _list(value, code, limit=LIST_LIMIT):
@@ -87,8 +104,7 @@ def _component(component, add, where):
         add("SC-SBOM-COMPONENT-NAME", "high", "sbom.component", *where)
     if not printable(component.get("version")):
         add("SC-SBOM-COMPONENT-VERSION", "high", "sbom.component", *where)
-    purl = component.get("purl")
-    if not isinstance(purl, str) or len(purl) > 4096 or PURL.fullmatch(purl) is None:
+    if not _purl(component.get("purl")):
         add("SC-SBOM-COMPONENT-PURL", "high", "sbom.component", *where)
     if not _hashes(component.get("hashes")):
         add("SC-SBOM-COMPONENT-HASH", "high", "sbom.component", *where)
@@ -104,6 +120,18 @@ def _dependencies(value, refs, add):
         for position, ref in enumerate([entry["ref"]] + targets):
             if ref not in refs:
                 add("SC-SBOM-DEPENDENCY-DANGLING", "high", "sbom.dependency", str(index), str(position))
+
+
+def _compositions(value, add):
+    """A composition that declares itself incomplete (or of unknown completeness) is a completeness gap."""
+    for index, entry in enumerate(_list(value, "SC-SBOM-SHAPE")):
+        if not isinstance(entry, dict):
+            raise Refused("SC-SBOM-SHAPE")
+        aggregate = entry.get("aggregate")
+        if aggregate in INCOMPLETE_AGGREGATES:
+            add("SC-SBOM-COMPOSITION-INCOMPLETE", "high", "sbom.composition", str(index))
+        elif aggregate not in COMPLETE_AGGREGATES:
+            raise Refused("SC-SBOM-SHAPE")
 
 
 def sbom_findings(data, artifact_id, artifact_sha256):
@@ -134,6 +162,10 @@ def sbom_findings(data, artifact_id, artifact_sha256):
         raise Refused("SC-SBOM-SHAPE")
     else:
         _bom_ref(subject, refs, add, ("metadata",))
+        if not printable(subject.get("name")):
+            add("SC-SBOM-COMPONENT-NAME", "high", "sbom.subject")
+        if not printable(subject.get("version")):
+            add("SC-SBOM-COMPONENT-VERSION", "high", "sbom.subject")
         digests = _hashes(subject.get("hashes"))
         if not digests or "SHA-256" not in digests:
             add("SC-SUBJECT-SBOM-MISSING", "critical", "sbom.subject")
@@ -146,4 +178,5 @@ def sbom_findings(data, artifact_id, artifact_sha256):
         _bom_ref(component, refs, add, where)
         _component(component, add, where)
     _dependencies(document.get("dependencies"), refs, add)
+    _compositions(document.get("compositions"), add)
     return found

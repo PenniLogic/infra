@@ -99,6 +99,36 @@ class CompletenessTests(unittest.TestCase):
         self.assertEqual(self.mutate(lambda d: d["dependencies"][0]["dependsOn"].append("pkg:generic/absent@0")),
                          ["SC-SBOM-DEPENDENCY-DANGLING"])
 
+    def test_invisible_control_or_nameless_purl_fails(self):
+        self.assertEqual(self.mutate(lambda d: None), [])
+        for purl in ("pkg:generic/\u200b", "pkg:generic/\u202e", "pkg:generic/a\x00", "pkg:npm//", "pkg:npm/",
+                     "pkg:npm/ns//", "pkg:npm/@1.0.0", "pkg:generic/a b"):
+            with self.subTest(purl=ascii(purl)):
+                self.assertEqual(self.mutate(lambda d, purl=purl: d["components"][0].__setitem__("purl", purl)),
+                                 ["SC-SBOM-COMPONENT-PURL"])
+        for purl in ("pkg:npm/%40scope/name@1.0.0?arch=x#sub/path", "pkg:maven/org.example/lib@1.0"):
+            with self.subTest(control=purl):
+                self.assertEqual(self.mutate(lambda d, purl=purl: d["components"][0].__setitem__("purl", purl)), [])
+
+    def test_declared_incomplete_composition_fails(self):
+        self.assertEqual(self.mutate(lambda d: d.__setitem__(
+            "compositions", [{"aggregate": "complete", "assemblies": ["synthetic-app"]}])), [])
+        for aggregate in ("incomplete", "incomplete_first_party_only", "unknown"):
+            with self.subTest(aggregate=aggregate):
+                self.assertEqual(self.mutate(lambda d, value=aggregate: d.__setitem__(
+                    "compositions", [{"aggregate": value, "assemblies": ["synthetic-app"]}])),
+                    ["SC-SBOM-COMPOSITION-INCOMPLETE"])
+        with self.assertRaises(Refused) as caught:
+            self.mutate(lambda d: d.__setitem__("compositions", [{"aggregate": "mostly"}]))
+        self.assertEqual(caught.exception.code, "SC-SBOM-SHAPE")
+
+    def test_subject_needs_name_and_version(self):
+        for key, rule in (("name", "SC-SBOM-COMPONENT-NAME"), ("version", "SC-SBOM-COMPONENT-VERSION")):
+            with self.subTest(key=key):
+                self.assertEqual(self.mutate(lambda d, key=key: d["metadata"]["component"].pop(key)), [rule])
+                self.assertEqual(self.mutate(lambda d, key=key: d["metadata"]["component"].__setitem__(
+                    key, "\u200b")), [rule])
+
     def test_completeness_findings_block_at_the_default_threshold(self):
         document = fakes.sbom_document(SHA)
         document["components"][1].pop("hashes")
