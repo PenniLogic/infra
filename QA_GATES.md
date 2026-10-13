@@ -66,7 +66,7 @@ root). It looks only at object keys, `uses` action names and command-line flag o
 values; it never matches substrings of free text.
 
 - Counted constructs: flags `--reruns`, `--retry`, `--retries`, `--max-retries`, `--retry-count`, `--max-attempts`,
-  `--max-runs`, `-D...rerunFailingTestsCount=N`; keys with the same names (any case or separator, for example
+  `--max-runs`, `-D...rerunFailingTestsCount=N`, Gradle `-PmaxRetries=N`; keys with the same names (any case or separator, for example
   `max_attempts`, `retryTimes`, `test.retry`); a retry-shaped action such as `nick-fields/retry` with its
   `max_attempts` input. Attempt counts become re-executions (attempts minus one); `false` counts as 0.
 - Several constructs in one job compound: executions multiply, so a retry action with two attempts around
@@ -161,6 +161,9 @@ per-rule warning switch with expiry is to be implemented with that wiring; it do
   `python scripts/quality.py`) are not seen; such files must be added as JSON inputs or checked by their owners.
 - A reusable workflow called by a job (`jobs.<id>.uses`) is not followed; pass the called workflow as its own input.
 - Token matching cannot tell a test retry from a network retry: `curl --retry 3` fails as a retry above the limit.
+- Only `-flag`, `--flag` and `name=value` tokens are read: Windows-style `/retry:3` switches, composite actions
+  (`action.yml`) and expressions that compute a count at run time are not evaluated (an expression as the value of
+  a known flag fails closed). Compounded re-executions are reported up to a cap of 1000000.
 - The ticket idempotency key includes the run id, so a real `TicketPort` must also deduplicate open tickets per
   job and test; a real port that raises is not caught by the gate (traceback, exit 1: fails closed without a
   refusal report). Decide both at integration.

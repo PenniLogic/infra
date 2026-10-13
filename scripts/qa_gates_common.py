@@ -89,7 +89,8 @@ def json_document(data, limit, prefix):
 def read_bounded(path, limit, code):
     """Read at most ``limit`` + 1 bytes of a regular file; any other or unreadable path is refused with ``code``.
 
-    The type is checked before opening (a FIFO would block the open) and again on the open handle.
+    The type is checked before opening (a FIFO would block the open) and again on the open handle. A path the
+    platform cannot represent (for example one with a NUL character) raises ValueError and is refused the same way.
     """
     try:
         if not stat.S_ISREG(os.stat(path).st_mode):
@@ -98,7 +99,7 @@ def read_bounded(path, limit, code):
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise Refused(code)
             return handle.read(limit + 1)
-    except OSError:
+    except (OSError, ValueError):
         raise Refused(code) from None
 
 

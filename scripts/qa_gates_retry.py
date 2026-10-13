@@ -34,6 +34,8 @@ REPORT_SCHEMA = "pennilogic.qa-gates.retry-report/1"
 CONFIG_LIMIT = 1024 * 1024
 MAX_INPUTS = 64
 MAX_DEPTH = 64
+# Compounded re-executions are capped so a report stays printable; any value near the cap is far above every limit.
+EXECUTION_CAP = 1000000
 ROOT = Path(__file__).resolve().parent.parent
 RELATIVE = re.compile(r"(?!\.{1,2}(?:/|\Z))[A-Za-z0-9_.-]+(?:/(?!\.{1,2}(?:/|\Z))[A-Za-z0-9_.-]+)*")
 NUMBER = re.compile(r"[0-9]{1,6}")
@@ -99,7 +101,8 @@ def command_constructs(value):
     for index, token in enumerate(tokens):
         dashed = token.startswith("-")
         if dashed:
-            body = token[2:] if token.startswith("-D") else token.lstrip("-")
+            # -Dname=value (Java system property) and -Pname=value (Gradle project property).
+            body = token[2:] if token.startswith(("-D", "-P")) else token.lstrip("-")
         elif "=" in token:
             body = token
         else:
@@ -165,7 +168,7 @@ def re_executions(found):
     executions = 1
     for kind, number in found:
         if kind == "count":
-            executions *= number + 1
+            executions = min(executions * (min(number, EXECUTION_CAP) + 1), EXECUTION_CAP + 1)
     return executions - 1
 
 

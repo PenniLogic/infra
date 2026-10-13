@@ -24,7 +24,8 @@ class CommandConstructTests(unittest.TestCase):
     def test_known_flags_are_counted(self):
         cases = {
             "pytest --reruns 2": 2, "pytest --reruns=1": 1, "vitest run --retry=3": 3, "npx playwright test --retries 2": 2,
-            "tool --max-attempts 3": 2, "mvn -Dsurefire.rerunFailingTestsCount=2 test": 2, "env PYTEST_RERUNS=4": None,
+            "tool --max-attempts 3": 2, "mvn -Dsurefire.rerunFailingTestsCount=2 test": 2,
+            "./gradlew test -PmaxRetries=2": 2, "env PYTEST_RERUNS=4": None,
             "x --max-runs=1": 0,
         }
         for command, expected in cases.items():
@@ -68,6 +69,11 @@ class DocumentConstructTests(unittest.TestCase):
     def test_script_names_are_labels(self):
         self.assertEqual(retry.constructs({"scripts": {"test:flaky": "vitest run"}}), [])
         self.assertEqual(retry.constructs({"scripts": {"test:flaky": "vitest run --retry 2"}}), [("count", 2)])
+
+    def test_compounded_count_is_capped(self):
+        self.assertEqual(retry.re_executions([("count", 1), ("count", 1)]), 3)
+        huge = [("count", 10 ** 5000)] * 3
+        self.assertEqual(retry.re_executions(huge), retry.EXECUTION_CAP)
 
     def test_depth_is_bounded(self):
         node = {}
@@ -199,6 +205,14 @@ class MainTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertEqual(self.run_main(*arguments), (2, {"schema": retry.REPORT_SCHEMA,
                                                                  "decision": "refused", "reason": code}))
+
+    def test_unrepresentable_root_is_refused(self):
+        self.write(CI, workflow())
+        self.assertEqual(self.run_main("--workflow", CI)[0], 0)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = retry.main(["--root", str(self.root) + "\0", "--manifest", str(self.manifest), "--workflow", CI])
+        self.assertEqual((code, json.loads(output.getvalue())["reason"]), (2, "INPUT-UNREADABLE"))
 
     def test_non_json_config_is_refused(self):
         self.write(CI, workflow())
