@@ -323,7 +323,8 @@ class ValueFlagTests(unittest.TestCase):
                          [("count", 1)])
         step = {"uses": "nick-fields/retry@v3", "with": {"timeout_minutes": 10, "max_attempts": 2,
                                                          "retry_on": "error", "retry_wait_seconds": 5,
-                                                         "command": "npm test"}}
+                                                         "retry_on_exit_code": 2, "on_retry_command": "echo again",
+                                                         "warning_on_retry": True, "command": "npm test"}}
         self.assertEqual(judge(one_job(step), manifest_doc=plain_manifest())["decision"], "pass")
         self.assertEqual(retry.command_constructs("pytest --reruns x --reruns-delay 2"), [("unknown", None)])
 

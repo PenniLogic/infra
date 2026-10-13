@@ -74,6 +74,12 @@ class RepositoryRateTests(unittest.TestCase):
         self.assertEqual((over["decision"], over["quarantine_rate"]["basis_points"]), ("fail", 204))
         self.assertTrue(over["quarantine_rate"]["exceeded"])
 
+    def test_a_quarantined_test_no_job_reported_still_counts_as_a_repository_test(self):
+        report = evaluate({qs.JOB: [plain(49)], qs.MONEY_JOB: [plain(49)]}, ledger((qs.JOB, "test_a")))
+        self.assertEqual((report["decision"], report["quarantine_rate"]["tests"]), ("pass", 50))
+        report = evaluate({qs.JOB: [plain(48)], qs.MONEY_JOB: [plain(48)]}, ledger((qs.JOB, "test_a")))
+        self.assertEqual((report["decision"], report["quarantine_rate"]["tests"]), ("fail", 49))
+
     def test_fix_only_exemption_requires_an_explicit_bound_input(self):
         attempts = {qs.JOB: [plain(49)], qs.MONEY_JOB: [plain(49)]}
         quarantined = ledger((qs.JOB, "test_filler_000"))
