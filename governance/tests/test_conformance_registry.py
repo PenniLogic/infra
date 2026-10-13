@@ -142,7 +142,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
-        self.assertEqual("cf96bdb7b19610ebe2fb0c7fc3de6748b53de9e4", entry["workflow_ref"])
+        self.assertEqual("e94792d8605c42c8b9d8dd5ee398b757b27486eb", entry["workflow_ref"])
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")
         self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
         self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
@@ -189,6 +189,30 @@ class RegistryTests(unittest.TestCase):
                 self.assertIsNotNone(previous, "the accepted pre-observer source must exist in real history")
                 self.assertNotEqual(current, json.loads(previous))
                 self.assertEqual(json.loads(previous), remove_observer_pair(self, copy.deepcopy(current)))
+
+    def test_previous_api_refs_cannot_bind_the_current_qualifier(self):
+        for ref in ("cf96bdb7b19610ebe2fb0c7fc3de6748b53de9e4", "eaf93a885cd5e7b18bb2b2e3da8504f0b40dc2e5"):
+            with self.subTest(ref=ref), tempfile.TemporaryDirectory(prefix="api-registry-stale-") as temporary:
+                root = Path(temporary)
+                for relative in ("generate.py", "repository-profiles.json", "templates/check_repository.py",
+                                 "templates/api_ci_checker.py", "templates/qualify_windows.py"):
+                    committed = subprocess.run(
+                        ["git", "--no-pager", "show", ref + ":governance/" + relative],
+                        cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+                        capture_output=True, check=False, timeout=30,
+                    )
+                    self.assertEqual(0, committed.returncode,
+                                     "the prior API binding must contain every checker and qualifier source")
+                    path = root / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(committed.stdout)
+                historical = generator_module.load(root / "generate.py", name="api_registry_stale_source_" + ref)
+                self.assertEqual(support.generator.workflow("api").encode("utf-8"),
+                                 historical.workflow("api").encode("utf-8"))
+                self.assertEqual(support.generator.checker("api").encode("utf-8"),
+                                 historical.checker("api").encode("utf-8"))
+                self.assertNotEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(),
+                                    (root / "templates/qualify_windows.py").read_bytes())
 
     def test_android_workflow_ref_exists_and_renders_the_exact_combined_caller(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")
