@@ -10,7 +10,7 @@ the committed manifest: it takes each job's attempt reports (first run, then re-
 ledger and distinct tests that flaked in any job (classified with each job's re-execution allowance, as the
 per-job gate does), and fails when the quarantine share exceeds the ceiling, unless `--fix-only` names the ticket of
 a quarantine active in the base revision's ledger (`--base-ledger`; without it the step fails,
-QG-LEDGER-BASE-MISSING). A job of the manifest without a report refuses the step: an absent
+QG-LEDGER-BASE-MISSING) and the change adds no active quarantine (QG-FIX-ONLY-ADDS-QUARANTINE otherwise). A job of the manifest without a report refuses the step: an absent
 job is never treated as a passing one. Per-job verdicts (flakes, real failures, retry limits, quarantine expiry)
 stay with the per-job quarantine gate.
 
@@ -75,13 +75,18 @@ def evaluate(*, policy, manifest, ledger, attempts, fix_only=None, base_ledger=N
     exceeded = Fraction(len(quarantined) * 100, population) > policy.quarantine_rate_ceiling_percent
     bound = fix_only is not None and base_ledger is not None and any(
         record.ticket_ref == fix_only for record in base_ledger.active.values())
+    # A change that adds an active quarantine is not a fix to a quarantined test: it raises the rate, so the
+    # exemption is withheld (review round 3, PS-3 and ADVSEC-R3-06).
+    added = 0 if base_ledger is None else len(set(ledger.active) - set(base_ledger.active))
     findings = []
     if base_ledger is None:
         findings.append({"rule": "QG-LEDGER-BASE-MISSING", "effect": "fail"})
     if fix_only is not None and not bound:
         findings.append({"rule": "QG-FIX-ONLY-UNBOUND", "effect": "fail"})
     if exceeded:
-        findings.append({"rule": "QG-QUARANTINE-RATE", "effect": "report" if bound else "fail"})
+        findings.append({"rule": "QG-QUARANTINE-RATE", "effect": "report" if bound and not added else "fail"})
+        if bound and added:
+            findings.append({"rule": "QG-FIX-ONLY-ADDS-QUARANTINE", "effect": "fail"})
     return {
         "schema": REPORT_SCHEMA,
         "decision": "fail" if any(finding["effect"] == "fail" for finding in findings) else "pass",
@@ -96,7 +101,7 @@ def evaluate(*, policy, manifest, ledger, attempts, fix_only=None, base_ledger=N
         },
         "flake_rate": _rate(len(flaky), population),
         "quarantine_rate": {**_rate(len(quarantined), population), "exceeded": exceeded,
-                            "fix_only": fix_only, "fix_only_bound": bound},
+                            "fix_only": fix_only, "fix_only_bound": bound, "added_quarantines": added},
         "findings": sorted(findings, key=lambda finding: finding["rule"]),
     }
 

@@ -204,7 +204,10 @@ instructions, duplicate cases and rerun elements.
   `--fix-only` names the ticket of a quarantine active in the **base** revision's ledger (effect `report`;
   `QG-FIX-ONLY-UNBOUND` otherwise). Binding to the base keeps a change that fixes a quarantined test and appends
   its release (or approved deletion) in the same change exempt, also when that quarantine is past its maximum age.
-  A ledger-only change that releases a fixed test counts as a fix of that test. `--fix-only` is a declaration:
+  A ledger-only change that releases a fixed test counts as a fix of that test. A change that adds an active
+  quarantine (a job and test active in the head ledger but not in the base ledger) is not a fix of a quarantined
+  test: the exemption is withheld (`QG-QUARANTINE-RATE` and `QG-FIX-ONLY-ADDS-QUARANTINE`, both `fail`), and the
+  report publishes `added_quarantines`. `--fix-only` is a declaration:
   the gate checks only that its ticket owns a base quarantine, so reviewers must check that the change really
   fixes that test (an unrelated change citing an active ticket is not detected). A
   manifest job without a report refuses the step (`INPUT-JOBS-MISSING`, exit 2). The per-job report publishes the

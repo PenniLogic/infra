@@ -149,7 +149,23 @@ class FixOnlyBaseTests(unittest.TestCase):
         added["quarantines"].append(record)
         report = evaluate(self.attempts, added, fix_only=qs.OTHER_TICKET, base_doc=base)
         self.assertEqual(rules(report), {("QG-QUARANTINE-RATE", "fail"), ("QG-FIX-ONLY-UNBOUND", "fail")})
-        self.assertEqual(evaluate(self.attempts, added, fix_only=TICKETS[1], base_doc=base)["decision"], "pass")
+        self.assertEqual(evaluate(self.attempts, base, fix_only=TICKETS[1], base_doc=base)["decision"], "pass")
+
+    # Review round 3, PS-3 and ADVSEC-R3-06: a change that adds an active quarantine is not exempt.
+    def test_change_that_adds_a_quarantine_is_not_exempt(self):
+        base = four_quarantined()
+        control = evaluate(self.attempts, base, fix_only=TICKETS[1], base_doc=base)
+        self.assertEqual((control["decision"], rules(control)), ("pass", {("QG-QUARANTINE-RATE", "report")}))
+        self.assertEqual(control["quarantine_rate"]["added_quarantines"], 0)
+        added = four_quarantined()
+        more, record = qs.justified(qs.identity(name="test_filler_004"), -3, ticket=TICKETS[1])
+        added["flake_events"] += more
+        added["quarantines"].append(record)
+        report = evaluate(self.attempts, added, fix_only=TICKETS[1], base_doc=base)
+        self.assertEqual((report["decision"], rules(report)),
+                         ("fail", {("QG-QUARANTINE-RATE", "fail"), ("QG-FIX-ONLY-ADDS-QUARANTINE", "fail")}))
+        self.assertEqual((report["quarantine_rate"]["fix_only_bound"], report["quarantine_rate"]["added_quarantines"]),
+                         (True, 1))
 
     def test_missing_base_ledger_fails(self):
         self.assertEqual(evaluate(self.attempts)["decision"], "pass")
