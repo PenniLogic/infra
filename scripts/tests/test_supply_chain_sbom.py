@@ -74,6 +74,12 @@ class CompletenessTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertEqual(self.mutate(lambda d: d["components"][0].pop(field)), [rule])
 
+    def test_invisible_or_control_text_is_not_a_name_or_version(self):
+        for value in ("\u200b", "a\x00b", "1.0\u202e", "\u00a0", "line\nbreak"):
+            for field, rule in (("name", "SC-SBOM-COMPONENT-NAME"), ("version", "SC-SBOM-COMPONENT-VERSION")):
+                with self.subTest(field=field, value=repr(value)):
+                    self.assertEqual(self.mutate(lambda d: d["components"][0].update({field: value})), [rule])
+
     def test_blank_version_fails(self):
         self.assertEqual(self.mutate(lambda d: d["components"][0].update(version="  ")),
                          ["SC-SBOM-COMPONENT-VERSION"])

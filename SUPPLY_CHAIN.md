@@ -48,7 +48,8 @@ deploy     --artifact <file> --sbom <bom.cdx.json> --provenance <statement.json>
 - `--signatures` is a JSON object with optional members `artifact`, `sbom` and `provenance`, each a non-empty
   signature object or `null`. An absent or `null` member is **unsigned** and fails the gate.
 - The artifact digest is the SHA-256 of the exact bytes read once from `--artifact` (regular files only, at most
-  4 GiB). Paths are opened as given; the gate binds bytes, not names.
+  4 GiB). Paths are opened as given and symbolic links are followed: the gate binds the bytes read, not names.
+  Directories, FIFOs and devices are refused, also when swapped in between the check and the open.
 
 Exit status: `0` pass, `1` gate failure, `2` usage error or refused input. Each run prints exactly one ASCII JSON
 line. A report carries `decision`, `gate`, `blocking_threshold`, the exceptions status, counts by scanner and

@@ -69,14 +69,31 @@ def json_document(data, limit, prefix):
         raise Refused(prefix + "-JSON") from None
 
 
+# O_NONBLOCK (POSIX) keeps a FIFO swapped in after the stat check from blocking the open; fstat then refuses it.
+OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+
+
+def _open_regular(path, code):
+    """A binary handle on a regular file, checked before opening and again on the opened descriptor.
+
+    Symbolic links are followed: the gates bind the bytes read, never the name.
+    """
+    if not stat.S_ISREG(os.stat(path).st_mode):
+        raise Refused(code)
+    descriptor = os.open(path, OPEN_FLAGS)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise Refused(code)
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def read_bounded(path, limit, code):
     """Read at most ``limit`` + 1 bytes of a regular file; any other or unreadable path is refused with ``code``."""
     try:
-        if not stat.S_ISREG(os.stat(path).st_mode):
-            raise Refused(code)
-        with open(path, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise Refused(code)
+        with _open_regular(path, code) as handle:
             return handle.read(limit + 1)
     except (OSError, ValueError):
         raise Refused(code) from None
@@ -94,11 +111,7 @@ def sha256_file(path, code, limit=ARTIFACT_LIMIT):
     digest = hashlib.sha256()
     total = 0
     try:
-        if not stat.S_ISREG(os.stat(path).st_mode):
-            raise Refused(code)
-        with open(path, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise Refused(code)
+        with _open_regular(path, code) as handle:
             while True:
                 chunk = handle.read(CHUNK)
                 if not chunk:
@@ -116,6 +129,11 @@ def pattern(value, expression, code):
     if not isinstance(value, str) or expression.fullmatch(value) is None:
         raise Refused(code)
     return value
+
+
+def printable(value, limit=4096):
+    """A non-blank string of printable characters only (no control, format, bidi or invisible-only text)."""
+    return isinstance(value, str) and 0 < len(value) <= limit and value.isprintable() and value.strip() != ""
 
 
 def fingerprint(*parts):

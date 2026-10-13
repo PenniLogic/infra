@@ -12,7 +12,9 @@ Linking the SBOM from the release record is owned by PenniLogic/docs#23 and is h
 
 import re
 
-from supply_chain_common import ARTIFACT_ID, REPORT_LIMIT, SHA256, Refused, finding, json_document, pattern
+from supply_chain_common import (
+    ARTIFACT_ID, REPORT_LIMIT, SHA256, Refused, finding, json_document, pattern, printable,
+)
 
 
 SCANNER = "builtin-sbom"
@@ -33,10 +35,6 @@ def _list(value, code, limit=LIST_LIMIT):
     if not isinstance(value, list) or len(value) > limit:
         raise Refused(code)
     return value
-
-
-def _text(value):
-    return isinstance(value, str) and value.strip() != "" and len(value) <= 4096
 
 
 def _hashes(value):
@@ -85,9 +83,9 @@ def _bom_ref(component, refs, add, where):
 
 
 def _component(component, add, where):
-    if not _text(component.get("name")):
+    if not printable(component.get("name")):
         add("SC-SBOM-COMPONENT-NAME", "high", "sbom.component", *where)
-    if not _text(component.get("version")):
+    if not printable(component.get("version")):
         add("SC-SBOM-COMPONENT-VERSION", "high", "sbom.component", *where)
     purl = component.get("purl")
     if not isinstance(purl, str) or len(purl) > 4096 or PURL.fullmatch(purl) is None:

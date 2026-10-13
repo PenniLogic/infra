@@ -11,18 +11,20 @@ signing (cosign) integration; the statement's detached signature is checked thro
 deployment gate.
 """
 
-from supply_chain_common import ARTIFACT_ID, REPORT_LIMIT, SHA256, Refused, finding, json_document, pattern
+import re
+
+from supply_chain_common import (
+    ARTIFACT_ID, REPORT_LIMIT, SHA256, Refused, finding, json_document, pattern, printable,
+)
 
 
 SCANNER = "builtin-provenance"
 STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
+# in-toto DigestSet algorithm names are short ASCII names such as sha256, sha512 or gitCommit.
+ALGORITHM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 SUBJECT_LIMIT = 1024
 DIGEST_LIMIT = 16
-
-
-def _text(value):
-    return isinstance(value, str) and value.strip() != "" and len(value) <= 4096
 
 
 def _subject_digests(subjects):
@@ -35,7 +37,8 @@ def _subject_digests(subjects):
             raise Refused("SC-PROV-SUBJECT")
         digest = subject.get("digest")
         if not isinstance(digest, dict) or not digest or len(digest) > DIGEST_LIMIT or not all(
-                isinstance(key, str) and isinstance(value, str) for key, value in digest.items()):
+                isinstance(key, str) and ALGORITHM.fullmatch(key) and isinstance(value, str)
+                for key, value in digest.items()):
             raise Refused("SC-PROV-SUBJECT")
         if "sha256" in digest:
             digests.append(pattern(digest["sha256"], SHA256, "SC-PROV-SUBJECT"))
@@ -69,8 +72,8 @@ def provenance_findings(data, artifact_id, artifact_sha256):
 
     if artifact_sha256 not in digests:
         add("SC-SUBJECT-PROVENANCE-MISMATCH", "critical", "provenance.subject", *digests)
-    if not _text((builder or {}).get("id")):
+    if not printable((builder or {}).get("id")):
         add("SC-PROV-BUILDER-MISSING", "high", "provenance.builder")
-    if not _text(definition.get("buildType")):
+    if not printable(definition.get("buildType")):
         add("SC-PROV-BUILD-TYPE-MISSING", "high", "provenance.build")
     return found

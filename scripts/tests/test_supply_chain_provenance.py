@@ -55,6 +55,11 @@ class BindingTests(unittest.TestCase):
         del document["predicate"]["runDetails"]["builder"]
         self.assertEqual(rules(document), ["SC-PROV-BUILDER-MISSING"])
 
+    def test_invisible_builder_id_fails(self):
+        document = fakes.provenance_statement(SHA)
+        document["predicate"]["runDetails"]["builder"]["id"] = "\u200b"
+        self.assertEqual(rules(document), ["SC-PROV-BUILDER-MISSING"])
+
     def test_blank_build_type_fails(self):
         document = fakes.provenance_statement(SHA)
         document["predicate"]["buildDefinition"]["buildType"] = " "
@@ -84,6 +89,8 @@ class RefusalTests(unittest.TestCase):
             (lambda d: d["subject"][0]["digest"].update(sha256=SHA.upper()), "SC-PROV-SUBJECT"),
             (lambda d: d["subject"][0]["digest"].update(sha256=SHA + "\n"), "SC-PROV-SUBJECT"),
             (lambda d: d["subject"][0]["digest"].update(sha512=1), "SC-PROV-SUBJECT"),
+            (lambda d: d["subject"][0]["digest"].update({"sha256\x00": "x"}), "SC-PROV-SUBJECT"),
+            (lambda d: d["subject"][0]["digest"].update({"\uff53ha256": SHA}), "SC-PROV-SUBJECT"),
         )
         for change, code in cases:
             document = fakes.provenance_statement(SHA)

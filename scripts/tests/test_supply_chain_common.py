@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import support  # noqa: F401  (puts scripts/ on sys.path)
 import supply_chain_common as common
@@ -69,6 +70,33 @@ class ReadBoundedTests(unittest.TestCase):
             with open(path, "wb") as handle:
                 handle.write(b"x" * 100)
             self.assertEqual(len(common.read_bounded(path, 10, "SC-T-READ")), 11)
+
+    def test_fifo_swapped_in_after_the_stat_check_is_refused_without_blocking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            regular = os.path.join(directory, "report.json")
+            with open(regular, "wb") as handle:
+                handle.write(b"{}")
+            self.assertEqual(common.read_bounded(regular, 10, "SC-T-READ"), b"{}")
+            if not hasattr(os, "mkfifo"):  # no FIFOs on Windows: the control above is the whole case there
+                return
+            fifo = os.path.join(directory, "fifo")
+            os.mkfifo(fifo)
+            real_stat = os.stat
+            # Simulate the race: the pre-open check sees a regular file, the opened descriptor is a FIFO.
+            with mock.patch.object(common.os, "stat", lambda _path: real_stat(regular)):
+                for read in (lambda: common.read_bounded(fifo, 10, "SC-T-READ"),
+                             lambda: common.sha256_file(fifo, "SC-T-READ")):
+                    with self.assertRaises(Refused) as caught:
+                        read()
+                    self.assertEqual(caught.exception.code, "SC-T-READ")
+
+
+class PrintableTests(unittest.TestCase):
+    def test_printable_text(self):
+        self.assertTrue(common.printable("synthetic-lib 1.0"))
+        for value in ("", " ", "\u200b", "a\tb", "a\x00", "\u202e", "x" * 4097, None, 1):
+            with self.subTest(value=repr(value)[:20]):
+                self.assertFalse(common.printable(value))
 
 
 class Sha256FileTests(unittest.TestCase):
