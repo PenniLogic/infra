@@ -1,0 +1,71 @@
+{
+  "name": "pennilogic-synthetic",
+  "services": {
+    "postgres": {
+      "image": "postgres:17.11-alpine3.24@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "networks": {
+        "default": null
+      },
+      "ports": [
+        {
+          "mode": "ingress",
+          "host_ip": "127.0.0.1",
+          "target": 5432,
+          "published": "5432",
+          "protocol": "tcp"
+        }
+      ],
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "pgdata",
+          "target": "/var/lib/postgresql/data",
+          "volume": {}
+        }
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "cap_drop": [
+        "ALL"
+      ]
+    },
+    "redis": {
+      "image": "redis:7.4.11-alpine3.21@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "networks": {
+        "default": null
+      },
+      "ports": [
+        {
+          "mode": "ingress",
+          "host_ip": "127.0.0.1",
+          "target": 6379,
+          "published": "6379",
+          "protocol": "tcp"
+        }
+      ],
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "redisdata",
+          "target": "/data",
+          "volume": {}
+        }
+      ],
+      "privileged": true
+    }
+  },
+  "networks": {
+    "default": {
+      "name": "pennilogic-synthetic_default"
+    }
+  },
+  "volumes": {
+    "pgdata": {
+      "name": "pennilogic-synthetic_pgdata"
+    },
+    "redisdata": {
+      "name": "pennilogic-synthetic_redisdata"
+    }
+  }
+}

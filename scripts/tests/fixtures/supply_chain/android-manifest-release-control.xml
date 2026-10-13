@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Synthetic merged release manifest shape for the infra#31 tests; not a real application. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.example.synthetic">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+    <application
+        android:allowBackup="false"
+        android:usesCleartextTraffic="false"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:label="Synthetic">
+        <activity android:name="org.example.synthetic.MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name="org.example.synthetic.SettingsActivity" android:exported="false" />
+        <service android:name="org.example.synthetic.SyncService" android:exported="true"
+            android:permission="org.example.synthetic.permission.SYNC" />
+        <receiver android:name="org.example.synthetic.BootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+        <provider android:name="org.example.synthetic.FilesProvider"
+            android:authorities="org.example.synthetic.files" android:exported="false" />
+    </application>
+</manifest>
