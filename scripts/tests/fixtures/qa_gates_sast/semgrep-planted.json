@@ -1,0 +1,440 @@
+{
+  "version": "1.178.0",
+  "results": [
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-kotlin-sql-built-string",
+      "path": "scripts/qa-gates/fixtures/planted/kotlin/PlantedInjection.kt",
+      "start": {
+        "line": 8,
+        "col": 5,
+        "offset": 345
+      },
+      "end": {
+        "line": 8,
+        "col": 111,
+        "offset": 451
+      },
+      "extra": {
+        "message": "SQL text built from a string template or concatenation is passed to a statement; use a prepared statement with bound parameters.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-89",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-kotlin-sql-built-string",
+      "path": "scripts/qa-gates/fixtures/planted/kotlin/PlantedInjection.kt",
+      "start": {
+        "line": 12,
+        "col": 5,
+        "offset": 534
+      },
+      "end": {
+        "line": 12,
+        "col": 118,
+        "offset": 647
+      },
+      "extra": {
+        "message": "SQL text built from a string template or concatenation is passed to a statement; use a prepared statement with bound parameters.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-89",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-kotlin-runtime-exec",
+      "path": "scripts/qa-gates/fixtures/planted/kotlin/PlantedInjection.kt",
+      "start": {
+        "line": 16,
+        "col": 5,
+        "offset": 701
+      },
+      "end": {
+        "line": 16,
+        "col": 56,
+        "offset": 752
+      },
+      "extra": {
+        "message": "A non-literal command line is passed to Runtime.exec; use ProcessBuilder with an argument list.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-78",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-python-sql-built-string",
+      "path": "scripts/qa-gates/fixtures/planted/python/planted_injection.py",
+      "start": {
+        "line": 12,
+        "col": 5,
+        "offset": 415
+      },
+      "end": {
+        "line": 12,
+        "col": 87,
+        "offset": 497
+      },
+      "extra": {
+        "message": "SQL text built from a formatted or concatenated string is passed to execute(); use bound parameters.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-89",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-python-sql-built-string",
+      "path": "scripts/qa-gates/fixtures/planted/python/planted_injection.py",
+      "start": {
+        "line": 16,
+        "col": 5,
+        "offset": 558
+      },
+      "end": {
+        "line": 16,
+        "col": 89,
+        "offset": 642
+      },
+      "extra": {
+        "message": "SQL text built from a formatted or concatenated string is passed to execute(); use bound parameters.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-89",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-python-shell-command",
+      "path": "scripts/qa-gates/fixtures/planted/python/planted_injection.py",
+      "start": {
+        "line": 20,
+        "col": 5,
+        "offset": 690
+      },
+      "end": {
+        "line": 20,
+        "col": 71,
+        "offset": 756
+      },
+      "extra": {
+        "message": "A shell command line is run through the shell; pass an argument list without shell=True.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-78",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-python-shell-command",
+      "path": "scripts/qa-gates/fixtures/planted/python/planted_injection.py",
+      "start": {
+        "line": 24,
+        "col": 5,
+        "offset": 800
+      },
+      "end": {
+        "line": 24,
+        "col": 36,
+        "offset": 831
+      },
+      "extra": {
+        "message": "A shell command line is run through the shell; pass an argument list without shell=True.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-78",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-python-dynamic-eval",
+      "path": "scripts/qa-gates/fixtures/planted/python/planted_injection.py",
+      "start": {
+        "line": 28,
+        "col": 12,
+        "offset": 883
+      },
+      "end": {
+        "line": 28,
+        "col": 28,
+        "offset": 899
+      },
+      "extra": {
+        "message": "Non-literal text is evaluated as code.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-95",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-typescript-sql-built-string",
+      "path": "scripts/qa-gates/fixtures/planted/typescript/planted-injection.ts",
+      "start": {
+        "line": 10,
+        "col": 10,
+        "offset": 463
+      },
+      "end": {
+        "line": 10,
+        "col": 85,
+        "offset": 538
+      },
+      "extra": {
+        "message": "SQL text built from a template literal or concatenation is passed to a query call; use bound parameters.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-89",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-typescript-sql-built-string",
+      "path": "scripts/qa-gates/fixtures/planted/typescript/planted-injection.ts",
+      "start": {
+        "line": 14,
+        "col": 10,
+        "offset": 662
+      },
+      "end": {
+        "line": 14,
+        "col": 90,
+        "offset": 742
+      },
+      "extra": {
+        "message": "SQL text built from a template literal or concatenation is passed to a query call; use bound parameters.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-89",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-typescript-shell-command",
+      "path": "scripts/qa-gates/fixtures/planted/typescript/planted-injection.ts",
+      "start": {
+        "line": 18,
+        "col": 3,
+        "offset": 814
+      },
+      "end": {
+        "line": 18,
+        "col": 33,
+        "offset": 844
+      },
+      "extra": {
+        "message": "A non-literal command line is run through a shell; use execFile or spawn with an argument list.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-78",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-typescript-dynamic-eval",
+      "path": "scripts/qa-gates/fixtures/planted/typescript/planted-injection.ts",
+      "start": {
+        "line": 22,
+        "col": 10,
+        "offset": 924
+      },
+      "end": {
+        "line": 22,
+        "col": 26,
+        "offset": 940
+      },
+      "extra": {
+        "message": "Non-literal text is evaluated as code.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-95",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    },
+    {
+      "check_id": "scripts.qa-gates.rules.pennilogic-typescript-dynamic-eval",
+      "path": "scripts/qa-gates/fixtures/planted/typescript/planted-injection.ts",
+      "start": {
+        "line": 26,
+        "col": 10,
+        "offset": 1022
+      },
+      "end": {
+        "line": 26,
+        "col": 28,
+        "offset": 1040
+      },
+      "extra": {
+        "message": "Non-literal text is evaluated as code.",
+        "metadata": {
+          "status": "proposed, not agreed",
+          "cwe": "CWE-95",
+          "ticket": "PenniLogic/infra#28"
+        },
+        "severity": "ERROR",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {
+    "scanned": [
+      "scripts/qa-gates/fixtures/planted/kotlin/CleanControl.kt",
+      "scripts/qa-gates/fixtures/planted/kotlin/PlantedInjection.kt",
+      "scripts/qa-gates/fixtures/planted/python/clean_control.py",
+      "scripts/qa-gates/fixtures/planted/python/planted_injection.py",
+      "scripts/qa-gates/fixtures/planted/typescript/clean-control.ts",
+      "scripts/qa-gates/fixtures/planted/typescript/planted-injection.ts"
+    ]
+  },
+  "time": {
+    "rules": [],
+    "rules_parse_time": 0.0016260147094726562,
+    "profiling_times": {
+      "config_time": 0.09904265403747559,
+      "core_time": 0.259793758392334,
+      "ignores_time": 9.465217590332031e-05,
+      "total_time": 0.38051271438598633
+    },
+    "parsing_time": {
+      "total_time": 0.0,
+      "per_file_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_files": []
+    },
+    "scanning_time": {
+      "total_time": 0.10072684288024902,
+      "per_file_time": {
+        "mean": 0.01678780714670817,
+        "std_dev": 5.02646105676124e-07
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_files": []
+    },
+    "matching_time": {
+      "total_time": 0.0,
+      "per_file_and_rule_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_rules_on_files": []
+    },
+    "tainting_time": {
+      "total_time": 0.0,
+      "per_def_and_rule_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_rules_on_defs": []
+    },
+    "fixpoint_timeouts": [],
+    "prefiltering": {
+      "project_level_time": 0.0,
+      "file_level_time": 0.0,
+      "rules_with_project_prefilters_ratio": 0.0,
+      "rules_with_file_prefilters_ratio": 1.0,
+      "rules_selected_ratio": 0.8125,
+      "rules_matched_ratio": 0.8125
+    },
+    "targets": [],
+    "total_bytes": 0,
+    "max_memory_bytes": 113702848
+  },
+  "engine_requested": "OSS",
+  "skipped_rules": [],
+  "profiling_results": []
+}
