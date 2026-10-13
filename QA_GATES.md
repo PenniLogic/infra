@@ -152,8 +152,11 @@ instructions, duplicate cases and rerun elements.
   check's re-execution model). A case that still fails is `QG-REAL-FAILURE`. A re-execution beyond the policy
   (or any on a money-path job) is `QG-RETRY-LIMIT`.
 - When the recorded events of a test inside the 14-day window plus this one reach 2, the report proposes a
-  quarantine (`QG-QUARANTINE-PROPOSED`) with the package owner from the manifest, a ticket requested through the
-  `TicketPort` and an expiry at 14 days. Real ticket creation is held: the default port creates nothing and the
+  quarantine. The gate and the ledger use one trigger definition: after a release or deletion of the test (in any
+  job), only events dated strictly after its last closure count, so a proposal copied into the ledger always
+  parses. That post-closure exclusion is a **proposed rule beyond `flake_policy`** (pending QA/Reliability): the
+  policy itself counts every flake event of the window. The proposal (`QG-QUARANTINE-PROPOSED`) carries the
+  package owner from the manifest, a ticket requested through the `TicketPort` and an expiry at 14 days. Real ticket creation is held: the default port creates nothing and the
   report says `ticket_creation: held`, so a proposal without a ticket fails with `QG-QUARANTINE-TICKET-MISSING`.
 - Security, privacy and money tests are never quarantined (`QG-QUARANTINE-REFUSED-PROTECTED`,
   `QG-QUARANTINE-PROTECTED`), as classified by the head manifest; a change that removes a tag from a known test or
@@ -168,7 +171,8 @@ instructions, duplicate cases and rerun elements.
   without an approved deletion record (`QG-QUARANTINED-TEST-MISSING`). A release closes a quarantine without
   reviewer approval, so a released test must still run (passed or failed) for 14 days after its release
   (`QG-RELEASED-TEST-MISSING` when it is missing or skipped); only an approved deletion lets a quarantined test go.
-  A first attempt in which every case is skipped fails (`QG-NOTHING-RAN`). A ledger change that is not append-only
+  A first attempt in which no case outside the active quarantines ran (every other case skipped) fails
+  (`QG-NOTHING-RAN`). A ledger change that is not append-only
   against `--base-ledger` fails (`QG-LEDGER-NOT-APPEND-ONLY`).
 - **Quarantine rate ceiling (repository level).** The policy's ceiling is 2 % of a repository's tests, so it is
   judged once per pipeline by `qa_gates.py rate`, not per job: the denominator is the distinct test identities
@@ -180,9 +184,10 @@ instructions, duplicate cases and rerun elements.
 
 **Ledger workflow:** copy `ledger_delta` from the failing run's report into the ledger in a pull request; a
 quarantine needs owner, ticket, start and expiry, and two flake events dated after the last closure of the same
-job and test; a release or a deletion closes it, and a deletion needs an approval comment URL on the owning ticket
-whose `approved_by` differs from the quarantine owner (the ledger records no author, so the gate cannot compare
-with the author of the change). Reviewers must check every reference-shaped value by hand: run ids in flake
+test in any job (the proposed post-closure rule above); a release or a deletion closes it, and a deletion needs an
+approval comment URL on the owning ticket whose `approved_by` differs from the quarantine owner and from the
+manifest package owner of the test (the ledger records no author, so the gate cannot compare with the author of
+the change). Reviewers must check every reference-shaped value by hand: run ids in flake
 events, `fix_ref`, `approval_ref` URLs and `approved_by` handles are grammar-checked only and cannot be verified
 offline.
 

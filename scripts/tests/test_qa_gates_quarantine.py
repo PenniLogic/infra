@@ -109,6 +109,28 @@ class QuarantineTriggerTests(GateCase):
         report = qs.run_gate(failing, ledger_doc=recorded, run_id="synthetic-run-next")
         self.assertFindings(report, [("QG-QUARANTINED-FAILURE", "report", A)], "pass")
 
+    def test_copied_proposal_always_parses_after_a_closure(self):
+        # Review round 2, PS-2: the gate proposes with the ledger's own trigger (events after the last closure).
+        closures = {"release": dict(releases=[qs.release(A, -2)]), "deletion": dict(deletions=[qs.deletion(A, -2)])}
+        for name, closure in closures.items():
+            events, record = qs.justified(A, -10)
+            closed = qs.ledger_document(events=events, quarantines=[record], **closure)
+            with self.subTest(closure=name):
+                stale = qs.run_gate(*self.flaky(), ledger_doc=closed)
+                self.assertFindings(stale, [("QG-FLAKE-EVENT", "fail", A)], "fail")
+                fresh = copy.deepcopy(closed)
+                fresh["flake_events"].append(qs.event(A, -1, run="synthetic-after-closure"))
+                port = qs.FakeTicketPort()
+                report = qs.run_gate(*self.flaky(), ledger_doc=fresh, port=port)
+                self.assertFindings(report, [("QG-FLAKE-EVENT", "fail", A), ("QG-QUARANTINE-PROPOSED", "fail", A)],
+                                    "fail")
+                self.assertEqual(port.requests[0].flake_dates, (qs.day(-1), qs.day(0)))
+                for proposal in (stale, report):
+                    copied = copy.deepcopy(fresh if proposal is report else closed)
+                    copied["flake_events"] += proposal["ledger_delta"]["flake_events"]
+                    copied["quarantines"] += proposal["ledger_delta"]["quarantines"]
+                    qs.parse_inputs(ledger_doc=copied)
+
     def test_flakes_outside_window_not_quarantined(self):
         inside = qs.run_gate(*self.flaky(), ledger_doc=qs.ledger_document(events=[qs.event(A, -14)]))
         self.assertFindings(inside, [("QG-FLAKE-EVENT", "fail", A), ("QG-QUARANTINE-PROPOSED", "fail", A)], "fail")
@@ -340,6 +362,15 @@ class NothingRanTests(GateCase):
         self.assertFindings(qs.run_gate(qs.cases(("test_a", "passed"), ("test_b", "skipped"))), [], "pass")
         report = qs.run_gate(qs.cases(("test_a", "skipped"), ("test_b", "skipped")))
         self.assertFindings(report, [("QG-NOTHING-RAN", "fail", None)], "fail")
+
+    def test_only_exempt_quarantined_tests_ran_fails(self):
+        # Review round 2, ADVSEC-R2-05: exempt tests running do not make a gating run.
+        control = qs.run_gate(qs.cases(("test_a", "failed"), ("test_b", "passed"), ("test_c", "skipped")),
+                              ledger_doc=quarantined_a(start=-1))
+        self.assertFindings(control, [("QG-QUARANTINED-FAILURE", "report", A)], "pass")
+        report = qs.run_gate(qs.cases(("test_a", "failed"), ("test_b", "skipped"), ("test_c", "skipped")),
+                             ledger_doc=quarantined_a(start=-1))
+        self.assertFindings(report, [("QG-QUARANTINED-FAILURE", "report", A), ("QG-NOTHING-RAN", "fail", None)], "fail")
 
 
 class LedgerInputTests(GateCase):

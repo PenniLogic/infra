@@ -4,11 +4,11 @@ Facts are never edited or removed; new facts are appended to `flake_events`, `qu
 test was fixed) and `deletions` (the test was deleted with recorded reviewer approval on its owning ticket).
 Every record names the manifest job it belongs to. A quarantine needs an owner, an owning ticket and an expiry
 no later than the policy's maximum age, and it must be justified by the policy's number of recorded flake events
-of that test within the flake window ending on its first day and after the last closure of that job and test, so
-a real failure cannot be filed under the flaky label without recorded flake evidence (E25-F01) and evidence is never
-reused for a second quarantine. Releases and deletions close the active quarantine of the same
+of that test within the flake window ending on its first day and after the last closure of that test in any job
+(`basis`, also used by the gate's proposal), so a real failure cannot be filed under the flaky label without
+recorded flake evidence (E25-F01) and the evidence of a closed quarantine is not reused for another one. Releases and deletions close the active quarantine of the same
 job and test with the same ticket; a deletion's approval must be a comment on that ticket by someone other than
-the quarantine owner.
+the quarantine owner and the test's manifest package owner.
 """
 
 from dataclasses import dataclass
@@ -67,6 +67,7 @@ class Ledger:
     sha256: str
     events_by_test: dict
     released: dict
+    closed_on: dict
 
     def active_for(self, job):
         """Active quarantines of one job, keyed by test identity."""
@@ -77,12 +78,24 @@ class Ledger:
         return {test: day for (record_job, test), day in self.released.items() if record_job == job}
 
     def flake_dates(self, test, today, window_days):
-        """Dates of recorded events of ``test`` (any job) that are 0 to ``window_days`` days old."""
-        return sorted(event.observed_on for event in self.events_by_test.get(test, ())
-                      if 0 <= (today - event.observed_on).days <= window_days)
+        """Dates of the recorded events of ``test`` that would justify a quarantine starting ``today``."""
+        return sorted(event.observed_on for event in basis(self.events_by_test.get(test, ()), today, window_days,
+                                                           self.closed_on.get(test)))
 
     def run_ids(self):
         return {event.run_id for event in self.events}
+
+
+def basis(events, start, window_days, closed_on):
+    """The one trigger definition, used by the ledger and by the gate's proposal (review round 2, PS-2).
+
+    Events of the test (any job) dated 0 to ``window_days`` days before ``start`` and, when the test had a
+    closure before (release or deletion, in any job; ADVSEC-R2-06), strictly after its last closure. The
+    post-closure exclusion is a proposed rule beyond flake_policy (pending QA/Reliability): a closed quarantine's
+    evidence is not reused for the next one.
+    """
+    return [event for event in events if 0 <= (start - event.observed_on).days <= window_days
+            and (closed_on is None or event.observed_on > closed_on)]
 
 
 def _common(record, keys, manifest):
@@ -116,6 +129,13 @@ def _quarantine(record, manifest, policy, today):
 def _closure(record, keys, manifest):
     _common(record, keys, manifest)
     pattern(record["ticket_ref"], REFERENCE, "LEDGER-VALUE")
+
+
+def _owners(quarantine, manifest):
+    """Lower-case handles that may not approve the deletion: the quarantine owner and the test's package owner."""
+    classification = manifest.classify(quarantine.test)
+    package_owner = classification.package.owner if classification.state == "known" else None
+    return {owner.lower() for owner in (quarantine.owner, package_owner) if owner is not None}
 
 
 def parse_ledger(data, *, manifest, policy, today):
@@ -168,11 +188,9 @@ def parse_ledger(data, *, manifest, policy, today):
             key = (item.job, item.test)
             if key in active:
                 raise Refused("LEDGER-OVERLAP", item.test)
-            # Only events after the last closure of this job and test justify a new quarantine (no reuse).
-            basis = [event for event in by_test.get(item.test, ())
-                     if 0 <= (item.quarantined_on - event.observed_on).days <= policy.flake_window_days
-                     and (key not in closed_on or event.observed_on > closed_on[key])]
-            if len(basis) < policy.quarantine_after_flakes:
+            justified = basis(by_test.get(item.test, ()), item.quarantined_on, policy.flake_window_days,
+                              closed_on.get(item.test))
+            if len(justified) < policy.quarantine_after_flakes:
                 raise Refused("LEDGER-QUARANTINE-UNJUSTIFIED", item.test)
             released.pop(key, None)
             active[key] = item
@@ -182,15 +200,17 @@ def parse_ledger(data, *, manifest, policy, today):
         current = active.get(key)
         if current is None or current.ticket_ref != record["ticket_ref"] or day < current.quarantined_on:
             raise Refused("LEDGER-CLOSURE-UNMATCHED", record["test"])
-        # GitHub logins and team slugs are case-insensitive.
-        if approver is not None and approver.lower() == current.owner.lower():
+        # GitHub logins and team slugs are case-insensitive. The quarantine owner is free text, so the approver must
+        # also differ from the manifest package owner of the test (review round 2, ADVSEC-R2-07).
+        if approver is not None and approver.lower() in _owners(current, manifest):
             raise Refused("LEDGER-SELF-APPROVAL", record["test"])
         del active[key]
-        closed_on[key] = day
+        closed_on[record["test"]] = day
         if approver is None:
             released[key] = day
     return Ledger(document["repository"], tuple(events), tuple(quarantines), active, document,
-                  hashlib.sha256(data).hexdigest(), {test: tuple(items) for test, items in by_test.items()}, released)
+                  hashlib.sha256(data).hexdigest(), {test: tuple(items) for test, items in by_test.items()}, released,
+                  closed_on)
 
 
 def load_ledger(path, *, manifest, policy, today):

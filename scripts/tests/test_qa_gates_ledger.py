@@ -109,6 +109,15 @@ class QuarantineRecordTests(LedgerCase):
         mutated["flake_events"].append(qs.event(TEST, -14, run="synthetic-runD"))
         self.assertRefused("LEDGER-QUARANTINE-UNJUSTIFIED", mutated, TEST)
 
+    def test_events_before_a_closure_in_another_job_do_not_justify(self):
+        # Review round 2, ADVSEC-R2-06: the post-closure rule is per test, across jobs.
+        events = [qs.event(TEST, -27, run="synthetic-runA"), qs.event(TEST, -27, run="synthetic-runB")]
+        fresh = [qs.event(TEST, -13, run="synthetic-runC"), qs.event(TEST, -13, run="synthetic-runD")]
+        second = qs.quarantine(TEST, -13, job=qs.MONEY_JOB, ticket=qs.OTHER_TICKET)
+        parse(qs.ledger_document(events + fresh, [qs.quarantine(TEST, -27), second], [qs.release(TEST, -14)]))
+        mutated = qs.ledger_document(events, [qs.quarantine(TEST, -27), second], [qs.release(TEST, -14)])
+        self.assertRefused("LEDGER-QUARANTINE-UNJUSTIFIED", mutated, TEST)
+
 
 class ClosureTests(LedgerCase):
     def test_release_closes_only_the_matching_active_quarantine(self):
@@ -146,6 +155,14 @@ class ClosureTests(LedgerCase):
                 self_approved = copy.deepcopy(document)
                 self_approved["deletions"][0]["approved_by"] = approver
                 self.assertRefused("LEDGER-SELF-APPROVAL", self_approved, TEST)
+
+    def test_package_owner_cannot_approve_when_someone_else_is_named_owner(self):
+        # Review round 2, ADVSEC-R2-07: the quarantine owner is free text; the package owner still may not approve.
+        events, record = qs.justified(TEST, -3, owner="@synthetic-other")
+        parse(qs.ledger_document(events=events, quarantines=[record], deletions=[qs.deletion(TEST, -1)]))
+        mutated = qs.ledger_document(events=events, quarantines=[record],
+                                     deletions=[qs.deletion(TEST, -1, approver=qs.OWNER.upper())])
+        self.assertRefused("LEDGER-SELF-APPROVAL", mutated, TEST)
 
 
 class RecordTests(LedgerCase):

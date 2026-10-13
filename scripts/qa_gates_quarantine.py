@@ -11,7 +11,8 @@ Semantics (docs governance/test-strategy.json `flake_policy`): a job that runs a
 re-execution, any other job one; a re-execution beyond that fails the run and never clears a failure. A case that
 still fails is a real failure. A pass on re-execution is a flake event, never a clean pass: the run fails and the
 report carries the exact event for a reviewed ledger change, because CI cannot write the committed ledger. When
-the recorded events of that test within the flake window plus this one reach the trigger, the report proposes a
+the recorded events of that test within the flake window (after its last closure, the ledger's own trigger) plus
+this one reach the trigger, the report proposes a
 quarantine with the package owner, a ticket requested through the TicketPort and an expiry at the maximum age;
 security, privacy and money tests are never quarantined. Active quarantines of the job are taken out of the
 gating set, still run and are reported. The run fails when a quarantine is older than the maximum age or past its
@@ -167,7 +168,10 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
         if outcome != "flaky":
             continue
         find("QG-FLAKE-EVENT", "fail", test)
-        dates = [*ledger.flake_dates(test, today, policy.flake_window_days), today]
+        # Same trigger as the ledger (ledgers.basis): this event counts only if it is after the last closure.
+        dates = [*ledger.flake_dates(test, today, policy.flake_window_days)]
+        if ledger.closed_on.get(test) is None or today > ledger.closed_on[test]:
+            dates.append(today)
         classification = classes[test]
         if len(dates) < policy.quarantine_after_flakes or classification.state != "known" or test in active:
             continue
@@ -193,7 +197,8 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
         find("QG-QUARANTINE-PROPOSED", "fail", test)
 
     tests = len(first)
-    if all(outcome == "skipped" for outcome in combination.outcomes.values()):
+    # Quarantined tests are outside the gating set, so a run in which only they ran checked nothing (ADVSEC-R2-05).
+    if all(outcome == "skipped" or test in exempt for test, outcome in combination.outcomes.items()):
         find("QG-NOTHING-RAN", "fail")
     if base_ledger is None:
         find("QG-LEDGER-BASE-MISSING", "fail")
