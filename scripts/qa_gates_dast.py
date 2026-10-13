@@ -8,9 +8,9 @@ version, contexts and users with credentials named by environment variable only,
 SHA-256 of the alerts report and of the expected-surface manifest). The target must pass `preflight_target()`
 (loopback IP literal or a declared ephemeral host suffix), every report site and alert instance must be on it, an
 authenticated and an unauthenticated context must both have scanned URLs, and every expected-surface entry must be
-covered; anything missing is incomplete, and incomplete fails. A `high` alert blocks unless its plugin is in a
-recorded warn window of at most seven days (injected clock); other risks are counted and reported. Exceptions are
-unavailable until infra#23 integrates. Parser fidelity is unverified until a real ZAP sample exists.
+covered; anything missing is incomplete, and incomplete fails. Every alert blocks, whatever its risk (high,
+medium, low or info), unless its plugin is in a recorded warn window of at most seven days (injected clock); no
+risk is report-only, because no accepted source or recorded decision relaxes any risk. Exceptions are unavailable until infra#23 integrates. Parser fidelity is unverified until a real ZAP sample exists.
 
 The output carries plugin IDs, alert references, risk and confidence levels, CWE IDs, methods, counts, validated
 surface IDs and fingerprints only: never URIs, parameters, evidence, attack strings, alert text or credentials.
@@ -78,8 +78,10 @@ POLICY_KEYS = ("schema", "status", "basis", "decision_ref", "blocking_risks", "t
 
 
 def parse_policy(data):
-    """Validate the DAST policy: risks that block (must include `high`), target allowlist and per-plugin warn windows.
+    """Validate the DAST policy: blocking risks (all four), target allowlist and per-plugin warn windows.
 
+    `blocking_risks` must name every ZAP risk: a narrower set would be an invented severity relaxation, and
+    `decision_ref` (the only place a recorded owner or Security decision could permit one) must stay null.
     Returns {"blocking": frozenset, "suffixes": tuple, "loopback": bool, "warn": {plugin_id: (start, until)}}.
     """
     document = exact(json_document(data, POLICY_LIMIT, "DAST-POLICY"), POLICY_KEYS, "DAST-POLICY-KEYS")
@@ -89,9 +91,8 @@ def parse_policy(data):
     if document["decision_ref"] is not None:
         raise Refused("DAST-POLICY-DECISION")
     risks = document["blocking_risks"]
-    if (not isinstance(risks, list) or not all(isinstance(risk, str) for risk in risks) or "high" not in risks
-            or len(set(risks)) != len(risks)
-            or not set(risks) <= set(RISKS.values())):
+    if (not isinstance(risks, list) or not all(isinstance(risk, str) for risk in risks)
+            or len(set(risks)) != len(risks) or set(risks) != set(RISKS.values())):
         raise Refused("DAST-POLICY-RISK")
     targets = exact(document["targets"], ("loopback", "ephemeral_host_suffixes"), "DAST-POLICY-TARGETS")
     suffixes = targets["ephemeral_host_suffixes"]
@@ -404,9 +405,9 @@ def coverage(entries, scanned):
 
 
 def risk_mode(item, policy, today):
-    """`block` for a blocking risk unless its plugin is inside a recorded warn window (`warn`); else `report`."""
+    """`block` unless the alert's plugin is inside a recorded warn window (`warn`); there is no report-only mode."""
     if item["risk"] not in policy["blocking"]:
-        return "report"
+        raise Refused("DAST-POLICY-RISK")
     window = policy["warn"].get(item["plugin_id"])
     return "warn" if window is not None and window[0] <= today <= window[1] else "block"
 
@@ -431,7 +432,7 @@ def evaluate(alerts_data, manifest_data, surface_data, policy, today):
         key=lambda item: (item["plugin_id"], item["alert_ref"], item["method"], item["fingerprint"], item["risk"],
                           item["confidence"], item["cwe_id"]),
     )
-    counts = {"block": 0, "warn": 0, "report": 0}
+    counts = {"block": 0, "warn": 0}
     by_risk = {risk: 0 for risk in RISKS.values()}
     for item in findings:
         counts[item["mode"]] += 1
@@ -457,8 +458,7 @@ def evaluate(alerts_data, manifest_data, surface_data, policy, today):
         "contexts": {"authenticated": kinds.count(True), "unauthenticated": kinds.count(False), "empty": empty},
         "scanned_url_count": len(manifest["scanned"]),
         "surface": {"expected": len(entries), "covered": len(entries) - len(missing), "missing": missing},
-        "counts": {"blocking": counts["block"], "warning": counts["warn"], "reported": counts["report"],
-                   "by_risk": by_risk},
+        "counts": {"blocking": counts["block"], "warning": counts["warn"], "by_risk": by_risk},
         "expired_warnings": sorted(plugin for plugin, window in policy["warn"].items() if today > window[1]),
         "exceptions": {"status": EXCEPTIONS_STATUS, "planned_binding": PLANNED_EXCEPTIONS_BINDING, "count": 0},
         "findings": findings,

@@ -99,8 +99,9 @@ class Control(unittest.TestCase):
         self.assertEqual(report["parser_fidelity"], "unverified: no real ZAP sample exists")
         self.assertEqual(report["exceptions"]["status"], "unavailable: infra#23 not integrated")
 
-    def test_committed_policy_blocks_high_only_and_declares_no_ephemeral_suffix(self):
-        self.assertEqual(POLICY, {"blocking": frozenset({"high"}), "loopback": True, "suffixes": (), "warn": {}})
+    def test_committed_policy_blocks_every_risk_and_declares_no_ephemeral_suffix(self):
+        self.assertEqual(POLICY, {"blocking": frozenset({"high", "medium", "low", "info"}), "loopback": True, "suffixes": (),
+                                  "warn": {}})
 
 
 class Preflight(unittest.TestCase):
@@ -143,7 +144,7 @@ class Severity(unittest.TestCase):
         report = gate(alerts(alert(risk="3")))
         self.assertEqual((report["decision"], report["reason"], report["complete"]),
                          ("fail", "DAST-BLOCKING-FINDINGS", True))
-        self.assertEqual(report["counts"], {"blocking": 1, "warning": 0, "reported": 0,
+        self.assertEqual(report["counts"], {"blocking": 1, "warning": 0,
                                             "by_risk": {"high": 1, "medium": 0, "low": 0, "info": 0}})
         finding = report["findings"][0]
         self.assertEqual({key: finding[key] for key in ("plugin_id", "alert_ref", "risk", "confidence", "cwe_id",
@@ -152,18 +153,21 @@ class Severity(unittest.TestCase):
                           "cwe_id": 89, "method": "GET", "mode": "block"})
         self.assertRegex(finding["fingerprint"], r"\Asha256:[0-9a-f]{64}\Z")
 
-    def test_medium_low_info_are_reported_not_blocking(self):
+    def test_medium_low_info_block_too(self):
+        # Review round 1 SS-R1-01: no risk is report-only (no invented severity relaxation).
         for code, risk in (("2", "medium"), ("1", "low"), ("0", "info")):
             with self.subTest(risk=risk):
+                self.assertEqual(gate(alerts())["decision"], "pass")
                 report = gate(alerts(alert(risk=code)))
-                self.assertEqual((report["decision"], report["reason"]), ("pass", None))
-                self.assertEqual((report["counts"]["reported"], report["counts"]["by_risk"][risk]), (1, 1))
-                self.assertEqual(report["findings"][0]["mode"], "report")
+                self.assertEqual((report["decision"], report["reason"]), ("fail", "DAST-BLOCKING-FINDINGS"))
+                self.assertEqual((report["counts"]["blocking"], report["counts"]["by_risk"][risk]), (1, 1))
+                self.assertEqual(report["findings"][0]["mode"], "block")
 
-    def test_policy_blocking_medium_fails_medium(self):
-        self.assertEqual(gate(alerts(alert(risk="2")))["decision"], "pass")
-        report = gate(alerts(alert(risk="2")), policy=dict(POLICY, blocking=frozenset({"high", "medium"})))
-        self.assertEqual(report["reason"], "DAST-BLOCKING-FINDINGS")
+    def test_injected_narrower_blocking_set_is_refused(self):
+        self.assertEqual(gate(alerts(alert(risk="2")))["reason"], "DAST-BLOCKING-FINDINGS")
+        with self.assertRaises(Refused) as caught:
+            gate(alerts(alert(risk="2")), policy=dict(POLICY, blocking=frozenset({"high"})))
+        self.assertEqual(caught.exception.code, "DAST-POLICY-RISK")
 
     def test_warn_window_and_expiry(self):
         policy = dict(POLICY, warn={"40018": (datetime.date(2026, 10, 10), datetime.date(2026, 10, 13))})
@@ -479,6 +483,9 @@ class Policy(unittest.TestCase):
             ("DAST-POLICY-SCHEMA", {"status": "agreed"}),
             ("DAST-POLICY-DECISION", {"decision_ref": "PenniLogic/infra#999"}),
             ("DAST-POLICY-RISK", {"blocking_risks": ["medium"]}),
+            ("DAST-POLICY-RISK", {"blocking_risks": ["high"]}),
+            ("DAST-POLICY-RISK", {"blocking_risks": ["high", "medium", "low"]}),
+            ("DAST-POLICY-RISK", {"blocking_risks": ["high", "medium", "low", "info", "critical"]}),
             ("DAST-POLICY-RISK", {"blocking_risks": ["high", "high"]}),
             ("DAST-POLICY-RISK", {"blocking_risks": ["high", ["low"]]}),
             ("DAST-POLICY-TARGETS", {"targets": {"loopback": 1, "ephemeral_host_suffixes": []}}),

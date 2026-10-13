@@ -158,10 +158,12 @@ Exit codes and stdout follow the SAST gate (`pennilogic.qa-gates.dast-report/1`)
    unauthenticated context (`DAST-INCOMPLETE-NO-UNAUTHENTICATED-CONTEXT`), a declared context without any scanned
    URL (`DAST-INCOMPLETE-EMPTY-CONTEXT`), or an expected-surface entry that no scanned URL of the same auth kind and
    method covers (`DAST-INCOMPLETE-SURFACE`, with the missing surface IDs).
-3. **A `high` alert blocks** (`DAST-BLOCKING-FINDINGS`): the accepted test strategy's
-   `security_regression_smoke` evidence says "a high-severity finding ... fails the deploy gate". `medium`, `low`
-   and `info` alerts are counted and listed with mode `report`; they are never dropped. The policy refuses a
-   `blocking_risks` list without `high`; widening it (for example adding `medium`) is a reviewed policy edit.
+3. **Every alert blocks** (`DAST-BLOCKING-FINDINGS`), whatever its risk. The accepted test strategy's
+   `security_regression_smoke` evidence says "a high-severity finding or an unsigned or tampered artifact fails the
+   deploy gate"; no accepted source or recorded decision makes `medium`, `low` or `info` alerts report-only, so
+   this gate does not invent that relaxation. The only relaxation is a per-plugin `warn` window (below). The
+   policy refuses a `blocking_risks` list that does not name all four risks (`DAST-POLICY-RISK`); narrowing it
+   needs a recorded owner or Security decision, and `decision_ref` stays `null`.
 
 The scan manifest's contexts are declared by the executor; this gate checks that both kinds exist and were
 exercised, not that a login really succeeded. Proving that is part of the held real authenticated scan.
@@ -185,17 +187,17 @@ executor, which must call `preflight_target` before it starts ZAP.
 | `risk`, `confidence` | `riskcode` 3/2/1/0 as `high`/`medium`/`low`/`info`; confidence 4..0 as `confirmed`..`false-positive`. |
 | `cwe_id`, `method` | CWE number (`-1` when ZAP has none) and HTTP method. |
 | `fingerprint` | `sha256:` over the canonical JSON of `[alert_ref, method, URL path, parameter name]`; the query is excluded. |
-| `mode` | `block`, `warn` (inside a recorded window) or `report` (risk below the blocking set). |
+| `mode` | `block`, or `warn` inside a recorded window. There is no report-only mode. |
 
 The report never carries URIs, hosts, query values, parameter names, attack strings, evidence, alert text,
 context or user names, environment variable names or credential values. It reports `target_class`,
 context counts, `scanned_url_count`, `surface.{expected, covered, missing}` (validated surface IDs only),
-`counts.{blocking, warning, reported, by_risk}`, `expired_warnings` and the same `exceptions` block as SAST.
+`counts.{blocking, warning, by_risk}`, `expired_warnings` and the same `exceptions` block as SAST.
 
 ### Per-plugin warn mode, rollout and rollback
 
 `dast-policy.json` `rules` maps a ZAP plugin ID to `{"mode": "warn", "warn_from", "warn_until"}` with the same
-seven-day rule as SAST. Inside the window a blocking-risk alert of that plugin is `warn`; outside it blocks again
+seven-day rule as SAST. Inside the window an alert of that plugin is `warn`; outside it blocks again
 and an ended window is listed in `expired_warnings`. The committed policy has no warn entry.
 
 ## Rollout and rollback (both gates)
@@ -219,7 +221,7 @@ policies are all-blocking, and the warning week itself has not run.
   `preflight_target` before the first request, short-lived credentials scoped to that environment, a committed
   expected surface from the owning repositories, and a real ZAP report to verify this parser. None exists;
   the DAST tests use synthetic reports only.
-- The rule sets, the DAST blocking-risk choice, the manifest and surface schemas and the report vocabulary are
+- The rule sets, the manifest and surface schemas and the report vocabulary are
   proposals; no owner decision is recorded (`decision_ref` stays `null`).
 - The one-week warning window has not run.
 - infra#23 (exceptions, process controls; draft infra PR #88) and the infra#22 conformance hold are unresolved.
