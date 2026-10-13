@@ -103,6 +103,13 @@ class CheckovIncompleteTests(unittest.TestCase):
         bad_severity[0]["results"]["failed_checks"][0]["severity"] = "SEVERE"
         self.refused(bad_severity, "SC-CHECKOV-SHAPE")
 
+    def test_secret_and_dependency_frameworks_are_out_of_scope(self):
+        self.assertEqual(run(clean()), [])
+        for check_type in ("secrets", "sca_package", "sca_image", "synthetic_unknown"):
+            with self.subTest(check_type=check_type):
+                self.refused(self.mutated(lambda s, value=check_type: s.__setitem__("check_type", value)),
+                             "SC-CHECKOV-SCOPE")
+
     def test_bad_json(self):
         with self.assertRaises(Refused) as caught:
             reports.checkov_findings(b'[{"a": 1, "a": 1}]', "infra/dockerfile")

@@ -150,5 +150,72 @@ class TrivyConfigTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "SC-TRIVY-SUBJECT")
 
 
+class TrivyScopeTests(unittest.TestCase):
+    """Each kind accepts only the result classes it gates; nothing else yields an empty success."""
+
+    CONFIG_CONTROL = {"Successes": 3, "Failures": 0, "Exceptions": 0}
+
+    def refused(self, document, code, kind="image", digest=DIGEST):
+        with self.assertRaises(Refused) as caught:
+            run(document, kind, digest)
+        self.assertEqual(caught.exception.code, code)
+
+    def image(self, change):
+        document = clean()
+        self.assertEqual(run(document), [])  # control
+        change(document)
+        return document
+
+    def config(self, change):
+        document = config_report([], dict(self.CONFIG_CONTROL))
+        self.assertEqual(run(document, "config", None), [])  # control
+        change(document)
+        return document
+
+    def test_image_report_without_a_package_scan_is_incomplete(self):
+        secret_only = [{"Target": "/app/settings", "Class": "secret"}]
+        self.refused(self.image(lambda d: d.__setitem__("Results", secret_only)), "SC-TRIVY-INCOMPLETE")
+
+    def test_unknown_result_class_is_refused(self):
+        self.refused(self.image(lambda d: d["Results"][0].__setitem__("Class", "anything")), "SC-TRIVY-SHAPE")
+        self.refused(self.config(lambda d: d["Results"][0].__setitem__("Class", "anything")), "SC-TRIVY-SHAPE",
+                     "config", None)
+
+    def test_image_report_refuses_misconfiguration_classes(self):
+        self.refused(self.image(lambda d: d["Results"][0].__setitem__("Class", "config")), "SC-TRIVY-SCOPE")
+        self.refused(self.image(lambda d: d["Results"][0].__setitem__("Misconfigurations", [misconfiguration()])),
+                     "SC-TRIVY-SCOPE")
+
+    def test_image_secret_results_are_ignored_not_gated(self):
+        secret = {"Target": "/app/settings", "Class": "secret",
+                  "Secrets": [{"RuleID": "synthetic-rule", "Severity": "CRITICAL"}]}
+        self.assertEqual(run(self.image(lambda d: d["Results"].append(secret))), [])
+        planted = copy.deepcopy(PLANTED)
+        planted["Results"].append(secret)
+        self.assertEqual([entry["rule_id"] for entry in run(planted)], ["SYNTHETIC-VULN-0001"])
+
+    def test_config_result_without_summary_is_incomplete(self):
+        self.refused(self.config(lambda d: d["Results"][0].pop("MisconfSummary")), "SC-TRIVY-INCOMPLETE",
+                     "config", None)
+
+    def test_config_kind_refuses_repository_reports(self):
+        self.refused(self.config(lambda d: d.__setitem__("ArtifactType", "repository")), "SC-TRIVY-KIND",
+                     "config", None)
+
+    def test_config_kind_refuses_dependency_and_secret_results(self):
+        vulnerability = {"VulnerabilityID": "SYNTHETIC-VULN-0002", "PkgName": "synthetic-dep",
+                         "InstalledVersion": "1.0.0", "Severity": "CRITICAL"}
+        lock_file = {"Target": "package-lock.json", "Class": "lang-pkgs", "Type": "npm",
+                     "Vulnerabilities": [vulnerability]}
+        for change in (
+            lambda d: d.__setitem__("Results", [lock_file]),
+            lambda d: d["Results"][0].__setitem__("Vulnerabilities", [vulnerability]),
+            lambda d: d["Results"][0].__setitem__("Secrets", [{"RuleID": "synthetic-rule"}]),
+            lambda d: d["Results"][0].__setitem__("Licenses", [{"Name": "synthetic"}]),
+        ):
+            with self.subTest():
+                self.refused(self.config(change), "SC-TRIVY-SCOPE", "config", None)
+
+
 if __name__ == "__main__":
     unittest.main()

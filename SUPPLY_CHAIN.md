@@ -15,15 +15,19 @@ proposal awaiting owner confirmation.
 | --- | --- | --- |
 | `compose` | `docker compose config --format json` rendering | privileged, host namespaces, Docker socket, dangerous capabilities, unconfined profiles, non-loopback published ports, images not pinned by digest |
 | `android` | merged release `AndroidManifest.xml` (+ network security config) | debuggable, backup allowed, cleartext traffic, unprotected exported components, legacy storage, user CAs |
-| `trivy` | `trivy image` or `trivy config` JSON (SchemaVersion 2) | findings at or above the threshold; an image report must name the expected `sha256:` digest |
-| `checkov` | `checkov -o json` report | failed or skipped checks at or above the threshold |
+| `trivy` | `trivy image` or `trivy config` JSON (SchemaVersion 2) | `image`: container package (`os-pkgs`, `lang-pkgs`) vulnerabilities at or above the threshold; the report must name the expected `sha256:` digest and contain a package result. `config`: misconfigurations at or above the threshold; every result must be Class `config` with a `MisconfSummary` |
+| `checkov` | `checkov -o json` report (infrastructure-as-code frameworks only) | failed or skipped checks at or above the threshold |
 | `sbom` | artifact file + CycloneDX 1.4-1.6 JSON | incomplete components (name, version, `pkg:` purl, strong hash), duplicate `bom-ref`, dangling dependency, missing serial number, `metadata.component` SHA-256 not equal to the artifact digest |
 | `provenance` | artifact file + in-toto Statement v1 / SLSA provenance v1 | artifact digest not a subject, missing builder id or build type |
 | `deploy` | artifact + SBOM + provenance + detached signatures | any `sbom`/`provenance` finding, and any member (artifact, SBOM, provenance) unsigned or not accepted by the verifier |
 
 Incomplete, errored, empty or malformed inputs are refused (exit 2), never passed: duplicate JSON keys, a BOM,
 `NaN`, DOCTYPE/ENTITY declarations, empty scan results, report counts that disagree with the listed checks, and
-an image report for a different digest are all refusals. Android boolean attributes are read as the platform
+an image report for a different digest are all refusals. Repository dependency advisories and secret findings
+belong to T-QA-04/[infra#23](https://github.com/PenniLogic/infra/issues/23), not to these gates: a `trivy` config
+report with vulnerabilities, secrets, licences, a non-`config` result or ArtifactType `repository`, and a
+`checkov` `secrets` or `sca_*` section, are refused (`SC-TRIVY-SCOPE`, `SC-TRIVY-KIND`, `SC-CHECKOV-SCOPE`).
+`secret` and licence results inside an image report are ignored. Android boolean attributes are read as the platform
 parser reads them (surrounding whitespace ignored; `true`/`TRUE`/`True` and `false`/`FALSE`/`False`); any other
 value, including an `@bool/...` resource reference that is resolved only at link time, is refused
 (`SC-ANDROID-VALUE`, `SC-ANDROID-NSC-VALUE`) rather than treated as safe.
@@ -121,6 +125,9 @@ These stay open and are not demonstrated by this source work:
 - **CI wiring**: running the gates and real scanners (trivy, checkov, syft or another CycloneDX generator) in CI,
   scanning images before publication and again before deployment, and registering required checks. Workflows are
   generated files owned by the generator owner.
+- **Scanner invocation**: a report does not show how the scanner ran (version, `--scanners`, `--severity`,
+  `--ignore-unfixed`, `.trivyignore`, checkov skip and framework configuration). The held CI wiring must pin
+  these; the gates here only judge the report they are given.
 - **Published result schemas** for the release checklist (scan, SBOM and provenance results): the report shape
   here is proposed, pending infra#28 and infra#23 vocabulary alignment.
 - **T-GOV-03 second reviewer**: independent second-reviewer approval (or an external independent review) is a
