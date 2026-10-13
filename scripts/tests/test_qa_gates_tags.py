@@ -33,8 +33,9 @@ COMMITTED = {
     },
     "infra.tooling": {
         "test_bootstrap": {"security"}, "test_database_admission": {"privacy", "security"},
-        "test_integration_stack": set(), "test_qa_gates_junit": {"security"}, "test_qa_gates_ledger": {"security"},
-        "test_qa_gates_policy": {"security"}, "test_qa_gates_quarantine": {"security"},
+        "test_integration_stack": set(), "test_qa_gates_cli": {"security"}, "test_qa_gates_junit": {"security"},
+        "test_qa_gates_ledger": {"security"}, "test_qa_gates_policy": {"security"},
+        "test_qa_gates_quarantine": {"security"}, "test_qa_gates_retry": {"security"},
         "test_qa_gates_tags": {"security"}, "test_smoke_infra": {"security"},
     },
 }
