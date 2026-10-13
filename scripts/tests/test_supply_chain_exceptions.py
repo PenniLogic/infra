@@ -81,6 +81,23 @@ class ThresholdTests(unittest.TestCase):
         self.assertEqual(len(report["findings"]), 2)
         self.assertEqual(report["counts"]["by_effect"]["fail"], 2)
 
+    def test_duplicate_keeps_the_most_severe_entry_whatever_the_order(self):
+        low, high = item(severity="low"), item(severity="high")
+        self.assertEqual(low["fingerprint"], high["fingerprint"])
+        control = exceptions.evaluate([high, low], "high")
+        self.assertEqual((control["decision"], [entry["severity"] for entry in control["findings"]]),
+                         ("fail", ["high"]))
+        mutated = exceptions.evaluate([low, high], "high")
+        self.assertEqual(mutated, control)
+
+    def test_duplicate_with_equal_severity_keeps_the_unrated_basis(self):
+        scanner = finding("trivy", "SYNTHETIC-VULN-0001", "high", "web/image", "image.package", "t", basis="scanner")
+        unrated = finding("trivy", "SYNTHETIC-VULN-0001", "high", "web/image", "image.package", "t", basis="unrated")
+        for order in ([scanner, unrated], [unrated, scanner]):
+            with self.subTest(first=order[0]["severity_basis"]):
+                report = exceptions.evaluate(order, "high")
+                self.assertEqual([entry["severity_basis"] for entry in report["findings"]], ["unrated"])
+
 
 class AvailablePortTests(unittest.TestCase):
     def test_suppression_is_published_with_its_id(self):

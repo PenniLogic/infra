@@ -15,13 +15,26 @@ infra#23 owner. The ``available`` branch below is exercised only by test fakes.
 import re
 
 from supply_chain_common import (
-    REPORT_SCHEMA, REPORT_STATUS, SCANNERS, SEVERITIES, Refused, blocking, never_exceptable,
+    RANK, REPORT_SCHEMA, REPORT_STATUS, SCANNERS, SEVERITIES, Refused, blocking, never_exceptable,
 )
 
 
 UNAVAILABLE_REASON = "exceptions unavailable (infra#23 not integrated)"
 EXCEPTION_ID = re.compile(r"[a-z][a-z0-9-]{0,63}")
 EFFECTS = ("fail", "report", "excepted")
+# On a fingerprint collision the strictest entry is kept: most severe first, then the least trusted basis.
+BASIS_ORDER = {"unrated": 0, "scanner": 1, "rule": 2}
+
+
+def _strictest(findings):
+    """One finding per fingerprint, independent of input order (a lower-severity duplicate never hides one)."""
+    kept = {}
+    for item in findings:
+        key = (RANK[item["severity"]], BASIS_ORDER[item["severity_basis"]])
+        current = kept.get(item["fingerprint"])
+        if current is None or key < current[0]:
+            kept[item["fingerprint"]] = (key, item)
+    return [entry for _, entry in kept.values()]
 
 
 class UnavailableExceptions:
@@ -55,14 +68,11 @@ def evaluate(findings, threshold, port=None):
     exceptions, available = _status(port)
     if threshold not in SEVERITIES:
         raise Refused("SC-POLICY-THRESHOLD")
-    published, seen = [], set()
+    published = []
     counts = {scanner: {severity: 0 for severity in SEVERITIES} for scanner in SCANNERS}
     effects = {effect: 0 for effect in EFFECTS}
     by_rule = {}
-    for item in findings:
-        if item["fingerprint"] in seen:
-            continue
-        seen.add(item["fingerprint"])
+    for item in _strictest(findings):
         exception_id = None
         if available and not never_exceptable(item["rule_id"]):
             try:
