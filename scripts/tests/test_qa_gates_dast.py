@@ -7,7 +7,6 @@ rule code. CLI inputs are written to the system temporary directory, never insid
 """
 
 import contextlib
-import copy
 import datetime
 import io
 import json
@@ -574,6 +573,13 @@ class Cli(unittest.TestCase):
         code, output = self.run_main(["--help"])
         self.assertEqual(code, 0)
         self.assertIn("qa_gates_dast.py --alerts", output)
+
+
+class Determinism(unittest.TestCase):
+    def test_tied_findings_order_is_input_order_independent(self):
+        high, medium = alert(risk="3"), alert(risk="2")
+        self.assertEqual(gate(alerts(high))["findings"], gate(alerts(high))["findings"])
+        self.assertEqual(gate(alerts(high, medium))["findings"], gate(alerts(medium, high))["findings"])
 
 if __name__ == "__main__":
     unittest.main()

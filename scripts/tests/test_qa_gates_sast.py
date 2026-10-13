@@ -6,7 +6,6 @@ in-memory mutations; temporary copies live in the system temporary directory, ne
 """
 
 import contextlib
-import copy
 import datetime
 import io
 import json
@@ -549,6 +548,18 @@ class SastCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("qa_gates_sast.py --report", text)
 
+
+
+class TiedFindingOrder(unittest.TestCase):
+    def test_tied_findings_order_is_input_order_independent(self):
+        document = only(EVAL_RULE)
+        first = document["results"][0]
+        second = json.loads(json.dumps(first))
+        second["extra"]["severity"] = "INFO" if first["extra"]["severity"] != "INFO" else "ERROR"
+        document["results"] = [first]
+        self.assertEqual(gate(document)["findings"], gate(document)["findings"])
+        forward, backward = dict(document, results=[first, second]), dict(document, results=[second, first])
+        self.assertEqual(gate(forward)["findings"], gate(backward)["findings"])
 
 if __name__ == "__main__":
     unittest.main()

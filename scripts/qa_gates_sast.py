@@ -206,7 +206,7 @@ def evaluate(data, root, modes, today, rule_ids=None):
     scanned_set, sources = set(scanned), {}
     findings = sorted(
         (_finding(result, rule_ids, scanned_set, root, sources, modes, today) for result in results),
-        key=lambda item: (item["path"], item["line"], item["rule_id"], item["fingerprint"]),
+        key=lambda item: (item["path"], item["line"], item["rule_id"], item["fingerprint"], item["scanner_severity"]),
     )
     blocking = sum(item["mode"] == "block" for item in findings)
     by_severity = {}

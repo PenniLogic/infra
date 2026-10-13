@@ -57,7 +57,6 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 PLUGIN_ID = re.compile(r"[0-9]{1,7}")
 ALERT_REF = re.compile(r"[0-9]{1,7}(?:-[0-9]{1,4})?")
 CWE_ID = re.compile(r"-1|0|[1-9][0-9]{0,5}")
-COUNT = re.compile(r"0|[1-9][0-9]{0,6}")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
 SURFACE_ID = re.compile(r"[A-Z][A-Z0-9]{0,15}(?:-[A-Z0-9]{1,16}){1,4}")
@@ -423,7 +422,8 @@ def evaluate(alerts_data, manifest_data, surface_data, policy, today):
     missing = coverage(entries, manifest["scanned"])
     findings = sorted(
         (dict(item, mode=risk_mode(item, policy, today)) for item in items),
-        key=lambda item: (item["plugin_id"], item["alert_ref"], item["method"], item["fingerprint"]),
+        key=lambda item: (item["plugin_id"], item["alert_ref"], item["method"], item["fingerprint"], item["risk"],
+                          item["confidence"], item["cwe_id"]),
     )
     counts = {"block": 0, "warn": 0, "report": 0}
     by_risk = {risk: 0 for risk in RISKS.values()}
