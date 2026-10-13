@@ -113,6 +113,18 @@ class TrivyRefusalTests(unittest.TestCase):
             with self.subTest():
                 self.refused(self.mutated(change), "SC-TRIVY-SHAPE")
 
+    def test_builtin_rule_namespace_is_reserved(self):
+        self.assertEqual([entry["rule_id"] for entry in run(PLANTED)], ["SYNTHETIC-VULN-0001"])
+        for rule in ("SC-SIG-UNSIGNED", "sc-subject-mismatch"):
+            with self.subTest(rule=rule):
+                document = copy.deepcopy(PLANTED)
+                document["Results"][0]["Vulnerabilities"][0]["VulnerabilityID"] = rule
+                self.refused(document, "SC-TRIVY-RULE")
+        misconfig = misconfiguration()
+        misconfig["ID"] = "SC-SIG-UNSIGNED"
+        self.refused(config_report([misconfig], {"Successes": 2, "Failures": 1, "Exceptions": 0}),
+                     "SC-TRIVY-RULE", "config", None)
+
     def test_bad_json_and_artifact(self):
         with self.assertRaises(Refused) as caught:
             reports.trivy_findings(b"{", "web/image", "image", DIGEST)

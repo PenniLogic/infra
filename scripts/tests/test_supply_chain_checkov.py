@@ -110,6 +110,12 @@ class CheckovIncompleteTests(unittest.TestCase):
                 self.refused(self.mutated(lambda s, value=check_type: s.__setitem__("check_type", value)),
                              "SC-CHECKOV-SCOPE")
 
+    def test_builtin_rule_namespace_is_reserved(self):
+        self.assertEqual([entry["rule_id"] for entry in run(PLANTED)], ["CKV_SYNTH_1"])
+        document = copy.deepcopy(PLANTED)
+        document[0]["results"]["failed_checks"][0]["check_id"] = "SC-SIG-UNSIGNED"
+        self.refused(document, "SC-CHECKOV-RULE")
+
     def test_bad_json(self):
         with self.assertRaises(Refused) as caught:
             reports.checkov_findings(b'[{"a": 1, "a": 1}]', "infra/dockerfile")

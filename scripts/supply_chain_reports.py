@@ -40,6 +40,15 @@ def _items(value, code):
     return value
 
 
+def _external_rule(value, prefix):
+    """A scanner-supplied rule id; the ``SC-`` namespace is reserved for the built-in rules (any letter case),
+    so a report cannot pose as a signature or subject-binding finding or pollute their counts."""
+    rule = pattern(value, RULE_ID, prefix + "-SHAPE")
+    if rule[:3].upper() == "SC-":
+        raise Refused(prefix + "-RULE")
+    return rule
+
+
 def _text(value, code):
     if not isinstance(value, str) or not value or len(value) > 4096:
         raise Refused(code)
@@ -132,7 +141,7 @@ def _absent(result, keys):
 def _trivy_vulnerabilities(result, artifact_id, target):
     found = []
     for item in _items(result.get("Vulnerabilities"), "SC-TRIVY-SHAPE"):
-        rule = pattern(item.get("VulnerabilityID"), RULE_ID, "SC-TRIVY-SHAPE")
+        rule = _external_rule(item.get("VulnerabilityID"), "SC-TRIVY")
         severity, basis = _severity(item.get("Severity"), "SC-TRIVY-SHAPE")
         package = _text(item.get("PkgName"), "SC-TRIVY-SHAPE")
         version = item.get("InstalledVersion", "")
@@ -147,7 +156,7 @@ def _trivy_misconfigurations(result, artifact_id, target):
         status = item.get("Status")
         if status not in ("FAIL", "PASS", "EXCEPTION"):
             raise Refused("SC-TRIVY-SHAPE")
-        rule = pattern(item.get("ID"), RULE_ID, "SC-TRIVY-SHAPE")
+        rule = _external_rule(item.get("ID"), "SC-TRIVY")
         severity, basis = _severity(item.get("Severity"), "SC-TRIVY-SHAPE")
         if status == "PASS":
             continue
@@ -203,7 +212,7 @@ def _checkov_section(section, artifact_id):
         for item in lists[key]:
             if not isinstance(item, dict):
                 raise Refused("SC-CHECKOV-SHAPE")
-            rule = pattern(item.get("check_id"), RULE_ID, "SC-CHECKOV-SHAPE")
+            rule = _external_rule(item.get("check_id"), "SC-CHECKOV")
             severity, basis = _severity(item.get("severity"), "SC-CHECKOV-SHAPE")
             found.append(finding("checkov", rule, severity, artifact_id, "iac.resource",
                                  str(item.get("file_path", "")), str(item.get("resource", "")), basis=basis))
