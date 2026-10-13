@@ -23,7 +23,10 @@ proposal awaiting owner confirmation.
 
 Incomplete, errored, empty or malformed inputs are refused (exit 2), never passed: duplicate JSON keys, a BOM,
 `NaN`, DOCTYPE/ENTITY declarations, empty scan results, report counts that disagree with the listed checks, and
-an image report for a different digest are all refusals.
+an image report for a different digest are all refusals. Android boolean attributes are read as the platform
+parser reads them (surrounding whitespace ignored; `true`/`TRUE`/`True` and `false`/`FALSE`/`False`); any other
+value, including an `@bool/...` resource reference that is resolved only at link time, is refused
+(`SC-ANDROID-VALUE`, `SC-ANDROID-NSC-VALUE`) rather than treated as safe.
 
 ## Usage
 

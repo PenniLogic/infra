@@ -137,5 +137,63 @@ class XmlRefusalTests(unittest.TestCase):
         self.assertNotIn("SyncService", json.dumps(exceptions.evaluate(found, "high")))
 
 
+class BooleanValueTests(unittest.TestCase):
+    """Boolean attributes are read the way the platform parser reads them; unresolvable values are refused."""
+
+    APPLICATION = (("debuggable", "SC-ANDROID-DEBUGGABLE"), ("usesCleartextTraffic", "SC-ANDROID-CLEARTEXT"),
+                   ("requestLegacyExternalStorage", "SC-ANDROID-LEGACY-STORAGE"),
+                   ("allowBackup", "SC-ANDROID-ALLOW-BACKUP"))
+
+    def application(self, name, value):
+        if name in ("usesCleartextTraffic", "allowBackup"):
+            return replaced(MANIFEST, f'android:{name}="false"', f'android:{name}="{value}"')
+        return replaced(MANIFEST, 'android:label=', f'android:{name}="{value}" android:label=')
+
+    def refused(self, code, manifest=MANIFEST, network=NETWORK):
+        with self.assertRaises(Refused) as caught:
+            rules(manifest, network)
+        self.assertEqual(caught.exception.code, code)
+
+    def test_application_attributes_accept_platform_spellings_of_true(self):
+        for name, rule in self.APPLICATION:
+            for value in ("True", "TRUE", " true", "true&#9;"):
+                with self.subTest(name=name, value=value):
+                    self.assertEqual(rules(self.application(name, "false")), [])
+                    self.assertEqual(rules(self.application(name, value)), [rule])
+
+    def test_application_attributes_accept_platform_spellings_of_false(self):
+        for name, _ in self.APPLICATION:
+            for value in ("False", "FALSE", " false "):
+                with self.subTest(name=name, value=value):
+                    self.assertEqual(rules(self.application(name, value)), [])
+
+    def test_application_resource_references_and_unknown_values_are_refused(self):
+        for name, _ in self.APPLICATION:
+            for value in ("@bool/flag", "yes", "1", "tRUE", ""):
+                with self.subTest(name=name, value=value):
+                    self.assertEqual(rules(self.application(name, "false")), [])
+                    self.refused("SC-ANDROID-VALUE", manifest=self.application(name, value))
+
+    def test_exported_component_spellings_and_references(self):
+        anchor = 'SettingsActivity" android:exported="false"'
+        self.assertEqual(rules(), [])
+        for value in ("True", "TRUE", " true"):
+            with self.subTest(value=value):
+                self.assertEqual(rules(replaced(MANIFEST, anchor, f'SettingsActivity" android:exported="{value}"')),
+                                 ["SC-ANDROID-EXPORTED"])
+        self.refused("SC-ANDROID-VALUE",
+                     manifest=replaced(MANIFEST, anchor, 'SettingsActivity" android:exported="@bool/exported"'))
+
+    def test_network_config_cleartext_spellings_and_references(self):
+        anchor = '<base-config cleartextTrafficPermitted="false">'
+        self.assertEqual(rules(), [])
+        for value in ("True", "TRUE", " true"):
+            with self.subTest(value=value):
+                self.assertEqual(rules(network=replaced(NETWORK, anchor, f'<base-config cleartextTrafficPermitted="{value}">')),
+                                 ["SC-ANDROID-NSC-CLEARTEXT"])
+        self.refused("SC-ANDROID-NSC-VALUE",
+                     network=replaced(NETWORK, anchor, '<base-config cleartextTrafficPermitted="@bool/clear">'))
+
+
 if __name__ == "__main__":
     unittest.main()

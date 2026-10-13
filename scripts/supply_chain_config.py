@@ -119,6 +119,21 @@ def _attribute(element, name):
     return element.get(ANDROID + name)
 
 
+BOOLEANS = {"true": True, "TRUE": True, "True": True, "false": False, "FALSE": False, "False": False}
+
+
+def _boolean(value, code="SC-ANDROID-VALUE"):
+    """None when absent, else the boolean the platform parser would read (surrounding whitespace stripped and
+    true/TRUE/True or false/FALSE/False accepted). Any other value, including an ``@bool/...`` resource reference
+    resolved only at link time, cannot be judged from the text and is refused, never treated as safe."""
+    if value is None:
+        return None
+    parsed = BOOLEANS.get(value.strip())
+    if parsed is None:
+        raise Refused(code)
+    return parsed
+
+
 def _launcher(component):
     for intent_filter in component.findall("intent-filter"):
         actions = {_attribute(item, "name") for item in intent_filter.findall("action")}
@@ -148,7 +163,7 @@ def _network_findings(root, artifact_id):
     scopes = [("base-config", element) for element in root.iter("base-config")]
     scopes += [("domain-config", element) for element in root.iter("domain-config")]
     for index, (kind, element) in enumerate(scopes):
-        if element.get("cleartextTrafficPermitted") == "true":
+        if _boolean(element.get("cleartextTrafficPermitted"), "SC-ANDROID-NSC-VALUE") is True:
             found.append(finding("builtin-android", "SC-ANDROID-NSC-CLEARTEXT", "high", artifact_id,
                                  "android.network-config", kind, index))
         for anchors in element.findall("trust-anchors"):
@@ -175,23 +190,23 @@ def android_findings(manifest, artifact_id, network_config=None):
     def add(rule, severity, location_class, *where):
         found.append(finding("builtin-android", rule, severity, artifact_id, location_class, *where))
 
-    if _attribute(application, "debuggable") == "true":
+    if _boolean(_attribute(application, "debuggable")) is True:
         add("SC-ANDROID-DEBUGGABLE", "critical", "android.application")
-    if _attribute(application, "allowBackup") != "false":
+    if _boolean(_attribute(application, "allowBackup")) is not False:
         add("SC-ANDROID-ALLOW-BACKUP", "high", "android.application")
-    if _attribute(application, "requestLegacyExternalStorage") == "true":
+    if _boolean(_attribute(application, "requestLegacyExternalStorage")) is True:
         add("SC-ANDROID-LEGACY-STORAGE", "medium", "android.application")
-    cleartext = _attribute(application, "usesCleartextTraffic")
+    cleartext = _boolean(_attribute(application, "usesCleartextTraffic"))
     target = _target_sdk(root)
-    if cleartext == "true" or (cleartext is None and (target is None or target < CLEARTEXT_DEFAULT_OFF_FROM)):
+    if cleartext is True or (cleartext is None and (target is None or target < CLEARTEXT_DEFAULT_OFF_FROM)):
         add("SC-ANDROID-CLEARTEXT", "high", "android.application")
     for tag in COMPONENTS:
         for index, component in enumerate(application.findall(tag)):
             name = _attribute(component, "name") or ""
-            exported = _attribute(component, "exported")
+            exported = _boolean(_attribute(component, "exported"))
             if exported is None and component.findall("intent-filter"):
                 add("SC-ANDROID-EXPORTED-UNDECLARED", "high", "android.component", tag, index, name)
-            elif exported == "true" and not _protected(component) and not (
+            elif exported is True and not _protected(component) and not (
                     tag in ("activity", "activity-alias") and _launcher(component)):
                 add("SC-ANDROID-EXPORTED", "high", "android.component", tag, index, name)
     referenced = _attribute(application, "networkSecurityConfig") is not None
