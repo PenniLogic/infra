@@ -141,6 +141,8 @@ class RegistryTests(unittest.TestCase):
 
     def test_infra_workflow_ref_exists_and_replays_its_committed_native_workflow(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/infra")
+        self.assertEqual("e8a7558e90614e1f766596b6df331450db55deb9", entry["workflow_ref"])
+        self.assertEqual("e8a7558e90614e1f766596b6df331450db55deb9", entry["pr_gate"]["workflow_ref"])
         self.assertEqual(entry["workflow_ref"], entry["pr_gate"]["workflow_ref"])
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "infra")
         self.assertIsNotNone(rendered, "the Infra source binding must exist in real Git history")
@@ -152,6 +154,30 @@ class RegistryTests(unittest.TestCase):
         )
         self.assertEqual(0, committed.returncode, "the Infra source must contain its rendered native workflow")
         self.assertEqual(rendered, committed.stdout)
+        with tempfile.TemporaryDirectory(prefix="infra-registry-source-") as temporary:
+            root = Path(temporary)
+            for relative in ("generate.py", "repository-profiles.json", "templates/check_repository.py",
+                             "templates/infra_ci_checker.py", "templates/pr_workflow_integrity.py",
+                             "templates/pr_workflow_integrity_checker.py"):
+                committed = subprocess.run(
+                    ["git", "--no-pager", "show", entry["workflow_ref"] + ":governance/" + relative],
+                    cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+                    capture_output=True, check=False, timeout=30,
+                )
+                self.assertEqual(0, committed.returncode, "the Infra binding must contain every checker source")
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(committed.stdout)
+            historical = generator_module.load(root / "generate.py", name="infra_registry_source")
+            rendered_checker = historical.checker("infra").encode("utf-8")
+            self.assertEqual(support.generator.checker("infra").encode("utf-8"), rendered_checker)
+            committed = subprocess.run(
+                ["git", "--no-pager", "show", entry["workflow_ref"] + ":scripts/check_repository.py"],
+                cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+                capture_output=True, check=False, timeout=30,
+            )
+            self.assertEqual(0, committed.returncode, "the Infra source must contain its rendered checker")
+            self.assertEqual(rendered_checker, committed.stdout)
 
     def test_previous_infra_ref_cannot_bind_the_security_preparation_workflows(self):
         current = support.generator.artifacts("infra")
@@ -303,6 +329,7 @@ class RegistryTests(unittest.TestCase):
     def test_gate_ref_is_a_real_source_commit_containing_its_native_rendering(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/infra")
         self.assertIn("pr_gate", entry, "source A must be followed by a real registry-only binding B")
+        self.assertEqual("e8a7558e90614e1f766596b6df331450db55deb9", entry["pr_gate"]["workflow_ref"])
         rendered = registry.render_workflow_at(
             support.GOVERNANCE.parent, entry["pr_gate"]["workflow_ref"], "infra",
             workflow_file=registry.PR_GATE_WORKFLOW,
