@@ -6,8 +6,9 @@ computed from the artifact bytes. Other statement or predicate types, non-strict
 refused. The artifact must be a subject: a ``subject[].digest.sha256`` equal to the artifact digest, otherwise a
 never-exceptable critical ``SC-SUBJECT-PROVENANCE-MISMATCH``. The builder id and build type must be present.
 
-Builder trust (which builder ids are allowed) and DSSE/attestation-bundle verification belong to the held managed
-signing (cosign) integration; the statement's detached signature is checked through the Verifier port by the
+Builder trust (which builder ids are allowed), expected-source checks (``externalParameters`` and
+``resolvedDependencies`` naming the expected repository and ref) and DSSE/attestation-bundle verification belong
+to the held managed signing (cosign) integration; the statement's detached signature is checked through the Verifier port by the
 deployment gate.
 """
 

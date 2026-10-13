@@ -7,12 +7,14 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import unittest
 
 import support  # noqa: F401  (puts scripts/ on sys.path)
 import supply_chain_cli as cli
+import supply_chain_common as common
 import supply_chain_support as fakes
 
 
@@ -228,6 +230,26 @@ class GuideTests(unittest.TestCase):
                     self.assertIn("--" + option + " ", usage[0] + " ")
         for option in cli.COMMON:
             self.assertIn("--" + option, guide)
+
+    def test_reports_only_column_matches_the_built_in_rule_severities(self):
+        """Rules below the committed threshold are listed as reporting only, never presented as failing."""
+        threshold = common.RANK[common.load_policy()]
+        below = set()
+        for module in sorted(Path(cli.__file__).resolve().parent.glob("supply_chain_*.py")):
+            for rule, severity in re.findall(r'"(SC-[A-Z0-9-]+)", "(critical|high|medium|low|info)"',
+                                             module.read_text(encoding="utf-8")):
+                if common.RANK[severity] > threshold:
+                    below.add(rule)
+        self.assertIn("SC-COMPOSE-IMAGE-DIGEST", below)
+        guide = (support.ROOT / "SUPPLY_CHAIN.md").read_text(encoding="utf-8")
+        rows = [line.split(" | ") for line in guide.splitlines() if line.startswith("| `")]
+        self.assertEqual(len(rows), len(cli.GATES))
+        documented = set()
+        for row in rows:
+            self.assertEqual(len(row), 4)
+            self.assertEqual(re.findall(r"`(SC-[A-Z0-9-]+)`", row[2]), [])
+            documented.update(re.findall(r"`(SC-[A-Z0-9-]+)`", row[3]))
+        self.assertEqual(documented, below)
 
 
 if __name__ == "__main__":

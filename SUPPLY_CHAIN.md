@@ -11,15 +11,15 @@ proposal awaiting owner confirmation.
 
 ## What is checked
 
-| Gate | Input | Fails on |
-| --- | --- | --- |
-| `compose` | `docker compose config --format json` rendering | privileged, host namespaces, Docker socket, dangerous capabilities, unconfined profiles, non-loopback published ports, images not pinned by digest |
-| `android` | merged release `AndroidManifest.xml` (+ network security config) | debuggable, backup allowed, cleartext traffic, unprotected exported components, legacy storage, user CAs |
-| `trivy` | `trivy image` or `trivy config` JSON (SchemaVersion 2) | `image`: container package (`os-pkgs`, `lang-pkgs`) vulnerabilities at or above the threshold; the report must name the expected `sha256:` digest and contain a package result. `config`: misconfigurations at or above the threshold; every result must be Class `config` with a `MisconfSummary` |
-| `checkov` | `checkov -o json` report (infrastructure-as-code frameworks only) | failed or skipped checks at or above the threshold |
-| `sbom` | artifact file + CycloneDX 1.4-1.6 JSON | incomplete components (name, version, printable `pkg:` purl with a name, strong hash), subject without name or version, a composition declared `incomplete*` or `unknown`, duplicate `bom-ref`, dangling dependency, missing serial number, `metadata.component` SHA-256 not equal to the artifact digest |
-| `provenance` | artifact file + in-toto Statement v1 / SLSA provenance v1 | artifact digest not a subject, missing builder id or build type |
-| `deploy` | artifact + SBOM + provenance + detached signatures | any `sbom`/`provenance` finding, and any member (artifact, SBOM, provenance) unsigned or not accepted by the verifier |
+| Gate | Input | Fails on (`high` and `critical` at the committed threshold) | Reports only (below the threshold) |
+| --- | --- | --- | --- |
+| `compose` | `docker compose config --format json` rendering | privileged, host namespaces, Docker socket, dangerous capabilities, unconfined profiles, non-loopback published ports | images not pinned by digest (`SC-COMPOSE-IMAGE-DIGEST`, medium) |
+| `android` | merged release `AndroidManifest.xml` (+ network security config) | debuggable, backup allowed, cleartext traffic, unprotected exported components (declared or undeclared), user CAs | legacy external storage (`SC-ANDROID-LEGACY-STORAGE`, medium) |
+| `trivy` | `trivy image` or `trivy config` JSON (SchemaVersion 2) | `image`: container package (`os-pkgs`, `lang-pkgs`) vulnerabilities at or above the threshold; the report must name the expected `sha256:` digest and contain a package result. `config`: misconfigurations at or above the threshold; every result must be Class `config` with a `MisconfSummary` | scanner findings below the threshold |
+| `checkov` | `checkov -o json` report (infrastructure-as-code frameworks only) | failed or skipped checks at or above the threshold | scanner findings below the threshold |
+| `sbom` | artifact file + CycloneDX 1.4-1.6 JSON | incomplete components (name, version, printable `pkg:` purl with a name, strong hash), subject without name or version, a composition declared `incomplete*` or `unknown`, duplicate `bom-ref`, dangling dependency, missing serial number, `metadata.component` SHA-256 not equal to the artifact digest | none |
+| `provenance` | artifact file + in-toto Statement v1 / SLSA provenance v1 | artifact digest not a subject, missing builder id or build type | none |
+| `deploy` | artifact + SBOM + provenance + detached signatures | any `sbom`/`provenance` finding, and any member (artifact, SBOM, provenance) unsigned or not accepted by the verifier | none |
 
 Incomplete, errored, empty or malformed inputs are refused (exit 2), never passed: duplicate JSON keys, a BOM,
 `NaN`, DOCTYPE/ENTITY declarations, empty scan results, report counts that disagree with the listed checks, and
@@ -122,8 +122,15 @@ These stay open and are not demonstrated by this source work:
   [docs#23](https://github.com/PenniLogic/docs/issues/23).
 - **Signing custody**: managed key custody, keeping keys away from non-signing build steps, and every signing-key
   or credential action. No key exists in this work.
+- **SBOM and provenance production**: generating a CycloneDX SBOM for every deployable artifact and producing its
+  in-toto/SLSA provenance statement (ticket scope bullet 4 and the appendix "Start here") are not implemented by
+  this source work; these gates only validate documents they are given.
 - **cosign integration**: real signature and attestation (DSSE/bundle) verification, the trust root and the builder
   allow-list. Until then the production verifier is unavailable and `deploy` fails closed.
+- **Expected-source verification**: checking that the SLSA `buildDefinition.externalParameters` and
+  `resolvedDependencies` name the expected source repository and ref is held with the builder allow-list for the
+  cosign integration. The `provenance` gate checks only the subject digest and that a builder id and build type
+  are present; a statement naming an unexpected source passes it today.
 - **CI wiring**: running the gates and real scanners (trivy, checkov, syft or another CycloneDX generator) in CI,
   scanning images before publication and again before deployment, and registering required checks. Workflows are
   generated files owned by the generator owner.
@@ -132,6 +139,8 @@ These stay open and are not demonstrated by this source work:
   these; the gates here only judge the report they are given.
 - **Published result schemas** for the release checklist (scan, SBOM and provenance results): the report shape
   here is proposed, pending infra#28 and infra#23 vocabulary alignment.
+- **Independent reviews**: Core, QA and Release reviews, plus the applicable Security and Privacy reviews (the
+  gates publish outbound reports and observability counts), are PENDING.
 - **T-GOV-03 second reviewer**: independent second-reviewer approval (or an external independent review) is a
   hard merge blocker. Author self-reviews do not count.
 - **[infra#23](https://github.com/PenniLogic/infra/issues/23)**: exception mechanism integration (acceptance
