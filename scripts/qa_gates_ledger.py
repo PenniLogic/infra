@@ -4,8 +4,9 @@ Facts are never edited or removed; new facts are appended to `flake_events`, `qu
 test was fixed) and `deletions` (the test was deleted with recorded reviewer approval on its owning ticket).
 Every record names the manifest job it belongs to. A quarantine needs an owner, an owning ticket and an expiry
 no later than the policy's maximum age, and it must be justified by the policy's number of recorded flake events
-of that test within the flake window ending on its first day, so a real failure cannot be filed under the flaky
-label without recorded flake evidence (E25-F01). Releases and deletions close the active quarantine of the same
+of that test within the flake window ending on its first day and after the last closure of that job and test, so
+a real failure cannot be filed under the flaky label without recorded flake evidence (E25-F01) and evidence is never
+reused for a second quarantine. Releases and deletions close the active quarantine of the same
 job and test with the same ticket; a deletion's approval must be a comment on that ticket by someone other than
 the quarantine owner.
 """
@@ -65,10 +66,15 @@ class Ledger:
     document: dict
     sha256: str
     events_by_test: dict
+    released: dict
 
     def active_for(self, job):
         """Active quarantines of one job, keyed by test identity."""
         return {test: record for (record_job, test), record in self.active.items() if record_job == job}
+
+    def released_for(self, job):
+        """Release dates of tests of one job whose latest closure is a release (not a deletion), by test."""
+        return {test: day for (record_job, test), day in self.released.items() if record_job == job}
 
     def flake_dates(self, test, today, window_days):
         """Dates of recorded events of ``test`` (any job) that are 0 to ``window_days`` days old."""
@@ -133,11 +139,6 @@ def parse_ledger(data, *, manifest, policy, today):
         by_test.setdefault(event.test, []).append(event)
 
     quarantines = [_quarantine(record, manifest, policy, today) for record in document["quarantines"]]
-    for quarantine in quarantines:
-        basis = [event for event in by_test.get(quarantine.test, ())
-                 if 0 <= (quarantine.quarantined_on - event.observed_on).days <= policy.flake_window_days]
-        if len(basis) < policy.quarantine_after_flakes:
-            raise Refused("LEDGER-QUARANTINE-UNJUSTIFIED", quarantine.test)
 
     closures = []
     for record in document["releases"]:
@@ -161,12 +162,19 @@ def parse_ledger(data, *, manifest, policy, today):
         + [(day, 1, index, (record, approver)) for index, (day, record, approver) in enumerate(closures)],
         key=lambda item: item[:3],
     )
-    active = {}
+    active, released, closed_on = {}, {}, {}
     for day, kind, _index, item in timeline:
         if kind == 0:
             key = (item.job, item.test)
             if key in active:
                 raise Refused("LEDGER-OVERLAP", item.test)
+            # Only events after the last closure of this job and test justify a new quarantine (no reuse).
+            basis = [event for event in by_test.get(item.test, ())
+                     if 0 <= (item.quarantined_on - event.observed_on).days <= policy.flake_window_days
+                     and (key not in closed_on or event.observed_on > closed_on[key])]
+            if len(basis) < policy.quarantine_after_flakes:
+                raise Refused("LEDGER-QUARANTINE-UNJUSTIFIED", item.test)
+            released.pop(key, None)
             active[key] = item
             continue
         record, approver = item
@@ -178,8 +186,11 @@ def parse_ledger(data, *, manifest, policy, today):
         if approver is not None and approver.lower() == current.owner.lower():
             raise Refused("LEDGER-SELF-APPROVAL", record["test"])
         del active[key]
+        closed_on[key] = day
+        if approver is None:
+            released[key] = day
     return Ledger(document["repository"], tuple(events), tuple(quarantines), active, document,
-                  hashlib.sha256(data).hexdigest(), {test: tuple(items) for test, items in by_test.items()})
+                  hashlib.sha256(data).hexdigest(), {test: tuple(items) for test, items in by_test.items()}, released)
 
 
 def load_ledger(path, *, manifest, policy, today):

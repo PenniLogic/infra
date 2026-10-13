@@ -41,7 +41,8 @@ class CliTests(unittest.TestCase):
         attempt = self.root / "attempt.xml"
         attempt.write_bytes(qs.junit_xml(qs.cases(("test_case", outcome))))
         code, output = self.run_main("quarantine", "--job", qs.JOB, "--run-id", qs.RUN, "--attempt", str(attempt),
-                                     "--ledger", str(self.ledger), "--manifest", str(self.manifest))
+                                     "--ledger", str(self.ledger), "--manifest", str(self.manifest),
+                                     "--base-ledger", str(self.ledger), "--base-manifest", str(self.manifest))
         return code, json.loads(output)
 
     def test_quarantine_subcommand_exit_codes(self):
@@ -86,7 +87,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.quarantine("passed")[0], 0)
         code, output = self.run_main("quarantine", "--job", qs.JOB, "--run-id", qs.RUN, "--attempt",
                                      str(self.root / "missing.xml"), "--ledger", str(self.ledger),
-                                     "--manifest", str(self.manifest))
+                                     "--manifest", str(self.manifest), "--base-ledger", str(self.ledger),
+                                     "--base-manifest", str(self.manifest))
         self.assertEqual((code, json.loads(output)["reason"]), (2, "INPUT-UNREADABLE"))
 
     def test_help_exits_zero(self):

@@ -1,7 +1,7 @@
 """Quarantine gate for PenniLogic/infra#28 (T-QA-04; E25-F01): flake events, quarantine and its limits.
 
     python scripts/qa_gates_quarantine.py --job JOB --run-id RUN --attempt FIRST.xml [--attempt RETRY.xml]
-        [--ledger PATH] [--manifest PATH] [--base-ledger PATH] [--fix-only PenniLogic/<repo>#N]
+        --base-ledger PATH --base-manifest PATH [--ledger PATH] [--manifest PATH]
 
 Inputs are one JUnit XML report per attempt (the first run, then at most the policy's re-executions of the
 cases that failed), the committed quarantine ledger and the committed protected-tag manifest. The numbers come
@@ -15,8 +15,11 @@ the recorded events of that test within the flake window plus this one reach the
 quarantine with the package owner, a ticket requested through the TicketPort and an expiry at the maximum age;
 security, privacy and money tests are never quarantined. Active quarantines of the job are taken out of the
 gating set, still run and are reported. The run fails when a quarantine is older than the maximum age or past its
-expiry, when a quarantined test is skipped or disappears without an approved deletion record, or when the share
-of quarantined tests exceeds the ceiling, unless `--fix-only` names an active quarantine's ticket.
+expiry, when a quarantined test is skipped or disappears without an approved deletion record (a released test stays
+under that rule for the flake window), when the base-revision ledger or manifest is missing, when the ledger is not
+append-only against it, or when the manifest relaxes a protected test or a money-path job against it. The quarantine
+rate ceiling counts a repository's tests and is judged by scripts/qa_gates_rate.py; this report publishes the job's
+share only.
 
 Exit 0 pass, 1 fail, 2 refused input or usage. stdout carries one ASCII JSON report with static rule codes
 and grammar-validated test identities only (no messages, captured output, paths or file content).
@@ -25,7 +28,6 @@ and grammar-validated test identities only (no messages, captured output, paths 
 import argparse
 import datetime
 from dataclasses import dataclass
-from fractions import Fraction
 import json
 import sys
 from typing import Protocol
@@ -68,13 +70,26 @@ def _utc_today():
     return datetime.datetime.now(datetime.timezone.utc).date()
 
 
-def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticket_port, fix_only=None,
-             base_ledger=None):
+def _relaxations(base_manifest, manifest, job_id, identities):
+    """Tests (and the job, as None) whose protection the head manifest removed compared with the base manifest."""
+    if base_manifest.repository != manifest.repository:
+        return [None]
+    relaxed = []
+    base_job = base_manifest.jobs.get(job_id)
+    if base_job is not None and base_job.money_path and not manifest.jobs[job_id].money_path:
+        relaxed.append(None)
+    for identity in identities:
+        before, after = base_manifest.classify(identity), manifest.classify(identity)
+        if before.state == "known" and after.state == "known" and before.tags - after.tags:
+            relaxed.append(identity)
+    return relaxed
+
+
+def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticket_port, base_ledger=None,
+             base_manifest=None):
     """Combine the attempts with the ledger and the manifest; return the report (refusals raise Refused)."""
     if not isinstance(run_id, str) or RUN_ID.fullmatch(run_id) is None:
         raise Refused("INPUT-RUN-ID")
-    if fix_only is not None and (not isinstance(fix_only, str) or REFERENCE.fullmatch(fix_only) is None):
-        raise Refused("INPUT-FIX-ONLY")
     if type(today) is not datetime.date:
         raise Refused("INPUT-CLOCK")
     job = manifest.jobs.get(job_id) if isinstance(job_id, str) else None
@@ -98,6 +113,14 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
             find("QG-CLASSIFICATION-AMBIGUOUS", "fail", identity)
         elif identity in first and classification.package.id not in job.packages:
             find("QG-JOB-PACKAGE-UNMAPPED", "fail", identity)
+
+    # The head manifest decides protection, so a change must not relax it in the same change (E25-F01): compare
+    # with the base revision's manifest, as the ledger is compared with the base ledger.
+    if base_manifest is None:
+        find("QG-MANIFEST-BASE-MISSING", "fail")
+    else:
+        for identity in _relaxations(base_manifest, manifest, job_id, classes):
+            find("QG-MANIFEST-RELAXED", "fail", identity)
 
     money_path = job.money_path or any(classes[identity].money_path for identity in first)
     allowed = policy.money_path_retry_limit if money_path else policy.retry_limit
@@ -123,6 +146,13 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
         elif outcome == "skipped":
             find("QG-QUARANTINED-NOT-RUN", "fail", test)
         quarantined_tests.append({**record.record(), "age_days": age, "outcome": outcome, "exempt": test in exempt})
+
+    # A release closes a quarantine without approval, so a released test stays under the disappearance rule for
+    # the flake window after its release; only an approved deletion lets a quarantined test go.
+    for test, released_on in sorted(ledger.released_for(job_id).items()):
+        if (today - released_on).days <= policy.flake_window_days and \
+                combination.outcomes.get(test, "missing") in ("missing", "skipped"):
+            find("QG-RELEASED-TEST-MISSING", "fail", test)
 
     events, proposals = [], []
     for test, outcome in combination.outcomes.items():
@@ -163,13 +193,11 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
         find("QG-QUARANTINE-PROPOSED", "fail", test)
 
     tests = len(first)
-    exceeded = Fraction(len(active) * 100, tests) > policy.quarantine_rate_ceiling_percent
-    bound = fix_only is not None and any(record.ticket_ref == fix_only for record in ledger.active.values())
-    if fix_only is not None and not bound:
-        find("QG-FIX-ONLY-UNBOUND", "fail")
-    if exceeded:
-        find("QG-QUARANTINE-RATE", "report" if bound else "fail")
-    if base_ledger is not None and not ledgers.is_append_only(base_ledger, ledger):
+    if all(outcome == "skipped" for outcome in combination.outcomes.values()):
+        find("QG-NOTHING-RAN", "fail")
+    if base_ledger is None:
+        find("QG-LEDGER-BASE-MISSING", "fail")
+    elif not ledgers.is_append_only(base_ledger, ledger):
         find("QG-LEDGER-NOT-APPEND-ONLY", "fail")
 
     counts = {state: sum(outcome == state for outcome in combination.outcomes.values()) for state in OUTCOMES}
@@ -184,16 +212,18 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
                          for attempt in attempts],
             "ledger_sha256": ledger.sha256, "base_ledger_sha256": None if base_ledger is None else base_ledger.sha256,
             "manifest_sha256": manifest.sha256, "manifest_status": manifest.status,
+            "base_manifest_sha256": None if base_manifest is None else base_manifest.sha256,
             "ticket_creation": "held" if isinstance(ticket_port, HeldTicketPort) else "injected",
         },
         "retry": {"money_path": money_path, "allowed_reexecutions": allowed,
                   "observed_reexecutions": combination.observed_reexecutions,
                   "reexecuted_tests": len(combination.reexecuted)},
         "counts": {"tests": tests, **counts},
-        "flake_rate": {"flaky": counts["flaky"], "tests": tests, "basis_points": counts["flaky"] * 10000 // tests},
-        "quarantine_rate": {"quarantined": len(active), "tests": tests,
-                            "basis_points": len(active) * 10000 // tests, "exceeded": exceeded,
-                            "fix_only": fix_only, "fix_only_bound": bound},
+        # Job scope, basis points rounded down; the repository rates and the ceiling are in qa_gates_rate.py.
+        "flake_rate": {"scope": "job", "flaky": counts["flaky"], "tests": tests,
+                       "basis_points": counts["flaky"] * 10000 // tests},
+        "quarantine_rate": {"scope": "job", "quarantined": len(active), "tests": tests,
+                            "basis_points": len(active) * 10000 // tests},
         "quarantined_tests": quarantined_tests,
         "findings": sorted(findings, key=lambda finding: (finding["rule"], finding["test"] or "")),
         "ledger_delta": {"flake_events": sorted(events, key=lambda event: event["test"]),
@@ -207,6 +237,9 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _arguments(argv):
+    # Help only alone: a help token inside a gate command must not turn it into exit 0 without evaluation.
+    if any(argument in ("-h", "--help") for argument in argv) and len(argv) > 1:
+        raise Refused("USAGE")
     parser = _Parser(prog="qa_gates_quarantine.py", description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--job", required=True)
     parser.add_argument("--run-id", required=True)
@@ -214,7 +247,7 @@ def _arguments(argv):
     parser.add_argument("--ledger", default=str(ledgers.LEDGER_FILE))
     parser.add_argument("--manifest", default=str(tags.MANIFEST_FILE))
     parser.add_argument("--base-ledger")
-    parser.add_argument("--fix-only")
+    parser.add_argument("--base-manifest")
     return parser.parse_args(argv)
 
 
@@ -223,8 +256,6 @@ def main(argv=None, *, clock=None, ticket_port=None):
         arguments = _arguments(sys.argv[1:] if argv is None else argv)
         if RUN_ID.fullmatch(arguments.run_id) is None:
             raise Refused("INPUT-RUN-ID")
-        if arguments.fix_only is not None and REFERENCE.fullmatch(arguments.fix_only) is None:
-            raise Refused("INPUT-FIX-ONLY")
         if len(arguments.attempt) > MAX_ATTEMPTS:
             raise Refused("INPUT-ATTEMPTS")
         today = (clock or _utc_today)()
@@ -235,13 +266,13 @@ def main(argv=None, *, clock=None, ticket_port=None):
         ledger = ledgers.load_ledger(arguments.ledger, manifest=manifest, policy=policy, today=today)
         base = None if arguments.base_ledger is None else ledgers.load_ledger(
             arguments.base_ledger, manifest=manifest, policy=policy, today=today)
+        base_manifest = None if arguments.base_manifest is None else tags.load_manifest(arguments.base_manifest)
         attempts = [junit.parse_attempt(read_bounded(path, junit.MAX_BYTES, "INPUT-UNREADABLE"))
                     for path in arguments.attempt]
         report = evaluate(policy=policy, manifest=manifest, ledger=ledger, attempts=attempts,
                           job_id=arguments.job, run_id=arguments.run_id, today=today,
                           ticket_port=HeldTicketPort() if ticket_port is None else ticket_port,
-                          fix_only=arguments.fix_only,
-                          base_ledger=base)
+                          base_ledger=base, base_manifest=base_manifest)
     except Refused as error:
         report = {"schema": REPORT_SCHEMA, "decision": "refused", "reason": error.code, "test": error.test}
     print(json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=True))

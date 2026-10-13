@@ -68,7 +68,7 @@ class OutcomeTests(GateCase):
                              port=port)
         self.assertFindings(report, [("QG-FLAKE-EVENT", "fail", A)], "fail")
         self.assertEqual(report["counts"], {"tests": 2, "passed": 1, "failed": 0, "flaky": 1, "skipped": 0})
-        self.assertEqual(report["flake_rate"], {"flaky": 1, "tests": 2, "basis_points": 5000})
+        self.assertEqual(report["flake_rate"], {"scope": "job", "flaky": 1, "tests": 2, "basis_points": 5000})
         self.assertEqual(report["ledger_delta"]["flake_events"],
                          [{"test": A, "job": qs.JOB, "run_id": qs.RUN, "observed_on": qs.day(0)}])
         self.assertEqual(report["ledger_delta"]["quarantines"], [])
@@ -302,26 +302,44 @@ class QuarantinedTestTests(GateCase):
         self.assertFindings(qs.run_gate(failing, ledger_doc=released), [("QG-REAL-FAILURE", "fail", A)], "fail")
 
 
-class RateTests(GateCase):
-    def test_quarantine_rate_boundary_two_percent(self):
-        at_ceiling = qs.run_gate(run(("test_a", "passed"), filler=FILLER), ledger_doc=quarantined_a())
-        self.assertFindings(at_ceiling, [], "pass")
-        self.assertEqual(at_ceiling["quarantine_rate"], {"quarantined": 1, "tests": 50, "basis_points": 200,
-                                                         "exceeded": False, "fix_only": None, "fix_only_bound": False})
-        over = qs.run_gate(run(("test_a", "passed"), filler=FILLER[:-1]), ledger_doc=quarantined_a())
-        self.assertFindings(over, [("QG-QUARANTINE-RATE", "fail", None)], "fail")
-        self.assertEqual((over["quarantine_rate"]["tests"], over["quarantine_rate"]["exceeded"]), (49, True))
+    def test_released_test_cannot_disappear_within_the_window(self):
+        # Review round 1, PS-3 / ADVSEC-R1-03: a release needs no approval, so it must not bypass the deletion rule.
+        released = quarantined_a()
+        released["releases"].append(qs.release(A, -1))
+        self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=released), [], "pass")
+        report = qs.run_gate(run(("test_b", "passed")), ledger_doc=released)
+        self.assertFindings(report, [("QG-RELEASED-TEST-MISSING", "fail", A)], "fail")
 
-    def test_fix_only_exemption_requires_an_explicit_bound_input(self):
-        attempt = run(("test_a", "passed"), filler=FILLER[:-1])
-        self.assertFindings(qs.run_gate(attempt, ledger_doc=quarantined_a()), [("QG-QUARANTINE-RATE", "fail", None)],
-                            "fail")
-        exempt = qs.run_gate(attempt, ledger_doc=quarantined_a(), fix_only=qs.TICKET)
-        self.assertFindings(exempt, [("QG-QUARANTINE-RATE", "report", None)], "pass")
-        self.assertTrue(exempt["quarantine_rate"]["fix_only_bound"])
-        unbound = qs.run_gate(attempt, ledger_doc=quarantined_a(), fix_only=qs.OTHER_TICKET)
-        self.assertFindings(unbound, [("QG-QUARANTINE-RATE", "fail", None), ("QG-FIX-ONLY-UNBOUND", "fail", None)],
-                            "fail")
+    def test_released_test_skipped_within_the_window_fails(self):
+        released = quarantined_a()
+        released["releases"].append(qs.release(A, -1))
+        report = qs.run_gate(run(("test_a", "skipped")), ledger_doc=released)
+        self.assertFindings(report, [("QG-RELEASED-TEST-MISSING", "fail", A)], "fail")
+
+    def test_released_test_may_disappear_after_the_window(self):
+        released = quarantined_a(start=-17)
+        released["releases"].append(qs.release(A, -15))
+        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=released), [], "pass")
+        released["releases"][0]["released_on"] = qs.day(-14)
+        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=released),
+                            [("QG-RELEASED-TEST-MISSING", "fail", A)], "fail")
+
+    def test_deletion_after_release_requarantine_allows_disappearance(self):
+        ledger = quarantined_a(start=-10)
+        ledger["releases"].append(qs.release(A, -9))
+        ledger["flake_events"] += [qs.event(A, -3, run="synthetic-again"), qs.event(A, -3, run="synthetic-twice")]
+        ledger["quarantines"].append(qs.quarantine(A, -3, ticket=qs.OTHER_TICKET))
+        ledger["deletions"].append(qs.deletion(A, -1, ticket=qs.OTHER_TICKET,
+                                               approval=qs.APPROVAL.replace("/900001#", "/900002#")))
+        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=ledger), [], "pass")
+
+
+class NothingRanTests(GateCase):
+    def test_all_skipped_first_attempt_fails(self):
+        # Review round 1, ADVSEC-R1-10: a report in which nothing ran is not a pass.
+        self.assertFindings(qs.run_gate(qs.cases(("test_a", "passed"), ("test_b", "skipped"))), [], "pass")
+        report = qs.run_gate(qs.cases(("test_a", "skipped"), ("test_b", "skipped")))
+        self.assertFindings(report, [("QG-NOTHING-RAN", "fail", None)], "fail")
 
 
 class LedgerInputTests(GateCase):
@@ -332,6 +350,32 @@ class LedgerInputTests(GateCase):
         report = qs.run_gate(attempt, ledger_doc=qs.ledger_document(), base_doc=base)
         self.assertFindings(report, [("QG-LEDGER-NOT-APPEND-ONLY", "fail", None)], "fail")
         self.assertIsNotNone(report["inputs"]["base_ledger_sha256"])
+
+    def test_missing_base_ledger_or_base_manifest_fails(self):
+        # Review round 1, ADVSEC-R1-05 / ADVSEC-R1-04: append-only and no-relaxation hold by default.
+        attempt = qs.cases(("test_a", "passed"))
+        self.assertFindings(qs.run_gate(attempt), [], "pass")
+        self.assertFindings(qs.run_gate(attempt, base_doc=None), [("QG-LEDGER-BASE-MISSING", "fail", None)], "fail")
+        self.assertFindings(qs.run_gate(attempt, base_manifest_doc=None),
+                            [("QG-MANIFEST-BASE-MISSING", "fail", None)], "fail")
+
+    def test_manifest_relaxed_in_the_same_change_fails(self):
+        # Review round 1, ADVSEC-R1-04: removing a protected tag must not let its test be quarantined.
+        security = qs.identity(qs.SECURITY, "test_rejects_untrusted")
+        attempt = [(qs.SECURITY, "test_rejects_untrusted", "passed")] + list(FILLER)
+        self.assertFindings(qs.run_gate(attempt), [], "pass")
+        relaxed = qs.manifest_document()
+        relaxed["rules"][1]["tags"] = []
+        report = qs.run_gate(attempt, manifest_doc=relaxed, base_manifest_doc=qs.manifest_document())
+        self.assertFindings(report, [("QG-MANIFEST-RELAXED", "fail", security)], "fail")
+
+    def test_money_path_job_relaxed_in_the_same_change_fails(self):
+        attempt = qs.cases(("test_a", "passed"))
+        self.assertFindings(qs.run_gate(attempt, job=qs.MONEY_JOB), [], "pass")
+        relaxed = qs.manifest_document()
+        relaxed["jobs"][1]["packages"] = ["infra.tooling"]
+        report = qs.run_gate(attempt, job=qs.MONEY_JOB, manifest_doc=relaxed, base_manifest_doc=qs.manifest_document())
+        self.assertFindings(report, [("QG-MANIFEST-RELAXED", "fail", None)], "fail")
 
     def test_reused_run_id_and_unknown_job_refused(self):
         ledger = qs.ledger_document(events=[qs.event(A, -1, run="synthetic-history-used")])
@@ -344,12 +388,11 @@ class LedgerInputTests(GateCase):
                     qs.run_gate(attempt, ledger_doc=ledger, **options)
                 self.assertEqual(caught.exception.code, code)
 
-    def test_evaluate_validates_run_id_fix_only_clock_and_job(self):
+    def test_evaluate_validates_run_id_clock_and_job(self):
         attempt = qs.cases(("test_a", "passed"))
         self.assertEqual(qs.run_gate(attempt)["decision"], "pass")
         for code, options in (
             ("INPUT-RUN-ID", {"run_id": "synthetic run"}), ("INPUT-RUN-ID", {"run_id": None}),
-            ("INPUT-FIX-ONLY", {"fix_only": "infra#28"}),
             ("INPUT-CLOCK", {"today": datetime.datetime(2026, 3, 16, tzinfo=datetime.timezone.utc)}),
             ("MANIFEST-UNKNOWN-JOB", {"job": ["synthetic-job"]}),
         ):
@@ -397,7 +440,8 @@ class CliTests(unittest.TestCase):
         ledger = self.write("ledger.json", qs.encode(qs.ledger_document()))
         if attempts is None:
             attempts = [self.write("attempt-1.xml", qs.junit_xml(qs.cases(("test_a", "passed"))))]
-        argv = ["--job", qs.JOB, "--run-id", qs.RUN, "--manifest", manifest, "--ledger", ledger]
+        argv = ["--job", qs.JOB, "--run-id", qs.RUN, "--manifest", manifest, "--ledger", ledger,
+                "--base-ledger", ledger, "--base-manifest", manifest]
         for path in attempts:
             argv += ["--attempt", path]
         return argv + list(extra)
@@ -426,7 +470,9 @@ class CliTests(unittest.TestCase):
         attempt = self.write("attempt-x.xml", qs.junit_xml(qs.cases(("test_a", "passed"))))
         for code_name, argv in (
             ("INPUT-RUN-ID", [arg if arg != qs.RUN else "bad run id" for arg in self.synthetic_argv()]),
-            ("INPUT-FIX-ONLY", self.synthetic_argv("--fix-only", "infra#28")),
+            ("USAGE", self.synthetic_argv("--fix-only", qs.TICKET)),
+            ("USAGE", self.synthetic_argv("--help")),
+            ("USAGE", self.synthetic_argv("-h")),
             ("INPUT-ATTEMPTS", self.synthetic_argv(attempts=[attempt] * (gate.MAX_ATTEMPTS + 1))),
         ):
             with self.subTest(code=code_name):
@@ -447,7 +493,9 @@ class CliTests(unittest.TestCase):
         infra_cases = [("test_integration_stack.StackLifecycleTests", "test_x", "passed"),
                        ("test_bootstrap.EnvFileTests", "test_y", "passed")]
         attempt = self.write("infra.xml", qs.junit_xml(infra_cases, suite="unittest"))
-        code, report = self.main(["--job", "infra-ci-linux", "--run-id", "synthetic-infra-run", "--attempt", attempt])
+        committed = ["--base-ledger", str(ledgers.LEDGER_FILE), "--base-manifest", str(tags.MANIFEST_FILE)]
+        code, report = self.main(["--job", "infra-ci-linux", "--run-id", "synthetic-infra-run", "--attempt", attempt,
+                                  *committed])
         self.assertEqual((code, report["decision"], report["findings"]), (0, "pass", []))
         self.assertEqual(report["inputs"]["manifest_sha256"],
                          hashlib.sha256(tags.MANIFEST_FILE.read_bytes()).hexdigest())
@@ -466,7 +514,8 @@ class CliTests(unittest.TestCase):
                  ("test_bootstrap.EnvFileTests", "test_y", "passed")]
         attempts = [self.write("i1.xml", qs.junit_xml(first, suite="unittest")),
                     self.write("i2.xml", qs.junit_xml([(first[0][0], "test_x", "passed")], suite="unittest"))]
-        argv = ["--job", "infra-ci-linux", "--run-id", "synthetic-infra-run", "--ledger", ledger]
+        argv = ["--job", "infra-ci-linux", "--run-id", "synthetic-infra-run", "--ledger", ledger,
+                "--base-ledger", ledger, "--base-manifest", str(tags.MANIFEST_FILE)]
         for path in attempts:
             argv += ["--attempt", path]
         code, report = self.main(argv, port=qs.FakeTicketPort())

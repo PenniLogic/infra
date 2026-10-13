@@ -83,7 +83,7 @@ class QuarantineRecordTests(LedgerCase):
         document = quarantined_ledger()
         document["releases"].append(qs.release(TEST, -2))
         document["quarantines"].append(qs.quarantine(TEST, -1, ticket=qs.OTHER_TICKET))
-        document["flake_events"].append(qs.event(TEST, -1, run="synthetic-again"))
+        document["flake_events"] += [qs.event(TEST, -1, run="synthetic-again"), qs.event(TEST, -1, run="synthetic-twice")]
         self.assertEqual(parse(document).active[(qs.JOB, TEST)].ticket_ref, qs.OTHER_TICKET)
         document["releases"] = []
         self.assertRefused("LEDGER-OVERLAP", document, TEST)
@@ -92,10 +92,22 @@ class QuarantineRecordTests(LedgerCase):
         document = quarantined_ledger()
         document["releases"].append(qs.release(TEST, -2))
         document["quarantines"].append(qs.quarantine(TEST, -1, ticket=qs.OTHER_TICKET))
-        document["flake_events"].append(qs.event(TEST, -1, run="synthetic-again"))
+        document["flake_events"] += [qs.event(TEST, -1, run="synthetic-again"), qs.event(TEST, -1, run="synthetic-twice")]
         parse(document)
         document["releases"][0]["released_on"] = qs.day(-1)
         self.assertRefused("LEDGER-OVERLAP", document, TEST)
+
+
+    def test_events_before_a_release_do_not_justify_a_new_quarantine(self):
+        # Review round 1, ADVSEC-R1-06: pre-release events must not stretch the 14-day maximum to about 28 days.
+        events = [qs.event(TEST, -27, run="synthetic-runA"), qs.event(TEST, -27, run="synthetic-runB")]
+        fresh = [qs.event(TEST, -13, run="synthetic-runC"), qs.event(TEST, -13, run="synthetic-runD")]
+        second = qs.quarantine(TEST, -13, ticket=qs.OTHER_TICKET)
+        control = qs.ledger_document(events + fresh, [qs.quarantine(TEST, -27), second], [qs.release(TEST, -14)])
+        parse(control)
+        mutated = qs.ledger_document(events + fresh[:1], [qs.quarantine(TEST, -27), second], [qs.release(TEST, -14)])
+        mutated["flake_events"].append(qs.event(TEST, -14, run="synthetic-runD"))
+        self.assertRefused("LEDGER-QUARANTINE-UNJUSTIFIED", mutated, TEST)
 
 
 class ClosureTests(LedgerCase):

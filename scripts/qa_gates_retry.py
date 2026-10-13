@@ -235,6 +235,9 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _arguments(argv):
+    # Help only alone: a help token inside a check command must not turn it into exit 0 without evaluation.
+    if any(argument in ("-h", "--help") for argument in argv) and len(argv) > 1:
+        raise Refused("USAGE")
     parser = _Parser(prog="qa_gates_retry.py", description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument("--root", default=str(ROOT))
     parser.add_argument("--workflow", action="append", default=[])

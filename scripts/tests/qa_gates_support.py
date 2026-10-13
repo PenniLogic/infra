@@ -160,15 +160,24 @@ def parse_inputs(manifest_doc=None, ledger_doc=None, *, today=TODAY):
     return policy, manifest, ledger
 
 
-def run_gate(*attempt_cases, ledger_doc=None, manifest_doc=None, job=JOB, today=TODAY, port=None, fix_only=None,
-             base_doc=None, run_id=RUN):
+SAME = object()
+
+
+def run_gate(*attempt_cases, ledger_doc=None, manifest_doc=None, job=JOB, today=TODAY, port=None,
+             base_doc=SAME, run_id=RUN, base_manifest_doc=SAME):
+    """``base_doc``/``base_manifest_doc``: SAME (default) compares with the head document itself, None omits it."""
     policy, manifest, ledger = parse_inputs(manifest_doc, ledger_doc, today=today)
+    if base_doc is SAME:
+        base_doc = ledger_doc if ledger_doc is not None else ledger_document()
     base = None if base_doc is None else ledgers.parse_ledger(encode(base_doc), manifest=manifest, policy=policy,
                                                               today=today)
+    if base_manifest_doc is SAME:
+        base_manifest_doc = manifest_doc if manifest_doc is not None else manifest_document()
+    base_manifest = None if base_manifest_doc is None else tags.parse_manifest(encode(base_manifest_doc))
     attempts = [junit.parse_attempt(junit_xml(items)) for items in attempt_cases]
     return gate.evaluate(policy=policy, manifest=manifest, ledger=ledger, attempts=attempts, job_id=job,
                          run_id=run_id, today=today, ticket_port=FakeTicketPort() if port is None else port,
-                         fix_only=fix_only, base_ledger=base)
+                         base_ledger=base, base_manifest=base_manifest)
 
 
 def findings(report):

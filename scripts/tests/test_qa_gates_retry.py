@@ -201,6 +201,11 @@ class MainTests(unittest.TestCase):
             "INPUT-PATH": ("--workflow", "ci.yml"),
             "INPUT-UNREADABLE": ("--workflow", ".github/workflows/missing.yml"),
         }
+        # Review round 1, ADVSEC-R1-11: a help token inside a check command is refused, not exit 0.
+        for token in ("--help", "-h"):
+            with self.subTest(token=token):
+                self.assertEqual(self.run_main("--workflow", CI, token),
+                                 (2, {"schema": retry.REPORT_SCHEMA, "decision": "refused", "reason": "USAGE"}))
         for code, arguments in cases.items():
             with self.subTest(code=code):
                 self.assertEqual(self.run_main(*arguments), (2, {"schema": retry.REPORT_SCHEMA,

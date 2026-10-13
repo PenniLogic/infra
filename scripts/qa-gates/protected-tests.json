@@ -451,6 +451,17 @@
         "security"
       ],
       "reason": "Smoke protocol handling including credential redaction"
+    },
+    {
+      "id": "PT-042",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_rate",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Repository quarantine-rate ceiling of the E25-F01 quarantine gate"
     }
   ],
   "jobs": [
