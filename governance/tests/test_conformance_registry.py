@@ -142,22 +142,25 @@ class RegistryTests(unittest.TestCase):
 
     def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
+        self.assertEqual("cf96bdb7b19610ebe2fb0c7fc3de6748b53de9e4", entry["workflow_ref"])
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")
         self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
         self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
         with tempfile.TemporaryDirectory(prefix="api-registry-source-") as temporary:
             root = Path(temporary)
             for relative in ("generate.py", "repository-profiles.json", "templates/check_repository.py",
-                             "templates/api_ci_checker.py"):
+                             "templates/api_ci_checker.py", "templates/qualify_windows.py"):
                 committed = subprocess.run(
                     ["git", "--no-pager", "show", entry["workflow_ref"] + ":governance/" + relative],
                     cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
                     capture_output=True, check=False, timeout=30,
                 )
-                self.assertEqual(0, committed.returncode, "the API binding must contain every checker source")
+                self.assertEqual(0, committed.returncode, "the API binding must contain every checker and qualifier source")
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(committed.stdout)
+            self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(),
+                             (root / "templates/qualify_windows.py").read_bytes())
             historical = generator_module.load(root / "generate.py", name="api_registry_source")
             self.assertEqual(support.generator.checker("api"), historical.checker("api"))
 
@@ -180,12 +183,12 @@ class RegistryTests(unittest.TestCase):
 
     def test_previous_api_ref_cannot_bind_the_observer_pair_opt_in(self):
         current = json.loads(support.generator.workflow("api"))
-        previous = registry.render_workflow_at(
-            support.GOVERNANCE.parent, "0f5f7b7ce4baa8206add295ce0adee03292a5b20", "api",
-        )
-        self.assertIsNotNone(previous, "the accepted pre-observer source must exist in real history")
-        self.assertNotEqual(current, json.loads(previous))
-        self.assertEqual(json.loads(previous), remove_observer_pair(self, copy.deepcopy(current)))
+        for ref in ("0f5f7b7ce4baa8206add295ce0adee03292a5b20", "822c5a501879b5224a4e0020c5e84157749e9071"):
+            with self.subTest(ref=ref):
+                previous = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
+                self.assertIsNotNone(previous, "the accepted pre-observer source must exist in real history")
+                self.assertNotEqual(current, json.loads(previous))
+                self.assertEqual(json.loads(previous), remove_observer_pair(self, copy.deepcopy(current)))
 
     def test_android_workflow_ref_exists_and_renders_the_exact_combined_caller(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")
