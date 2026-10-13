@@ -50,6 +50,8 @@ DEPENDENCY_MAPS = frozenset({
     "dependencies", "devdependencies", "peerdependencies", "optionaldependencies", "bundleddependencies",
     "bundledependencies", "overrides", "resolutions",
 })
+# Maps whose keys are labels (package.json script names): only their values are read.
+LABEL_MAPS = frozenset({"scripts"})
 SEPARATORS = re.compile(r"[\s'\"`;|&()<>]+")
 
 
@@ -141,6 +143,10 @@ def constructs(node, depth=0, dependencies=False):
                     found.append(("report", None))
                 if isinstance(value, (dict, list)):
                     found.extend(constructs(value, depth + 1, True))
+                continue
+            if normalize(key) in LABEL_MAPS and isinstance(value, dict):
+                for command in value.values():
+                    found.extend(constructs(command, depth + 2))
                 continue
             construct = _named(key, value)
             if construct is not None:

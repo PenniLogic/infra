@@ -78,6 +78,7 @@ values; it never matches substrings of free text.
   retry action without an attempt input, an unknown retry flag) is `RETRY-UNKNOWN`. Gradle's `--rerun-tasks` and
   `--rerun` force a task to run again and are not retries of a failure.
 - Reported only: a retry-shaped name inside a dependency map (`dependencies`, `devDependencies`, `overrides`, ...).
+- Script names in a `scripts` map (for example `test:flaky`) are labels: only the commands are read.
 
 | Rule | Effect | Meaning |
 |------|--------|---------|

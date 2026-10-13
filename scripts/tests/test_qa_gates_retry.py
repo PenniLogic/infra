@@ -65,6 +65,10 @@ class DocumentConstructTests(unittest.TestCase):
         self.assertEqual(retry.constructs({"devDependencies": {"vitest": "1.0.0"}}), [])
         self.assertEqual(retry.constructs({"devDependencies": {"p-retry": "1.0.0"}}), [("report", None)])
 
+    def test_script_names_are_labels(self):
+        self.assertEqual(retry.constructs({"scripts": {"test:flaky": "vitest run"}}), [])
+        self.assertEqual(retry.constructs({"scripts": {"test:flaky": "vitest run --retry 2"}}), [("count", 2)])
+
     def test_depth_is_bounded(self):
         node = {}
         for _ in range(retry.MAX_DEPTH):
