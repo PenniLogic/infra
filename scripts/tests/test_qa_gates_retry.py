@@ -437,3 +437,96 @@ class WorkflowInputTests(unittest.TestCase):
         for arguments in (("--runner-config", "package.json"), ("--workflow", other)):
             with self.subTest(arguments=arguments):
                 self.assertEqual(self.run_main(*arguments), (2, refused))
+
+
+class RoundThreeTokenTests(unittest.TestCase):
+    # Review round 3, ADVSEC-R3-01: GitHub evaluates an expression before the shell, so flags and wrapper words in
+    # its string literals are read; an expression used as a flag's value still fails closed.
+    def test_flags_inside_expression_literals_are_read(self):
+        cases = {
+            "pytest ${{ '--reruns=5' }}": [("count", 5)],
+            "pytest ${{ runner.os == 'Linux' && '--reruns 3' || '' }}": [("count", 3)],
+            "pytest ${{ runner.os == 'Linux' && '--quiet' || '' }}": [],
+            "pytest ${{ format('--reruns={0}', 5) }}": [("unknown", None)],
+            "${{ 'retry' }} --times 3 -- pytest": [("unknown", None)],
+            "pytest --reruns ${{ inputs.n }}": [("unknown", None)],
+            "echo ${{ github.sha }} ${{ 'it''s' }}": [],
+            "echo ${{ github.sha": [("unknown", None)],
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(retry.command_constructs(command, True), expected)
+        control = judge(one_job({"run": "pytest", "env": {"PYTEST_ADDOPTS": "${{ '--quiet' }}"}}),
+                        manifest_doc=plain_manifest())
+        self.assertEqual((control["decision"], rules(control)), ("pass", []))
+        report = judge(one_job({"run": "pytest", "env": {"PYTEST_ADDOPTS": "${{ '--reruns=5' }}"}}),
+                       manifest_doc=plain_manifest())
+        self.assertEqual((report["decision"], rules(report)), ("fail", [("RETRY-LIMIT-EXCEEDED", "ci", 5)]))
+
+    # Review round 3, ADVSEC-R3-07: gh.exe, `$''`/`$""` inside a flag, and a wrapper inside a retry action command.
+    def test_token_variants_fail_closed_or_are_joined(self):
+        self.assertEqual(retry.command_constructs("gh.exe run list"), [])
+        for command in ("gh.exe run rerun $ID --failed", "C:\\tools\\GH.EXE run rerun 1", "/opt/bin/gh run rerun 1"):
+            with self.subTest(command=command):
+                self.assertEqual(retry.command_constructs(command), [("unknown", None)])
+        self.assertEqual(retry.command_constructs("pytest --re''runs 5"), [("count", 5)])
+        for command in ("pytest --re$''runs 5", 'pytest --re$""runs 5'):
+            with self.subTest(command=command):
+                self.assertEqual(retry.command_constructs(command), [("count", 5)])
+        inputs = {"max_attempts": 2, "timeout_minutes": 10}
+        control = {"uses": "nick-fields/retry@v3", "with": {**inputs, "command": "./run.sh -- pytest"}}
+        self.assertEqual(retry.constructs(control), [("wrap", 1, ())])
+        for key in ("command", "on_retry_command", "new_command_on_retry"):
+            with self.subTest(key=key):
+                step = {"uses": "nick-fields/retry@v3", "with": {**inputs, key: "./retry.sh --times 5 -- pytest"}}
+                self.assertEqual(retry.constructs(step), [("wrap", 1, (("unknown", None),))])
+
+    # Review round 3, ADVSEC-R3-09: the expression and `gh` scans are linear; a value at CONFIG_LIMIT is quick.
+    def test_scans_are_linear(self):
+        import time
+        started = time.monotonic()
+        self.assertEqual(retry.command_constructs("${{" * (retry.CONFIG_LIMIT // 3)), [("unknown", None)])
+        many = retry.command_constructs("gh run rerun " * (retry.CONFIG_LIMIT // 13))
+        self.assertEqual(set(many), {("unknown", None)})
+        self.assertLess(time.monotonic() - started, 10)
+
+
+class InheritedEnvironmentTests(unittest.TestCase):
+    # Review round 3, PS-1: a wrapped command inherits workflow env, job env and $GITHUB_ENV exports, so their
+    # in-runner retries multiply with the wrapper as step env does; an unwrapped step keeps them as alternatives.
+    WRAP = {"uses": "nick-fields/retry@v3", "with": {"max_attempts": 2, "timeout_minutes": 10, "command": "pytest"}}
+    ENV = {"PYTEST_ADDOPTS": "--reruns 1"}
+    EXPORT = {"run": 'echo "PYTEST_ADDOPTS=--reruns 1" >> "$GITHUB_ENV"'}
+
+    def check(self, document, expected):
+        report = judge(document, manifest_doc=plain_manifest())
+        self.assertEqual(report["checked"][0]["re_executions"], expected)
+        return report
+
+    def test_wrapper_compounds_every_inherited_environment(self):
+        shapes = {
+            "step": one_job({**self.WRAP, "env": self.ENV}),
+            "job": one_job(self.WRAP, env=self.ENV),
+            "workflow": {**one_job(self.WRAP), "env": self.ENV},
+            "github_env": one_job(self.EXPORT, self.WRAP),
+        }
+        for shape, document in shapes.items():
+            with self.subTest(shape=shape):
+                report = self.check(document, 3)
+                self.assertEqual(rules(report), [("RETRY-LIMIT-EXCEEDED", "ci", 3)])
+        self.assertEqual(rules(self.check(one_job(self.WRAP), 1)), [])
+
+    def test_unwrapped_step_keeps_environment_as_an_alternative(self):
+        for document in (one_job({"run": "pytest"}, env=self.ENV), {**one_job({"run": "pytest"}), "env": self.ENV},
+                         one_job(self.EXPORT, {"run": "pytest"})):
+            with self.subTest(document=document):
+                self.assertEqual(rules(self.check(document, 1)), [])
+
+    def test_wrapper_compounds_the_runner_configuration(self):
+        wrapped = {**self.WRAP, "with": {**self.WRAP["with"], "command": "npm test"}}
+        runner = [("package.json", {"scripts": {"test": "vitest run --retry 1"}})]
+        control = judge(one_job({"run": "npm test"}), manifest_doc=plain_manifest(), runner_configs=runner)
+        self.assertEqual((control["checked"][0]["re_executions"], rules(control)), (0, []))
+        report = judge(one_job(wrapped), manifest_doc=plain_manifest(), runner_configs=runner)
+        self.assertEqual((report["checked"][0]["re_executions"], rules(report)),
+                         (3, [("RETRY-LIMIT-EXCEEDED", "ci", 3)]))

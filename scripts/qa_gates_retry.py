@@ -14,8 +14,10 @@ matches free-text substrings. Known constructs (`--reruns`, `--retry`, `--retrie
 `rerunFailingTestsCount`, `retry`/`retries`/`max_attempts` keys, retry actions such as nick-fields/retry) are counted
 as re-executions. Only a known wrapper multiplies what it wraps (a retry action and the rest of its step); every
 other combination is an alternative and the largest applies (independent steps, package.json scripts, commands of
-one shell string, several flags of one command, workflow or job `env` against the step commands). Flags inside
-`NAME=value` values (PYTEST_ADDOPTS, MAVEN_ARGS, `-o addopts=`) are read. A retry-shaped key, flag or action whose
+one shell string, several flags of one command, workflow or job `env` against unwrapped step commands); a wrapper
+also multiplies what its command inherits (workflow and job `env`, `$GITHUB_ENV` writes, checked runner
+configurations). Flags inside `NAME=value` values (PYTEST_ADDOPTS, MAVEN_ARGS, `-o addopts=`) and string literals
+of `${{ }}` expressions are read. A retry-shaped key, flag or action whose
 count cannot be read, a workflow or job re-run request (`gh run rerun`, the rerun REST endpoints) and a retry-shaped
 command word of a command line fail closed (RETRY-UNKNOWN). Every workflow file the manifest maps must be among the
 inputs (INPUT-WORKFLOWS-MISSING otherwise). A job the manifest does not map takes the manifest's
@@ -59,6 +61,8 @@ NOT_RETRY = frozenset({
     "reruntasks", "rerun", "rerunsdelay", "onlyrerun", "retryon", "retrywaitseconds", "retryonexitcode",
     "onretrycommand", "warningonretry", "newcommandonretry",
 })
+# Normalized inputs of a retry action that carry a command line (nick-fields/retry).
+COMMAND_INPUTS = frozenset({"command", "onretrycommand", "newcommandonretry"})
 SHAPES = ("retry", "retries", "rerun", "attempt", "flaky")
 DEPENDENCY_MAPS = frozenset({
     "dependencies", "devdependencies", "peerdependencies", "optionaldependencies", "bundleddependencies",
@@ -70,13 +74,17 @@ SEPARATORS = re.compile(r"[\s'\"`;|&()<>]+")
 # Commands of one shell string run one after another; their retries do not wrap each other.
 COMMANDS = re.compile(r"(?:\n|;|&&|\|\||\|)+")
 # An empty quote pair inside a word (`--re''runs`) is removed by the shell; join the fragments before tokenising.
-EMPTY_QUOTES = re.compile(r"(?<=[A-Za-z0-9_.=-])(?:''|\"\")+(?=[A-Za-z0-9_.=-])")
+# `$''` and `$""` (ANSI-C and locale quoting of the empty string) are empty too (review round 3, ADVSEC-R3-07).
+EMPTY_QUOTES = re.compile(r"(?<=[A-Za-z0-9_.=$-])(?:\$?(?:''|\"\"))+(?=[A-Za-z0-9_.=-])")
 # Re-running a failed workflow run from a workflow (gh CLI or the REST endpoint) is a retry with no readable count.
 RERUN_ENDPOINT = re.compile(
     r"/actions/(?:runs/[^/\s]+/(?:rerun|rerun-failed-jobs)|jobs/[^/\s]+/rerun)\Z|\Arerun-failed-jobs\Z")
 # A GitHub expression (`${{ github.event.workflow_run.id }}`) is one opaque word: it may contain spaces, which must not
-# split the path or flag it is part of. Its value is unknown, so a count it supplies still fails closed.
-EXPRESSION = re.compile(r"\$\{\{.*?\}\}", re.DOTALL)
+# split the path or flag it is part of. Its value is unknown, so a count it supplies still fails closed. GitHub
+# evaluates it before the shell runs, so the string literals inside it (`${{ cond && '--reruns 3' || '' }}`) are read
+# as command text too (review round 3, ADVSEC-R3-01).
+OPAQUE = "${{expression}}"
+LITERAL = re.compile(r"'((?:[^']|'')*)'")
 
 
 def normalize(name):
@@ -129,10 +137,12 @@ def _token_constructs(tokens, depth=0):
     if depth > MAX_DEPTH:
         raise Refused("CONFIG-DEPTH")
     found = []
+    gh = False
     for index, token in enumerate(tokens):
-        # `gh [global flags such as --repo o/r] run rerun`: `run rerun` after a `gh` word of the same command.
-        rerun = token == "rerun" and index >= 2 and tokens[index - 1] == "run" and any(
-            word == "gh" or word.endswith("/gh") for word in tokens[:index - 1])
+        # `gh [global flags such as --repo o/r] run rerun`: `run rerun` after a `gh` word of the same command (any
+        # path, `gh.exe`; review round 3, ADVSEC-R3-07). A running flag keeps the scan linear (ADVSEC-R3-09).
+        rerun = token == "rerun" and gh and tokens[index - 1] == "run"
+        gh = gh or _base_word(token) in ("gh", "gh.exe")
         if rerun or RERUN_ENDPOINT.search(token):
             found.append(("unknown", None))
             continue
@@ -165,6 +175,11 @@ def _token_constructs(tokens, depth=0):
     return found
 
 
+def _base_word(word):
+    """A command word without its directory (`/` or `\\`), lower case: `/usr/bin/GH.EXE` -> `gh.exe`."""
+    return word.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
 def _command_word(tokens):
     """The command word of one command: the first token that is not a `NAME=value` assignment, or None."""
     for token in tokens:
@@ -180,15 +195,50 @@ def command_constructs(value, command=False):
     string is a command line (``command``: a workflow `run` or `shell`, a `scripts` entry), a retry-shaped command
     word (`retry --times 3 -- pytest`, `./retry.sh`) is a wrapper whose count cannot be read: it fails closed.
     """
+    opaque, literal, unclosed = expressions(value)
+    found = _line_constructs(opaque, command)
+    if literal != opaque:
+        # The value with each expression replaced by its string literals is a second reading; a construct of either
+        # applies (an expression with a literal and an opaque branch can take both).
+        found = _alternatives([found, _line_constructs(literal, command)])
+    return [*found, ("unknown", None)] if unclosed else found
+
+
+def _line_constructs(value, command):
     groups = []
-    for line in COMMANDS.split(EMPTY_QUOTES.sub("", EXPRESSION.sub("${{expression}}", value))):
+    for line in COMMANDS.split(EMPTY_QUOTES.sub("", value)):
         tokens = [token for token in SEPARATORS.split(line) if token]
         found = _token_constructs(tokens)
         word = _command_word(tokens) if command else None
-        if word is not None and shaped(normalize(word.rsplit("/", 1)[-1])):
+        if word is not None and shaped(normalize(_base_word(word))):
             found.append(("unknown", None))
         groups.append(found)
     return _alternatives(groups)
+
+
+def expressions(value):
+    """Two readings of a string and whether a `${{` is unclosed, in one linear scan (review round 3, ADVSEC-R3-09).
+
+    The first reading replaces each `${{ ... }}` by one opaque word; the second by the text of its string literals
+    (the opaque word when it has none), so a flag inside a literal is read. An unclosed `${{` fails closed.
+    """
+    opaque, literal, position = [], [], 0
+    while True:
+        start = value.find("${{", position)
+        if start < 0:
+            break
+        end = value.find("}}", start + 3)
+        if end < 0:
+            opaque.append(value[position:])
+            literal.append(value[position:])
+            return "".join(opaque), "".join(literal), True
+        texts = [match.replace("''", "'") for match in LITERAL.findall(value, start + 3, end)]
+        opaque.extend((value[position:start], OPAQUE))
+        literal.extend((value[position:start], " ".join(texts) if texts else OPAQUE))
+        position = end + 2
+    opaque.append(value[position:])
+    literal.append(value[position:])
+    return "".join(opaque), "".join(literal), False
 
 
 def _counted(key):
@@ -210,10 +260,16 @@ def _retry_action(node, depth):
         return [("unknown", None), *constructs({key: value for key, value in node.items() if key != "uses"}, depth + 1)]
     own = [_named(key, value) for key, value in inputs.items() if _counted(key)]
     rest = {key: value for key, value in node.items() if key not in ("uses", "with")}
-    rest["with"] = {key: value for key, value in inputs.items() if not _counted(key)}
+    rest["with"] = {key: value for key, value in inputs.items()
+                    if not _counted(key) and not (normalize(key) in COMMAND_INPUTS and isinstance(value, str))}
+    # The command inputs are command lines: a retry-shaped command word inside them fails closed as in a `run`
+    # (review round 3, ADVSEC-R3-07).
+    commands = [command_constructs(value, True) for key, value in inputs.items()
+                if normalize(key) in COMMAND_INPUTS and isinstance(value, str)]
     numbers = [number for kind, number in own if kind == "count"]
     return [*(construct for construct in own if construct[0] != "count"),
-            ("wrap", max(numbers) if numbers else None, tuple(constructs(rest, depth + 1)))]
+            ("wrap", max(numbers) if numbers else None,
+             tuple(constructs(rest, depth + 1)) + tuple(item for found in commands for item in found))]
 
 
 def constructs(node, depth=0, dependencies=False, dependency_maps=False):
@@ -269,6 +325,8 @@ def leaves(found):
             if construct[1] is not None:
                 yield "count", construct[1]
             yield from leaves(construct[2])
+        elif kind == "inherited":
+            continue  # counted where it is configured; here it only enters the wrapper's multiplication
         else:
             yield construct
 
@@ -277,7 +335,8 @@ def re_executions(found):
     """Re-executions of one job. Only a known wrapper (a retry action around the rest of its step) multiplies the
     executions of what it wraps. Everything else is an alternative and the largest applies: independent steps,
     scripts and commands, several retry flags or keys of one command (the runner applies one of them), and
-    workflow or job `env` against the step commands (review round 2, PS-4)."""
+    workflow or job `env` against unwrapped step commands (review round 2, PS-4). An ("inherited", constructs)
+    item inside a wrapper is what its command inherits (review round 3, PS-1): the larger applies."""
     largest = 0
     for construct in found:
         kind = construct[0]
@@ -285,6 +344,8 @@ def re_executions(found):
             value = min(construct[1], EXECUTION_CAP)
         elif kind == "alternatives":
             value = max(re_executions(group) for group in construct[1])
+        elif kind == "inherited":
+            value = re_executions(construct[1])
         elif kind == "wrap":
             attempts = min(construct[1] or 0, EXECUTION_CAP) + 1
             value = min(attempts * (re_executions(construct[2]) + 1), EXECUTION_CAP + 1) - 1
@@ -292,6 +353,38 @@ def re_executions(found):
             continue
         largest = max(largest, value)
     return largest
+
+
+def _inherited(document, job):
+    """Constructs that reach every step command of a job through its environment: workflow and job `env`, and the
+    commands of steps that write `$GITHUB_ENV` (read as a whole, wherever the step stands; review round 3, PS-1)."""
+    found = []
+    for scope in (document, job):
+        if "env" in scope:
+            found.extend(constructs(scope["env"], 1))
+    steps = job.get("steps")
+    for step in steps if isinstance(steps, list) else ():
+        if isinstance(step, dict):
+            for value in step.values():
+                if isinstance(value, str) and "GITHUB_ENV" in value:
+                    found.extend(command_constructs(value, True))
+    return found
+
+
+def _compound(found, inherited):
+    """``found`` with each wrapper's inner constructs joined by the ``inherited`` ones as an alternative (the
+    larger applies before multiplying). Unwrapped steps keep the environment as an alternative only."""
+    if not inherited:
+        return found
+    result = []
+    for construct in found:
+        if construct[0] == "wrap":
+            inner = _compound(list(construct[2]), inherited)
+            construct = ("wrap", construct[1], (*inner, ("inherited", tuple(inherited))))
+        elif construct[0] == "alternatives":
+            construct = ("alternatives", tuple(_compound(list(group), inherited) for group in construct[1]))
+        result.append(construct)
+    return result
 
 
 def _limit(policy, money_path):
@@ -329,6 +422,14 @@ def evaluate(*, policy, manifest, workflows=(), runner_configs=()):
     # (review round 2, ADVSEC-R2-04), as the rate step refuses an absent job.
     if {mapped.workflow for mapped in manifest.jobs.values()} - {path for path, _document in workflows}:
         raise Refused("INPUT-WORKFLOWS-MISSING")
+    runners = []
+    for path, document in runner_configs:
+        if RELATIVE.fullmatch(path) is None or not path.endswith(".json"):
+            raise Refused("INPUT-PATH")
+        runners.append(constructs(document, dependency_maps=True))
+    # A wrapped command may start the runner of a checked runner configuration (`npm test`): its retries re-run
+    # inside every attempt of the wrapper, so their largest is compounded into each wrapper (review round 3, PS-1).
+    runner_maximum = [("count", max(re_executions(found) for found in runners))] if runners else []
     for path, document in workflows:
         if tags.WORKFLOW.fullmatch(path) is None:
             raise Refused("INPUT-PATH")
@@ -347,17 +448,15 @@ def evaluate(*, policy, manifest, workflows=(), runner_configs=()):
             if not mapped and strictest:
                 findings.append({"rule": "RETRY-JOB-UNMAPPED", "effect": "report", "input": path, "job": key,
                                  "count": 1})
-            checked.append(_judge(findings, shared + constructs(job, 1), _limit(policy, money_path), money_path,
-                                  path, key))
+            inherited = _inherited(document, job) + runner_maximum
+            checked.append(_judge(findings, shared + _compound(constructs(job, 1), inherited),
+                                  _limit(policy, money_path), money_path, path, key))
         for job in manifest.jobs.values():
             if job.workflow == path and job.job not in jobs:
                 findings.append({"rule": "RETRY-MANIFEST-JOB-UNCHECKED", "effect": "report", "input": path,
                                  "job": job.job, "count": 1})
-    for path, document in runner_configs:
-        if RELATIVE.fullmatch(path) is None or not path.endswith(".json"):
-            raise Refused("INPUT-PATH")
-        checked.append(_judge(findings, constructs(document, dependency_maps=True), _limit(policy, strictest),
-                              strictest, path, None))
+    for (path, _document), found in zip(runner_configs, runners):
+        checked.append(_judge(findings, found, _limit(policy, strictest), strictest, path, None))
     failing = [finding for finding in findings if finding["effect"] == "fail"]
     return {
         "schema": REPORT_SCHEMA,

@@ -86,10 +86,21 @@ values; it never matches substrings of free text.
   is an alternative and the largest applies: independent steps of a job, scripts of a `package.json`, commands of
   one shell string (separated by newlines, `;`, `&&`, `||` or `|`), several retry flags or keys of one command (the
   runner applies one of them, for example surefire and failsafe each re-run their own tests once), and
-  workflow-level or job-level keys (for example `env`) against the step commands.
+  workflow-level or job-level keys (for example `env`) against the commands of unwrapped steps. A wrapped command
+  inherits the environment, so its wrapper also multiplies workflow `env`, job `env`, the commands of steps of the
+  same job that write `$GITHUB_ENV` (wherever they stand in the job) and, when runner configurations are inputs of
+  the same check, the largest count among them (the wrapped command may start that runner, for example `npm test`;
+  this can over-count a wrapper around an unrelated command, which fails closed). A retry action with two attempts
+  around `pytest` under a job `env` of `PYTEST_ADDOPTS: --reruns 1` is three re-executions.
 - Flags inside the value of a `NAME=value` token are read (`PYTEST_ADDOPTS=--reruns=5`, `export ...`,
   `echo "PYTEST_ADDOPTS=--reruns 5" >> "$GITHUB_ENV"`, `MAVEN_ARGS=-D...rerunFailingTestsCount=3`,
-  `pytest -o addopts=--reruns=5`), and an empty quote pair inside a word (`--re''runs`) is joined as the shell does.
+  `pytest -o addopts=--reruns=5`), and an empty quote pair inside a word (`--re''runs`, `--re$''runs`,
+  `--re$""runs`) is joined as the shell does.
+- A `${{ ... }}` expression is evaluated by GitHub before the shell runs, so a value is read twice: once with each
+  expression as one opaque word (a known flag whose value is an expression fails closed), and once with each
+  expression replaced by the text of its string literals (`pytest ${{ runner.os == 'Linux' && '--reruns 3' || '' }}`
+  is read as `--reruns 3`; `${{ format('--reruns={0}', 5) }}` fails closed). A construct of either reading applies.
+  An unclosed `${{` fails closed.
 - **Re-execution model (proposed, pending a QA/Reliability decision).** The quarantine gate can record a flake
   only when the failing first run and the re-execution arrive as separate JUnit reports. A retry inside the test
   runner (`--reruns`, `--retry`, `rerunFailingTestsCount`, ...) or a whole-step retry action re-runs inside one
@@ -109,8 +120,9 @@ values; it never matches substrings of free text.
   a workflow run or job (`gh run rerun`, also after gh global flags such as `--repo`; the
   `.../actions/runs/<id>/rerun`, `rerun-failed-jobs` and `.../actions/jobs/<id>/rerun` endpoints, with a literal,
   a shell variable or a `${{ ... }}` expression as the id) and a retry-shaped command word of a command line (a
-  workflow `run` or `shell` value or a `scripts` entry, for example `retry --times 3 -- pytest` or
-  `./retry.sh pytest`). Gradle's `--rerun-tasks` and `--rerun` force a task to run again and are not retries of a
+  workflow `run` or `shell` value, the `command`, `on_retry_command` or `new_command_on_retry` input of a retry
+  action, or a `scripts` entry, for example `retry --times 3 -- pytest` or `./retry.sh pytest`). The `gh` word is
+  matched with any directory and as `gh.exe`. Gradle's `--rerun-tasks` and `--rerun` force a task to run again and are not retries of a
   failure. Known non-count modifiers of the named mechanisms (`--reruns-delay`, `--only-rerun`, and nick-fields/retry
   `retry_on`, `retry_wait_seconds`, `retry_on_exit_code`, `on_retry_command`, `new_command_on_retry`,
   `warning_on_retry`) are not retry counts; a command they carry is still read.
@@ -248,7 +260,8 @@ per-rule warning switch with expiry is to be implemented with that wiring; it do
 - Token matching cannot tell a test retry from a network retry: `curl --retry 3` fails as a retry above the limit.
 - Only `-flag`, `--flag` and `name=value` tokens are read: Windows-style `/retry:3` switches, composite actions
   (`action.yml`) and expressions that compute a count at run time are not evaluated (an expression as the value of
-  a known flag fails closed). Compounded re-executions are reported up to a cap of 1000000.
+  a known flag fails closed; string literals inside an expression are read, other computed text is not).
+  Compounded re-executions are reported up to a cap of 1000000.
 - Retry mechanisms the token check does not see (criterion 6 depends on them being reviewed by hand): flag names
   spliced from shell variables (`R=runs; pytest --re$R 5`) or from non-empty quoted fragments; shell-level
   repetition (`pytest || pytest`, a `for` loop around a test command); a `continue-on-error` test step followed by
@@ -257,7 +270,8 @@ per-rule warning switch with expiry is to be implemented with that wiring; it do
   own); a retry inside the reusable workflows, composite actions and non-JSON files listed above; a retry wrapper
   started through a launcher (`npx retry-cli ...`, `uvx ...`, `python -m ...`: only the command word is read);
   runner options read from a file (pytest `@args.txt` arguments, `pytest.ini`, `setup.cfg`) or injected from a
-  repository or organization variable (`PYTEST_ADDOPTS: ${{ vars.X }}`), whose value is not in the repository.
+  repository or organization variable (`PYTEST_ADDOPTS: ${{ vars.X }}`), whose value is not in the repository;
+  a `$GITHUB_ENV` write made by an action (not a command line) of an earlier step.
 - Renaming or moving a protected test into a module that an existing untagged rule covers (for example a class
   moved into an untagged test module) changes no rule, so the gate cannot see it; only review of the test diff
   can. New untagged rules are reported (`QG-MANIFEST-RULE-UNPROTECTED`) for that review.
