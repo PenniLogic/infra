@@ -15,14 +15,14 @@ python scripts/qa_gates.py retry [--root DIR] [--workflow .github/workflows/NAME
                                  [--runner-config RELATIVE/PATH.json ...] [--manifest PATH]
 python scripts/qa_gates.py quarantine --job JOB --run-id RUN --attempt FIRST.xml [--attempt RETRY.xml]
                                       --base-ledger PATH --base-manifest PATH [--ledger PATH] [--manifest PATH]
-python scripts/qa_gates.py rate --attempt JOB=FIRST.xml [--attempt JOB=RETRY.xml ...] [--ledger PATH]
-                                [--manifest PATH] [--fix-only PenniLogic/<repo>#N]
+python scripts/qa_gates.py rate --attempt JOB=FIRST.xml [--attempt JOB=RETRY.xml ...] --base-ledger PATH
+                                [--ledger PATH] [--manifest PATH] [--fix-only PenniLogic/<repo>#N]
 ```
 
 `--base-ledger` and `--base-manifest` name the ledger and manifest of the protected base revision (in CI: the
 files from the pull request's base commit; locally: the committed files). Without them the quarantine gate fails
 (`QG-LEDGER-BASE-MISSING`, `QG-MANIFEST-BASE-MISSING`), so the append-only and no-relaxation checks are never
-silently skipped.
+silently skipped; the `rate` step likewise fails without `--base-ledger` (`QG-LEDGER-BASE-MISSING`).
 
 `scripts/qa_gates_retry.py`, `scripts/qa_gates_quarantine.py` and `scripts/qa_gates_rate.py` can also be run directly with the same arguments.
 Run them as `python scripts/<name>.py`; isolated mode (`python -I`) leaves `scripts/` off the import path, like the
@@ -183,7 +183,12 @@ instructions, duplicate cases and rerun elements.
   judged once per pipeline by `qa_gates.py rate`, not per job: the denominator is the distinct test identities
   reported by every job of the manifest (plus quarantined tests no job reported), the numerator the distinct
   actively quarantined tests of the whole ledger. A share above the ceiling fails (`QG-QUARANTINE-RATE`) unless
-  `--fix-only` names the ticket of an active quarantine (effect `report`; `QG-FIX-ONLY-UNBOUND` otherwise). A
+  `--fix-only` names the ticket of a quarantine active in the **base** revision's ledger (effect `report`;
+  `QG-FIX-ONLY-UNBOUND` otherwise). Binding to the base keeps a change that fixes a quarantined test and appends
+  its release (or approved deletion) in the same change exempt, also when that quarantine is past its maximum age.
+  A ledger-only change that releases a fixed test counts as a fix of that test. `--fix-only` is a declaration:
+  the gate checks only that its ticket owns a base quarantine, so reviewers must check that the change really
+  fixes that test (an unrelated change citing an active ticket is not detected). A
   manifest job without a report refuses the step (`INPUT-JOBS-MISSING`, exit 2). The per-job report publishes the
   job's own rates with `scope: job` for information only.
 
@@ -207,7 +212,9 @@ module needs a new rule, or its tests fail closed as unclassified.
 Every report is one JSON line, suitable for publishing as a CI artifact:
 
 - rate step: the per-repository `flake_rate` and `quarantine_rate` (`count`, `tests`, and `basis_points` rounded
-  down; the exact share is `count`/`tests`, and `exceeded` is decided on the exact fraction);
+  down; the exact share is `count`/`tests`, and `exceeded` is decided on the exact fraction). A flake is counted
+  with each job's re-execution allowance, as the per-job gate does: a pass on a re-execution the policy does not
+  permit (any re-execution on a money-path job) is a real failure there and no flake here;
 - quarantine gate: `counts` (tests, passed, failed, flaky, skipped), job-scope `flake_rate` and `quarantine_rate`
   (basis points rounded down), `quarantined_tests` (the quarantine population with owner, ticket, start and expiry),
   `retry` (allowed and observed re-executions), `ledger_delta`, and input digests;
@@ -246,7 +253,8 @@ per-rule warning switch with expiry is to be implemented with that wiring; it do
   runner options read from a file (pytest `@args.txt` arguments, `pytest.ini`, `setup.cfg`) or injected from a
   repository or organization variable (`PYTEST_ADDOPTS: ${{ vars.X }}`), whose value is not in the repository.
 - The quarantine gate relies on CI passing the base revision's ledger and manifest (`--base-ledger`,
-  `--base-manifest`) and running the `rate` step after every manifest job; both are wiring preconditions.
+  `--base-manifest`; `--base-ledger` also for `rate`) and running the `rate` step after every manifest job; both
+  are wiring preconditions.
 - The ticket idempotency key includes the run id, so a real `TicketPort` must also deduplicate open tickets per
   job and test; a real port that raises is not caught by the gate (traceback, exit 1: fails closed without a
   refusal report). Decide both at integration.

@@ -32,11 +32,14 @@ def ledger(*quarantined):
     return qs.ledger_document(events, records)
 
 
-def evaluate(attempts_by_job, ledger_doc=None, fix_only=None):
+def evaluate(attempts_by_job, ledger_doc=None, fix_only=None, base_doc=qs.SAME):
+    """``base_doc``: SAME (default) uses the head ledger as the base ledger, None omits it."""
     policy, manifest, parsed = qs.parse_inputs(ledger_doc=ledger_doc)
+    base = parsed if base_doc is qs.SAME else None if base_doc is None else qs.parse_inputs(ledger_doc=base_doc)[2]
     attempts = {job: [junit.parse_attempt(qs.junit_xml(items)) for items in chain]
                 for job, chain in attempts_by_job.items()}
-    return rate.evaluate(policy=policy, manifest=manifest, ledger=parsed, attempts=attempts, fix_only=fix_only)
+    return rate.evaluate(policy=policy, manifest=manifest, ledger=parsed, attempts=attempts, fix_only=fix_only,
+                         base_ledger=base)
 
 
 def rules(report):
@@ -106,6 +109,65 @@ class RepositoryRateTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, code)
 
 
+TICKETS = [f"PenniLogic/infra#9002{index:02d}" for index in range(4)]
+
+
+def four_quarantined(start=-3):
+    """Four of 100 tests quarantined, each with its own ticket (4 % > the 2 % ceiling)."""
+    events, records = [], []
+    for index, ticket in enumerate(TICKETS):
+        more, record = qs.justified(qs.identity(name=f"test_filler_{index:03d}"), start, ticket=ticket)
+        events += more
+        records.append(record)
+    return qs.ledger_document(events, records)
+
+
+class FixOnlyBaseTests(unittest.TestCase):
+    # Review round 2, PS-1: --fix-only binds to a quarantine active in the base revision's ledger.
+    attempts = {qs.JOB: [plain(100)], qs.MONEY_JOB: [plain(100)]}
+
+    def released(self, start=-3):
+        head = four_quarantined(start)
+        head["releases"].append(qs.release(qs.identity(name="test_filler_000"), 0, ticket=TICKETS[0]))
+        return head
+
+    def test_fix_that_releases_its_own_quarantine_stays_exempt(self):
+        for start in (-3, -15):  # -15: the fixed quarantine is past the maximum age.
+            with self.subTest(start=start):
+                base = four_quarantined(start)
+                report = evaluate(self.attempts, self.released(start), fix_only=TICKETS[0], base_doc=base)
+                self.assertEqual((report["decision"], rules(report)), ("pass", {("QG-QUARANTINE-RATE", "report")}))
+                self.assertTrue(report["quarantine_rate"]["fix_only_bound"])
+                unexempt = evaluate(self.attempts, self.released(start), base_doc=base)
+                self.assertEqual(rules(unexempt), {("QG-QUARANTINE-RATE", "fail")})
+
+    def test_ticket_not_active_in_the_base_is_unbound(self):
+        base = four_quarantined()
+        added = four_quarantined()
+        more, record = qs.justified(qs.identity(name="test_filler_004"), -3, ticket=qs.OTHER_TICKET)
+        added["flake_events"] += more
+        added["quarantines"].append(record)
+        report = evaluate(self.attempts, added, fix_only=qs.OTHER_TICKET, base_doc=base)
+        self.assertEqual(rules(report), {("QG-QUARANTINE-RATE", "fail"), ("QG-FIX-ONLY-UNBOUND", "fail")})
+        self.assertEqual(evaluate(self.attempts, added, fix_only=TICKETS[1], base_doc=base)["decision"], "pass")
+
+    def test_missing_base_ledger_fails(self):
+        self.assertEqual(evaluate(self.attempts)["decision"], "pass")
+        report = evaluate(self.attempts, base_doc=None)
+        self.assertEqual((report["decision"], rules(report)), ("fail", {("QG-LEDGER-BASE-MISSING", "fail")}))
+
+
+class AllowanceTests(unittest.TestCase):
+    # Review round 2, PS-6: the repository flake rate uses each job's re-execution allowance.
+    def test_pass_on_a_non_permitted_re_execution_is_not_a_flake(self):
+        first = plain(9) + qs.cases(("test_a", "failed"))
+        retry = qs.cases(("test_a", "passed"))
+        control = evaluate({qs.JOB: [first, retry], qs.MONEY_JOB: [plain(9)]})
+        self.assertEqual(control["flake_rate"], {"count": 1, "tests": 10, "basis_points": 1000})
+        report = evaluate({qs.MONEY_JOB: [first, retry], qs.JOB: [plain(9)]})
+        self.assertEqual(report["flake_rate"], {"count": 0, "tests": 10, "basis_points": 0})
+
+
 class RateCliTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="pennilogic-qa-rate-cli-")
@@ -129,8 +191,8 @@ class RateCliTests(unittest.TestCase):
         manifest = self.write("manifest.json", qs.encode(qs.manifest_document()))
         ledger_path = self.write("ledger.json", qs.encode(ledger(*quarantined)))
         attempt = self.write("attempt.xml", qs.junit_xml(plain(49)))
-        return ["--manifest", manifest, "--ledger", ledger_path, "--attempt", f"{qs.JOB}={attempt}",
-                "--attempt", f"{qs.MONEY_JOB}={attempt}", *extra]
+        return ["--manifest", manifest, "--ledger", ledger_path, "--base-ledger", ledger_path,
+                "--attempt", f"{qs.JOB}={attempt}", "--attempt", f"{qs.MONEY_JOB}={attempt}", *extra]
 
     def test_exit_codes(self):
         code, report = self.main(self.argv())
@@ -151,3 +213,15 @@ class RateCliTests(unittest.TestCase):
             with self.subTest(code=code_name):
                 self.assertEqual(self.main(argv), (2, {"schema": rate.REPORT_SCHEMA, "decision": "refused",
                                                        "reason": code_name, "test": None}))
+
+
+class RateBaseCliTests(unittest.TestCase):
+    setUp, write, main, argv = RateCliTests.setUp, RateCliTests.write, RateCliTests.main, RateCliTests.argv
+
+    def test_cli_without_base_ledger_fails(self):
+        # Review round 2, PS-1: the base ledger is a required input; without it the step fails.
+        self.assertEqual(self.main(self.argv())[0], 0)
+        argv = self.argv()
+        index = argv.index("--base-ledger")
+        code, report = self.main(argv[:index] + argv[index + 2:])
+        self.assertEqual((code, [finding["rule"] for finding in report["findings"]]), (1, ["QG-LEDGER-BASE-MISSING"]))
