@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -71,14 +72,39 @@ class ReadBoundedTests(unittest.TestCase):
                 handle.write(b"x" * 100)
             self.assertEqual(len(common.read_bounded(path, 10, "SC-T-READ")), 11)
 
-    def test_fifo_swapped_in_after_the_stat_check_is_refused_without_blocking(self):
+    def test_descriptor_swapped_after_the_stat_check_is_refused_and_closed(self):
+        """All platforms: the opened descriptor is re-checked with fstat; a non-regular one is refused and closed."""
         with tempfile.TemporaryDirectory() as directory:
             regular = os.path.join(directory, "report.json")
             with open(regular, "wb") as handle:
                 handle.write(b"{}")
-            self.assertEqual(common.read_bounded(regular, 10, "SC-T-READ"), b"{}")
-            if not hasattr(os, "mkfifo"):  # no FIFOs on Windows: the control above is the whole case there
-                return
+            self.assertEqual(common.read_bounded(regular, 10, "SC-T-READ"), b"{}")  # control
+            fifo_mode = os.stat_result((stat.S_IFIFO | 0o600,) + (0,) * 9)
+            real_close = os.close
+            for read in (lambda: common.read_bounded(regular, 10, "SC-T-READ"),
+                         lambda: common.sha256_file(regular, "SC-T-READ")):
+                closed = []
+                with mock.patch.object(common.os, "fstat", lambda _descriptor: fifo_mode), \
+                        mock.patch.object(common.os, "close",
+                                          lambda descriptor: (closed.append(descriptor), real_close(descriptor))):
+                    with self.assertRaises(Refused) as caught:
+                        read()
+                self.assertEqual(caught.exception.code, "SC-T-READ")
+                self.assertEqual(len(closed), 1)
+
+    def test_real_fifo_swapped_in_does_not_block_the_open(self):
+        """POSIX FIFOs: O_NONBLOCK keeps the open from blocking, then fstat refuses the FIFO. Platforms without
+        FIFOs (Windows) assert instead that no non-blocking flag is in use there; the fstat re-check itself is
+        covered on every platform by the test above."""
+        if not hasattr(os, "mkfifo"):
+            self.assertEqual(common.OPEN_FLAGS & getattr(os, "O_NONBLOCK", 0), 0)
+            self.assertFalse(hasattr(os, "O_NONBLOCK"))
+            return
+        self.assertNotEqual(common.OPEN_FLAGS & os.O_NONBLOCK, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            regular = os.path.join(directory, "report.json")
+            with open(regular, "wb") as handle:
+                handle.write(b"{}")
             fifo = os.path.join(directory, "fifo")
             os.mkfifo(fifo)
             real_stat = os.stat
