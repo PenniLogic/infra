@@ -209,7 +209,7 @@ class PolicyTests(unittest.TestCase):
 class ImportBoundaryTests(unittest.TestCase):
     """The gate modules stay offline and keyless: no network, process, crypto-signing or environment access."""
 
-    ALLOWED = {"hashlib", "json", "math", "os", "re", "stat", "xml.etree"}
+    ALLOWED = {"hashlib", "json", "math", "os", "posixpath", "re", "stat", "xml.etree"}  # posixpath: pure strings
     # Only the command line may import sys (argv and exit status).
     CLI_ALLOWED = ALLOWED | {"sys"}
 

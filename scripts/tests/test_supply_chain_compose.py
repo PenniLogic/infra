@@ -59,6 +59,30 @@ class ComposeRuleTests(unittest.TestCase):
                 self.assertEqual(self.mutated("redis", "volumes", [{**volume, "source": source}]),
                                  ["SC-COMPOSE-DOCKER-SOCKET"])
 
+    def test_docker_socket_exposed_through_ancestors_and_unnormalised_paths(self):
+        volume = {"type": "bind", "source": "/srv/data", "target": "/host"}
+        self.assertEqual(self.mutated("redis", "volumes", [volume]), [])
+        for source in ("/", "/var/run", "/run", "/var", "/var/run/", "/var/run/./docker.sock",
+                       "/var/lib/../run/docker.sock", "//var//run//docker.sock", "/run/user/1000/docker.sock"):
+            with self.subTest(source=source):
+                self.assertEqual(self.mutated("redis", "volumes", [{**volume, "source": source}]),
+                                 ["SC-COMPOSE-DOCKER-SOCKET"])
+        for source in ("/srv", "/var/lib/data", "/runner", "/var/run-data"):
+            with self.subTest(control=source):
+                self.assertEqual(self.mutated("redis", "volumes", [{**volume, "source": source}]), [])
+
+    def test_docker_engine_named_pipe_mount(self):
+        pipe = {"type": "npipe", "source": "//./pipe/other_service", "target": "//./pipe/other_service"}
+        self.assertEqual(self.mutated("redis", "volumes", [pipe]), [])
+        for source in ("//./pipe/docker_engine", "\\\\.\\pipe\\docker_engine", "//./PIPE/Docker_Engine"):
+            with self.subTest(source=source):
+                self.assertEqual(self.mutated("redis", "volumes", [{**pipe, "source": source}]),
+                                 ["SC-COMPOSE-DOCKER-SOCKET"])
+
+    def test_named_volume_is_not_a_host_mount(self):
+        named = {"type": "volume", "source": "docker.sock", "target": "/data"}
+        self.assertEqual(self.mutated("redis", "volumes", [named]), [])
+
     def test_dangerous_capability(self):
         self.assertEqual(self.mutated("redis", "cap_add", ["CHOWN"]), [])
         for capability in ("SYS_ADMIN", "CAP_SYS_ADMIN", "all", "NET_ADMIN"):

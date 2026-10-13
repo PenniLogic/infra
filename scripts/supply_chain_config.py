@@ -9,6 +9,7 @@ carry rule IDs, severities, artifact ids, location classes and fingerprints only
 names are bound into fingerprints and never published.
 """
 
+import posixpath
 import re
 from xml.etree import ElementTree
 
@@ -17,7 +18,27 @@ from supply_chain_common import ARTIFACT_ID, DOCUMENT_LIMIT, Refused, finding, j
 
 SERVICE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 IMAGE_DIGEST = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
-DOCKER_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock", "//./pipe/docker_engine", "\\\\.\\pipe\\docker_engine")
+POSIX_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
+ENGINE_PIPES = ("//./pipe/docker_engine", "//?/pipe/docker_engine")
+HOST_MOUNT_TYPES = ("bind", "npipe")
+
+
+def _exposes_docker_socket(source):
+    """True when a host bind or named-pipe mount source is, or contains, the Docker engine socket or pipe.
+
+    POSIX sources are normalised (``.``/``..``/repeated slashes) and flagged when they equal a socket path, are
+    an ancestor directory of one (``/``, ``/run``, ``/var/run`` ...), or name any ``docker.sock``. Windows pipe
+    sources are compared case-insensitively with either slash form.
+    """
+    pipe = source.replace("\\", "/").rstrip("/").lower()
+    if pipe in ENGINE_PIPES:
+        return True
+    if not source.startswith("/"):
+        return False
+    path = posixpath.normpath("/" + source.lstrip("/"))
+    if path == "/" or posixpath.basename(path) == "docker.sock":
+        return True
+    return any(socket == path or socket.startswith(path + "/") for socket in POSIX_SOCKETS)
 DANGEROUS_CAPABILITIES = {"ALL", "SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "SYS_MODULE", "DAC_READ_SEARCH"}
 UNCONFINED = re.compile(r"(?:seccomp|apparmor)[:=]unconfined|label[:=]disable", re.IGNORECASE)
 LOOPBACK = {"127.0.0.1", "::1"}
@@ -50,7 +71,7 @@ def _service_findings(artifact_id, name, service):
     for index, volume in enumerate(_list(service.get("volumes"), "SC-COMPOSE-SHAPE")):
         if not isinstance(volume, dict) or not isinstance(volume.get("source", ""), str):
             raise Refused("SC-COMPOSE-SHAPE")
-        if volume.get("type") == "bind" and volume.get("source", "").rstrip("/") in DOCKER_SOCKETS:
+        if volume.get("type") in HOST_MOUNT_TYPES and _exposes_docker_socket(volume.get("source", "")):
             add("SC-COMPOSE-DOCKER-SOCKET", "critical", "volume", index)
     for capability in _list(service.get("cap_add"), "SC-COMPOSE-SHAPE"):
         if not isinstance(capability, str):
