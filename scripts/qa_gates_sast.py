@@ -32,6 +32,10 @@ SCRIPTS = Path(__file__).resolve().parent
 RULES_DIR = SCRIPTS / "qa-gates" / "rules"
 POLICY_FILE = RULES_DIR / "sast-policy.json"
 RULE_SUFFIX = ".yml"
+# Semgrep loads every *.yml/*.yaml under a --config directory recursively, except *.test.yml and *.fixed.*; the
+# gate accepts only names whose meaning is unambiguous to both, plus the two policy files Semgrep never loads.
+RULE_FILE_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\.yml")
+POLICY_FILE_NAMES = ("dast-policy.json", "sast-policy.json")
 RULE_ID = re.compile(r"pennilogic-[a-z0-9]+(?:-[a-z0-9]+)*")
 CHECK_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,199}")
 VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
@@ -56,12 +60,26 @@ INLINE_MARKER = re.compile(b" no" b"sem", re.IGNORECASE)
 IGNORE_FILE = ".semgrepignore"
 
 
-def load_rule_ids(rules_dir=RULES_DIR):
-    """The sorted rule IDs of every `*.yml` rule file (JSON syntax); each rule is labelled proposed, not agreed."""
+def rule_files(rules_dir=RULES_DIR):
+    """The sorted top-level `<name>.yml` rule files; any other entry (a `.yaml`, `*.test.yml` or `*.fixed.*` file,
+    a subdirectory, a link or an unknown file) is refused, so the gate's rule set is exactly what Semgrep loads."""
+    files = []
     try:
-        files = sorted(entry for entry in Path(rules_dir).iterdir() if entry.suffix == RULE_SUFFIX)
+        for entry in sorted(Path(rules_dir).iterdir()):
+            if entry.is_symlink() or not entry.is_file():
+                raise Refused("SAST-RULES-ENTRY")
+            if RULE_FILE_NAME.fullmatch(entry.name) is not None:
+                files.append(entry)
+            elif entry.name not in POLICY_FILE_NAMES:
+                raise Refused("SAST-RULES-ENTRY")
     except OSError:
         raise Refused("SAST-RULES-UNREADABLE") from None
+    return files
+
+
+def load_rule_ids(rules_dir=RULES_DIR):
+    """The sorted rule IDs of every rule file (JSON syntax); each rule is labelled proposed, not agreed."""
+    files = rule_files(rules_dir)
     if not files:
         raise Refused("SAST-RULES-EMPTY")
     identifiers = []
@@ -354,11 +372,11 @@ def verify_canned(report_data, provenance_data, root):
     if (not isinstance(command, list) or not all(isinstance(item, str) for item in command)
             or not all(flag in command for flag in REQUIRED_FLAGS) or "auto" in command
             or any(item.startswith("--config=") for item in command)
-            or command.count("--config") != 1 or command[command.index("--config") + 1] != rules_dir
-            or command[-1] != fixture_dir):
+            or command.count("--config") != 1 or command[-3:] != ["--config", rules_dir, fixture_dir]):
         raise Refused("SAST-CANNED-COMMAND")
     if provenance["report_sha256"] != sha256_bytes(report_data):
         raise Refused("SAST-CANNED-REPORT-DIGEST")
+    load_rule_ids(Path(root, *rules_dir.split("/")))
     if provenance["rules_sha256"] != tree_sha256(root, rules_dir, RULE_SUFFIX):
         raise Refused("SAST-CANNED-RULES-STALE")
     if provenance["fixture_sha256"] != tree_sha256(root, fixture_dir):

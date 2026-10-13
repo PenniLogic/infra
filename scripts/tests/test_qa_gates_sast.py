@@ -426,6 +426,25 @@ class SastRuleFileTests(unittest.TestCase):
             self.assertRefused("SAST-RULES-EMPTY", sast.load_rule_ids, Path(directory))
 
 
+class SastRuleDirectoryEntryTests(unittest.TestCase):
+    """Review round 1 SS-R1-06: the rule directory holds only what Semgrep and the gate read the same way."""
+
+    def test_entries_semgrep_would_read_differently_are_refused(self):
+        report, provenance = CANNED.read_bytes(), PROVENANCE.read_bytes()
+        rule = b'{"rules": [{"id": "pennilogic-extra-rule", "metadata": {"status": "proposed, not agreed"}}]}'
+        for name in ("extra.yaml", "python.test.yml", "python.fixed.yml", "notes.txt", "nested/extra.yml"):
+            with self.subTest(name=name), copied_root() as root:
+                rules = root / "scripts/qa-gates/rules"
+                self.assertEqual(len(sast.load_rule_ids(rules)), 8)
+                sast.verify_canned(report, provenance, root)
+                (rules / name).parent.mkdir(exist_ok=True)
+                (rules / name).write_bytes(rule)
+                for function, args in ((sast.load_rule_ids, (rules,)), (sast.verify_canned, (report, provenance, root))):
+                    with self.assertRaises(Refused) as caught:
+                        function(*args)
+                    self.assertEqual(caught.exception.code, "SAST-RULES-ENTRY")
+
+
 class SastCannedReportBindingTests(unittest.TestCase):
     def assertRefused(self, code, function, *args):
         with self.assertRaises(Refused) as caught:
@@ -500,6 +519,12 @@ class SastCannedReportBindingTests(unittest.TestCase):
 
     def test_second_inline_config_refused(self):
         mutated = self.provenance_with(lambda document: document["command"].insert(2, "--config=p/default"))
+        self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report, mutated, ROOT)
+
+    def test_config_as_the_last_command_element_refused_without_index_error(self):
+        # Review round 1 SS-R1-09.
+        sast.verify_canned(self.report, self.provenance_with(lambda document: None), ROOT)
+        mutated = self.provenance_with(lambda document: document.update(command=document["command"][:-2]))
         self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report, mutated, ROOT)
 
     def test_canned_report_claimed_as_acceptance_evidence_refused(self):

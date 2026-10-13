@@ -69,7 +69,10 @@ rule; the held CI step must therefore pass only this repository's rule directory
 
 Rules live in `scripts/qa-gates/rules/{python,typescript,kotlin}.yml`, written in JSON syntax (valid YAML) so the
 stdlib can verify them. Every rule carries `metadata.status: "proposed, not agreed"`; the gate refuses a rule file
-without it.
+without it. Semgrep loads every `.yml` and `.yaml` file under a `--config` directory recursively but skips
+`*.test.yml` and `*.fixed.*`, so the gate accepts only top-level `<name>.yml` rule files (lowercase, digits and
+hyphens) and the two policy files in that directory, and refuses anything else (`SAST-RULES-ENTRY`): its rule set
+and the canned-report binding then cover exactly what Semgrep runs.
 
 | Rule ID | Pattern family |
 | --- | --- |
