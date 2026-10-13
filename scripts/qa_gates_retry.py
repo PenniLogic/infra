@@ -73,8 +73,9 @@ SEPARATORS = re.compile(r"[\s'\"`;|&()<>]+")
 # Commands of one shell string run one after another; their retries do not wrap each other.
 COMMANDS = re.compile(r"(?:\n|;|&&|\|\||\|)+")
 # An empty quote pair inside a word (`--re''runs`) is removed by the shell; join the fragments before tokenising.
-# `$''` and `$""` (ANSI-C and locale quoting of the empty string) are empty too (review round 3, ADVSEC-R3-07).
-EMPTY_QUOTES = re.compile(r"(?<=[A-Za-z0-9_.=$-])(?:\$?(?:''|\"\"))+(?=[A-Za-z0-9_.=-])")
+# `$''` and `$""` (ANSI-C and locale quoting of the empty string) are empty too: the pair is removed after a `$`, and
+# names are normalised to alphanumerics, which drops the `$` (review round 3, ADVSEC-R3-07).
+EMPTY_QUOTES = re.compile(r"(?<=[A-Za-z0-9_.=$-])(?:''|\"\")+(?=[A-Za-z0-9_.=-])")
 # Re-running a failed workflow run from a workflow (gh CLI or the REST endpoint) is a retry with no readable count.
 RERUN_ENDPOINT = re.compile(
     r"/actions/(?:runs/[^/\s]+/(?:rerun|rerun-failed-jobs)|jobs/[^/\s]+/rerun)\Z|\Arerun-failed-jobs\Z")

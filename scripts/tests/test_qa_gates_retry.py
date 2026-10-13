@@ -450,6 +450,8 @@ class RoundThreeTokenTests(unittest.TestCase):
             "pytest ${{ format('--reruns={0}', 5) }}": [("unknown", None)],
             "${{ 'retry' }} --times 3 -- pytest": [("unknown", None)],
             "pytest --reruns ${{ inputs.n }}": [("unknown", None)],
+            "pytest --reruns ${{ inputs.fast && '1' || inputs.n }}": [
+                ("alternatives", ([("unknown", None)], [("count", 1)]))],
             "echo ${{ github.sha }} ${{ 'it''s' }}": [],
             "echo ${{ github.sha": [("unknown", None)],
         }
@@ -476,6 +478,9 @@ class RoundThreeTokenTests(unittest.TestCase):
         inputs = {"max_attempts": 2, "timeout_minutes": 10}
         control = {"uses": "nick-fields/retry@v3", "with": {**inputs, "command": "./run.sh -- pytest"}}
         self.assertEqual(retry.constructs(control), [("wrap", 1, ())])
+        for key in ("on_retry_command", "new_command_on_retry"):  # non-count modifiers outside a retry action too
+            with self.subTest(modifier=key):
+                self.assertEqual(retry.constructs({key: "pytest"}), [])
         for key in ("command", "on_retry_command", "new_command_on_retry"):
             with self.subTest(key=key):
                 step = {"uses": "nick-fields/retry@v3", "with": {**inputs, key: "./retry.sh --times 5 -- pytest"}}
@@ -514,6 +519,8 @@ class InheritedEnvironmentTests(unittest.TestCase):
             with self.subTest(shape=shape):
                 report = self.check(document, 3)
                 self.assertEqual(rules(report), [("RETRY-LIMIT-EXCEEDED", "ci", 3)])
+                hidden = [finding["count"] for finding in report["findings"] if finding["rule"] == "RETRY-ATTEMPT-HIDDEN"]
+                self.assertEqual(hidden, [2])  # the wrapper and the env flag, each counted once
         self.assertEqual(rules(self.check(one_job(self.WRAP), 1)), [])
 
     def test_unwrapped_step_keeps_environment_as_an_alternative(self):
