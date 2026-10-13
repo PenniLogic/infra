@@ -40,6 +40,27 @@ class CommittedLedgerTests(LedgerCase):
                          ("PenniLogic/infra", (), (), {}))
         self.assertEqual(ledgers.LEDGER_FILE.read_bytes(), qs.encode(committed.document))
 
+    def test_committed_manifest_admits_no_deletion_by_its_only_user(self):
+        # Review round 3, PS-2: pins the disclosed effect of the proposed approver-distinctness control. Every
+        # committed package owner is @basiltt, the organization's only GitHub user, so a deletion approved by that
+        # handle (any case) is refused while one by another handle is accepted. Changing this is a held decision.
+        policy, manifest = qs.parse_inputs()[0], tags.load_manifest()
+        test = "scripts.tests::test_api_build_coverage.Cases::test_x"
+        self.assertEqual({package.owner for package in manifest.packages.values()}, {"@basiltt"})
+        job = sorted(manifest.jobs)[0]
+        events, record = qs.justified(test, -5, owner="@basiltt", job=job)
+
+        def ledger(approver):
+            deletion = qs.deletion(test, 0, job=job, approver=approver)
+            return qs.encode(qs.ledger_document(events, [record], deletions=[deletion]))
+
+        ledgers.parse_ledger(ledger("@synthetic-reviewer"), manifest=manifest, policy=policy, today=qs.TODAY)
+        for approver in ("@basiltt", "@BasilTT"):
+            with self.subTest(approver=approver):
+                with self.assertRaises(Refused) as caught:
+                    ledgers.parse_ledger(ledger(approver), manifest=manifest, policy=policy, today=qs.TODAY)
+                self.assertEqual((caught.exception.code, caught.exception.test), ("LEDGER-SELF-APPROVAL", test))
+
 
 class QuarantineRecordTests(LedgerCase):
     def test_quarantine_without_owner_ticket_or_expiry_refused(self):
@@ -117,6 +138,20 @@ class QuarantineRecordTests(LedgerCase):
         parse(qs.ledger_document(events + fresh, [qs.quarantine(TEST, -27), second], [qs.release(TEST, -14)]))
         mutated = qs.ledger_document(events, [qs.quarantine(TEST, -27), second], [qs.release(TEST, -14)])
         self.assertRefused("LEDGER-QUARANTINE-UNJUSTIFIED", mutated, TEST)
+
+    def test_quarantine_on_a_closure_day_in_another_job_is_not_justified_by_earlier_events(self):
+        # Review round 3, PS-5: a closure on the quarantine's first day counts, in any job.
+        events = [qs.event(TEST, -11, run="synthetic-runA"), qs.event(TEST, -10, run="synthetic-runB")]
+        for start, accepted in ((-3, True), (-2, False)):
+            with self.subTest(start=start):
+                document = qs.ledger_document(events, [qs.quarantine(TEST, -10),
+                                                       qs.quarantine(TEST, start, job=qs.MONEY_JOB,
+                                                                     ticket=qs.OTHER_TICKET)],
+                                              [qs.release(TEST, -2)])
+                if accepted:
+                    parse(document)
+                else:
+                    self.assertRefused("LEDGER-QUARANTINE-UNJUSTIFIED", document, TEST)
 
 
 class ClosureTests(LedgerCase):

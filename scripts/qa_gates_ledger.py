@@ -7,8 +7,10 @@ no later than the policy's maximum age, and it must be justified by the policy's
 of that test within the flake window ending on its first day and after the last closure of that test in any job
 (`basis`, also used by the gate's proposal), so a real failure cannot be filed under the flaky label without
 recorded flake evidence (E25-F01) and the evidence of a closed quarantine is not reused for another one. Releases and deletions close the active quarantine of the same
-job and test with the same ticket; a deletion's approval must be a comment on that ticket by someone other than
-the quarantine owner and the test's manifest package owner.
+job and test with the same ticket; a deletion's approval must be a comment on that ticket. Requiring that its
+approver differs from the quarantine owner and the test's manifest package owner is a proposed control beyond
+flake_policy (pending QA/Reliability; review round 3, PS-2): with the committed manifest every package owner is the
+organization's only GitHub user, so no deletion record can be accepted in infra until that is decided.
 """
 
 from dataclasses import dataclass
@@ -188,8 +190,11 @@ def parse_ledger(data, *, manifest, policy, today):
             key = (item.job, item.test)
             if key in active:
                 raise Refused("LEDGER-OVERLAP", item.test)
-            justified = basis(by_test.get(item.test, ()), item.quarantined_on, policy.flake_window_days,
-                              closed_on.get(item.test))
+            # The last closure of the test in any job dated on or before the start, same-day closures included (they
+            # replay after the quarantine; review round 3, PS-5).
+            last = max((closed for closed, record, _approver in closures
+                        if record["test"] == item.test and closed <= item.quarantined_on), default=None)
+            justified = basis(by_test.get(item.test, ()), item.quarantined_on, policy.flake_window_days, last)
             if len(justified) < policy.quarantine_after_flakes:
                 raise Refused("LEDGER-QUARANTINE-UNJUSTIFIED", item.test)
             released.pop(key, None)

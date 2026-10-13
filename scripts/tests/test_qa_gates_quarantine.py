@@ -367,23 +367,37 @@ class QuarantinedTestTests(GateCase):
         released["releases"].append(qs.release(A, -5))
         self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=released, base_doc=released), [], "pass")
         report = qs.run_gate(run(("test_b", "passed")), ledger_doc=released, base_doc=quarantined_a(start=-10))
-        self.assertFindings(report, [("QG-RELEASED-TEST-MISSING", "fail", A), ("QG-CLOSURE-BACKDATED", "fail", A)],
-                            "fail")
+        self.assertFindings(report, [("QG-RELEASED-TEST-MISSING", "fail", A)], "fail")
 
-    def test_closure_appended_in_this_change_must_be_recent(self):
-        # Review round 2, ADVSEC-R2-01: a backdated release must not end the hold or reuse evidence.
+    def test_closure_appended_in_this_change_may_not_predate_base_facts(self):
+        # Review round 2, ADVSEC-R2-01, reworked in round 3 (PS-4): a closure appended in this change may not
+        # predate a fact the base records for its test (a flake event seen while quarantined here), so it cannot
+        # move the post-closure trigger back over recorded evidence; its date is not bounded against the run.
         expired = quarantined_a(start=-20)
-        for offset, expected in ((-gate.CLOSURE_DATE_TOLERANCE_DAYS, []),
-                                 (-gate.CLOSURE_DATE_TOLERANCE_DAYS - 1, [("QG-CLOSURE-BACKDATED", "fail", A)])):
+        expired["flake_events"].append(qs.event(A, -15, run="synthetic-later"))
+        for offset, expected in ((-15, []), (-16, [("QG-CLOSURE-BACKDATED", "fail", A)])):
             with self.subTest(offset=offset):
                 head = copy.deepcopy(expired)
                 head["releases"].append(qs.release(A, offset))
                 self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=head, base_doc=expired),
                                     expected, "fail" if expected else "pass")
-        deleted = copy.deepcopy(expired)
-        deleted["deletions"].append(qs.deletion(A, -15))
-        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=deleted, base_doc=expired),
-                            [("QG-CLOSURE-BACKDATED", "fail", A)], "fail")
+        for offset, expected in ((-15, []), (-16, [("QG-CLOSURE-BACKDATED", "fail", A)])):
+            with self.subTest(deletion=offset):
+                deleted = copy.deepcopy(expired)
+                deleted["deletions"].append(qs.deletion(A, offset))
+                self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=deleted, base_doc=expired),
+                                    expected, "fail" if expected else "pass")
+
+    def test_approval_date_does_not_expire(self):
+        # Review round 3, PS-4: the same truthful approval passes whenever CI runs after it.
+        base = quarantined_a(start=-10)
+        head = copy.deepcopy(base)
+        head["deletions"].append(qs.deletion(A, -7))
+        for days_later in (0, 3, 4, 30):
+            with self.subTest(days_later=days_later):
+                today = qs.TODAY + datetime.timedelta(days=days_later)
+                report = qs.run_gate(run(("test_b", "passed")), ledger_doc=head, base_doc=base, today=today)
+                self.assertFindings(report, [], "pass")
 
     def test_deletion_after_release_requarantine_allows_disappearance(self):
         ledger = quarantined_a(start=-10)
@@ -408,6 +422,54 @@ class QuarantinedTestTests(GateCase):
         self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=deleted, base_doc=base), [], "pass")
         self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=head, base_doc=base),
                             [("QG-QUARANTINED-TEST-MISSING", "fail", A)], "fail")
+
+
+class RoundThreeClosureTests(GateCase):
+    # Review round 3, ADVSEC-R3-04: a quarantine appended in this change must start after the test's last closure
+    # (any job), so it cannot reuse the events of a closed quarantine.
+    def test_appended_quarantine_dated_before_a_closure_fails(self):
+        events, first = qs.justified(A, -5)
+        base = qs.ledger_document(events, [first], [qs.release(A, -1)])
+        fresh = [qs.event(A, 0, job=qs.MONEY_JOB, run="synthetic-freshA"),
+                 qs.event(A, 0, job=qs.MONEY_JOB, run="synthetic-freshB")]
+        control = copy.deepcopy(base)
+        control["flake_events"] += fresh
+        control["quarantines"].append(qs.quarantine(A, 0, job=qs.MONEY_JOB, ticket=qs.OTHER_TICKET))
+        self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=control, base_doc=base), [], "pass")
+        head = copy.deepcopy(base)
+        head["quarantines"].append(qs.quarantine(A, -2, job=qs.MONEY_JOB, ticket=qs.OTHER_TICKET))
+        self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=head, base_doc=base),
+                            [("QG-QUARANTINE-BACKDATED", "fail", A)], "fail")
+
+    def test_same_change_release_and_backdated_quarantine_fail(self):
+        events, first = qs.justified(A, -5)
+        base = qs.ledger_document(events, [first])
+        control = copy.deepcopy(base)
+        control["releases"].append(qs.release(A, -1))
+        self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=control, base_doc=base), [], "pass")
+        head = copy.deepcopy(control)
+        head["quarantines"].append(qs.quarantine(A, -2, job=qs.MONEY_JOB, ticket=qs.OTHER_TICKET))
+        self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=head, base_doc=base),
+                            [("QG-QUARANTINE-BACKDATED", "fail", A)], "fail")
+
+    # Review round 3, ADVSEC-R3-05: the approver is checked against the base manifest's package owner too, and a
+    # package owner change is listed for review.
+    def test_owner_edited_in_the_same_change_cannot_admit_the_package_owner(self):
+        base = quarantined_a(start=-5, owner="@synthetic-other")
+        head = copy.deepcopy(base)
+        head["deletions"].append(qs.deletion(A, 0, approver=qs.OWNER))
+        with self.assertRaises(Refused) as caught:
+            qs.run_gate(run(("test_b", "passed")), ledger_doc=head, base_doc=base)
+        self.assertEqual(caught.exception.code, "LEDGER-SELF-APPROVAL")
+        edited = qs.manifest_document()
+        edited["packages"][1]["owner"] = "@synthetic-third"
+        control = qs.run_gate(run(("test_a", "passed")), ledger_doc=base, manifest_doc=edited,
+                              base_manifest_doc=qs.manifest_document())
+        self.assertFindings(control, [("QG-MANIFEST-OWNER-CHANGED", "report", None)], "pass")
+        report = qs.run_gate(run(("test_b", "passed")), ledger_doc=head, base_doc=base, manifest_doc=edited,
+                             base_manifest_doc=qs.manifest_document())
+        self.assertFindings(report, [("QG-SELF-APPROVAL", "fail", A), ("QG-MANIFEST-OWNER-CHANGED", "report", None)],
+                            "fail")
 
 
 class NothingRanTests(GateCase):

@@ -190,10 +190,13 @@ instructions, duplicate cases and rerun elements.
   quarantined test go. A release closes a quarantine without reviewer approval, so the change that appends a
   release must still run the released test (`QG-RELEASED-TEST-MISSING` when it is missing or skipped); a later
   change may rename or remove it like any other test. A release or deletion appended in the change (compared with
-  `--base-ledger`) must be dated no more than 3 days before the run (`QG-CLOSURE-BACKDATED`), so a backdated
-  closure cannot end that hold or move the post-closure trigger. Both rules are **proposed controls beyond
-  `flake_policy`** (pending QA/Reliability); the 3-day tolerance (`CLOSURE_DATE_TOLERANCE_DAYS`) leaves time for
-  review and is not a policy number.
+  `--base-ledger`) may not be dated before the latest fact the base ledger records for its test (a flake event,
+  quarantine start or closure; `QG-CLOSURE-BACKDATED`), so a backdated closure cannot move the post-closure
+  trigger back over recorded evidence. The release or approval date is not bounded against the run date: a truthful
+  approval does not expire when CI re-runs later (review round 3, PS-4; this replaces the earlier 3-day
+  tolerance). A quarantine appended in the change must start strictly after every closure of its test in the head
+  ledger (any job) other than its own (`QG-QUARANTINE-BACKDATED`), so it cannot reuse a closed quarantine's events.
+  These rules are **proposed controls beyond `flake_policy`** (pending QA/Reliability).
   A first attempt in which no case outside the active quarantines ran (every other case skipped) fails
   (`QG-NOTHING-RAN`). A ledger change that is not append-only
   against `--base-ledger` fails (`QG-LEDGER-NOT-APPEND-ONLY`).
@@ -215,10 +218,18 @@ instructions, duplicate cases and rerun elements.
 
 **Ledger workflow:** copy `ledger_delta` from the failing run's report into the ledger in a pull request; a
 quarantine needs owner, ticket, start and expiry, and two flake events dated after the last closure of the same
-test in any job (the proposed post-closure rule above); a release or a deletion closes it, and a deletion needs an
-approval comment URL on the owning ticket whose `approved_by` differs from the quarantine owner and from the
-manifest package owner of the test (the ledger records no author, so the gate cannot compare with the author of
-the change). Reviewers must check every reference-shaped value by hand: run ids in flake
+test in any job (the proposed post-closure rule above), the last of which counts closures dated on the quarantine's
+first day too; a release or a deletion closes it, and a deletion needs an approval comment URL on the owning
+ticket. **Approver distinctness is a proposed control beyond `flake_policy`** (pending QA/Reliability): the policy
+asks only for "recorded reviewer approval on its owning ticket", while the ledger refuses an `approved_by` equal to
+the quarantine owner or to the head manifest's package owner of the test (`LEDGER-SELF-APPROVAL`), and the gate
+also fails one equal to the base manifest's package owner (`QG-SELF-APPROVAL`) and lists a package owner change
+(`QG-MANIFEST-OWNER-CHANGED`, effect `report`). The ledger records no author, so the gate cannot compare with the
+author of the change. **Consequence in infra today:** every package of the committed manifest is owned by
+`@basiltt`, the organization's only GitHub user (reviewer sessions also post as `basiltt`), so no deletion record
+can be accepted and the policy's "deleted with recorded reviewer approval" exit is unavailable; an expired
+quarantine can only be fixed and released (and the test removed in a later change). This is listed under
+[Still unmet](#still-unmet). Reviewers must check every reference-shaped value by hand: run ids in flake
 events, `fix_ref`, `approval_ref` URLs and `approved_by` handles are grammar-checked only and cannot be verified
 offline.
 
@@ -303,6 +314,10 @@ Each item below stays open; none is claimed by this change.
   also depends on the re-execution model decision (`RETRY-ATTEMPT-HIDDEN` is report-only) and on the mechanisms
   listed under Known limits.
 - Criterion 5 (quarantine creates a ticket): real ticket creation is held; tests use a fake `TicketPort`.
+- Quarantined-test deletion: the approver-distinctness rule (proposed, above) makes the policy's approved-deletion
+  exit unavailable while every manifest package owner is `@basiltt`. Owner of the decision: QA/Reliability with the
+  coordinator (keep the rule, or record distinctness on a basis this organization can record truthfully, for
+  example the reviewer session named in the approval comment). Not decided here.
 - Criterion 5 and the Scope item "automatic quarantine after a defined number of flakes": flake events are not
   recorded automatically and quarantines are not applied automatically. Events persist only through a manual
   ledger pull request that copies `ledger_delta`; they are lost on a job re-run or when the delta is not copied.

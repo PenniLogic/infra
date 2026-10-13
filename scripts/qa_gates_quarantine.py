@@ -17,8 +17,10 @@ quarantine with the package owner, a ticket requested through the TicketPort and
 security, privacy and money tests are never quarantined. Active quarantines of the job are taken out of the
 gating set, still run and are reported. The run fails when a quarantine is older than the maximum age or past its
 expiry, when a quarantined test is skipped or disappears without an approved deletion record (a test released in
-this change must still run in it), when a release or deletion appended in this change is dated more than
-CLOSURE_DATE_TOLERANCE_DAYS before the run (both proposed controls beyond flake_policy), when the base-revision
+this change must still run in it), when a release or deletion appended in this change predates a fact of its test
+in the base ledger, when a quarantine appended in this change does not start after the test's last closure, or
+when a deletion appended in this change is approved by the base manifest's package owner (all proposed controls
+beyond flake_policy), when the base-revision
 ledger or manifest is missing, when the ledger is not append-only against it, or when the manifest relaxes a
 protected test, a protecting rule or a money-path job against it (a new untagged rule is reported for review).
 The quarantine rate ceiling counts a repository's tests and is judged by scripts/qa_gates_rate.py; this report
@@ -44,9 +46,9 @@ from qa_gates_common import REFERENCE, RUN_ID, Refused, canonical_sha256, read_b
 
 REPORT_SCHEMA = "pennilogic.qa-gates.quarantine-report/1"
 MAX_ATTEMPTS = 8
-# A release or deletion appended in this change must be dated no earlier than this many days before the run, so a
-# backdated closure cannot shorten the hold on a released test or reuse evidence (proposed, ADVSEC-R2-01).
-CLOSURE_DATE_TOLERANCE_DAYS = 3
+# Ledger fields that date a fact about a test, by array.
+FACT_DATES = (("flake_events", "observed_on"), ("quarantines", "quarantined_on"), ("releases", "released_on"),
+              ("deletions", "approved_on"))
 OUTCOMES = ("passed", "failed", "flaky", "skipped")
 
 
@@ -70,6 +72,27 @@ class HeldTicketPort:
 
     def request_ticket(self, request):
         return None
+
+
+def _latest_fact(document, test, arrays=("flake_events", "quarantines", "releases", "deletions")):
+    """The latest date the ledger ``document`` records for ``test`` in ``arrays`` (None when it records none)."""
+    days = [datetime.date.fromisoformat(record[field]) for name, field in FACT_DATES if name in arrays
+            for record in document[name] if record["test"] == test]
+    return max(days, default=None)
+
+
+def _closed_after(document, quarantine):
+    """True when the test of ``quarantine`` has a closure (any job) on or after its start other than its own.
+
+    Its own closure is the first one of the same job and ticket dated on or after its start (the ledger replay
+    matches closures that way)."""
+    start = datetime.date.fromisoformat(quarantine["quarantined_on"])
+    closures = sorted((datetime.date.fromisoformat(record[field]), record["job"], record["ticket_ref"])
+                      for name, field in FACT_DATES[2:] for record in document[name]
+                      if record["test"] == quarantine["test"])
+    own = next((item for item in closures if item[0] >= start and item[1:] == (quarantine["job"],
+                                                                               quarantine["ticket_ref"])), None)
+    return any(item[0] >= start and item is not own for item in closures)
 
 
 def _utc_today():
@@ -154,6 +177,10 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
         # only review can see (Known limits).
         if _rule_relaxed(base_manifest, manifest)[1]:
             find("QG-MANIFEST-RULE-UNPROTECTED", "report")
+        # A package owner change decides who may approve deletions; it is listed for review (ADVSEC-R3-05).
+        if any(package.owner != base_manifest.packages[package_id].owner
+               for package_id, package in manifest.packages.items() if package_id in base_manifest.packages):
+            find("QG-MANIFEST-OWNER-CHANGED", "report")
 
     money_path = job.money_path or any(classes[identity].money_path for identity in first)
     allowed = policy.money_path_retry_limit if money_path else policy.retry_limit
@@ -185,11 +212,28 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
     # must still run in it (review round 1 PS-3; round 2 PS-3: a release already in the base no longer holds the
     # test, so it can be renamed or removed in a later change). Its date must be recent (ADVSEC-R2-01).
     appended = {name: ledger.document[name][len(base_ledger.document[name]) if base_ledger is not None else 0:]
-                for name in ("releases", "deletions")}
+                for name in ("quarantines", "releases", "deletions")}
+    # A closure appended in this change may not predate a fact the base ledger already records for its test, so it
+    # cannot move the post-closure trigger back over recorded evidence. The approval or release date is never
+    # bounded against the run date (review round 3, PS-4, replacing the 3-day tolerance of ADVSEC-R2-01).
     for name, field in (("releases", "released_on"), ("deletions", "approved_on")):
         for record in appended[name]:
-            if (today - datetime.date.fromisoformat(record[field])).days > CLOSURE_DATE_TOLERANCE_DAYS:
+            latest = None if base_ledger is None else _latest_fact(base_ledger.document, record["test"])
+            if latest is not None and datetime.date.fromisoformat(record[field]) < latest:
                 find("QG-CLOSURE-BACKDATED", "fail", record["test"])
+    # A quarantine appended in this change must start strictly after the last closure of its test in the head
+    # ledger (any job), so it cannot reuse a closed quarantine's events (review round 3, ADVSEC-R3-04).
+    for record in appended["quarantines"]:
+        if _closed_after(ledger.document, record):
+            find("QG-QUARANTINE-BACKDATED", "fail", record["test"])
+    # The deletion approver must also differ from the base manifest's package owner, so the change cannot move the
+    # owner away from the approver (review round 3, ADVSEC-R3-05; proposed control, see ledger docstring).
+    for record in appended["deletions"]:
+        classification = None if base_manifest is None else base_manifest.classify(record["test"])
+        if (classification is not None and classification.state == "known"
+                and classification.package.owner is not None
+                and classification.package.owner.lower() == record["approved_by"].lower()):
+            find("QG-SELF-APPROVAL", "fail", record["test"])
     new_releases = {record["test"] for record in appended["releases"] if record["job"] == job_id}
     for test in sorted(ledger.released_for(job_id)):
         if test in new_releases and combination.outcomes.get(test, "missing") in ("missing", "skipped"):
