@@ -42,6 +42,10 @@ WINDOWS_SECURITY_IDS = frozenset({
 })
 
 
+def without_python_location(environment):
+    return {key: value for key, value in environment.items() if key.upper() != "PYTHONLOCATION"}
+
+
 class InfraQualificationWorkflowTests(unittest.TestCase):
     def test_both_ordinary_suites_preserve_the_linux_graph_and_windows_preparation(self):
         document = json.loads(generator.workflow("infra"))
@@ -164,7 +168,10 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
                     script = generator.infra_security_step(windows)["run"]
                     self.assertEqual(1, script.count(program))
                     exit_code = code if isinstance(code, int) else 0
-                    environment = support.defects.probe_environment()
+                    environment = without_python_location({
+                        **support.defects.probe_environment(),
+                        "PYTHONLOCATION": r"C:\synthetic-inherited-python",
+                    })
                     after, captured = root / "after", root / "captured-program"
                     environment["PENNILOGIC_FIXTURE_AFTER"] = str(after)
                     environment["PENNILOGIC_FIXTURE_PROGRAM"] = str(captured)
@@ -221,6 +228,34 @@ exit "$PENNILOGIC_FIXTURE_EXIT"
                                          captured.read_text(encoding="utf-8"))
                     else:
                         self.assertFalse(captured.exists(), "invalid interpreter binding must start nothing")
+
+    def test_security_preparation_fixture_removes_inherited_python_location_aliases(self):
+        aliases = {
+            "PYTHONLOCATION": r"C:\synthetic-upper-python",
+            "pythonLocation": r"C:\synthetic-camel-python",
+            "PythonLocation": r"C:\synthetic-title-python",
+            "pythonlocation": "/synthetic-lower-python",
+        }
+        ambient = {"PATH": "synthetic-runtime-path", "PYTHONLOCATION_SUFFIX": "unrelated", **aliases}
+        original = ambient.copy()
+        inherited = support.defects.probe_environment(ambient)
+        self.assertEqual(aliases, {key: inherited[key] for key in aliases})
+        before = inherited.copy()
+        environment = without_python_location(inherited)
+        self.assertFalse(any(key.upper() == "PYTHONLOCATION" for key in environment))
+        self.assertEqual(before, {**environment, **aliases})
+        self.assertEqual(before, inherited)
+        self.assertEqual(original, ambient)
+        for binding in (None, "sdk", r"C:\fixture-python"):
+            with self.subTest(binding=binding):
+                child = environment.copy()
+                child["pythonLocation"] = r"C:\fixture-python"
+                if binding is None:
+                    child.pop("pythonLocation")
+                else:
+                    child["pythonLocation"] = binding
+                self.assertEqual({} if binding is None else {"pythonLocation": binding},
+                                 {key: value for key, value in child.items() if key.upper() == "PYTHONLOCATION"})
 
 
 class InfraSecurityPreparationTests(unittest.TestCase):

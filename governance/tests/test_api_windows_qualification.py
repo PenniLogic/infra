@@ -31,6 +31,7 @@ qualification = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(qualification)
 MARKER = "PRIVATE-FIXTURE-PAYLOAD-DO-NOT-PRINT"
 INPUT_PREPARATION = "python -I -S -B scripts\\money_client_interop.py prepare"
+INFRA_SECURITY_SOURCE = "1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1"
 
 
 def api_checker():
@@ -355,6 +356,22 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
                         step["run"] = step["run"].replace(
                             qualifier, generator.powershell_commands([INPUT_PREPARATION]) + "\n" + qualifier,
                         )
+                        expected = previous.encoded(document)
+                    elif name == "infra" and not setup:
+                        document = json.loads(expected)
+                        reviewed = json.loads(support.git(
+                            support.GOVERNANCE.parent, "show", f"{INFRA_SECURITY_SOURCE}:{CI}",
+                        ))
+                        self.assertEqual({"ci", "windows", "ci-result"}, set(reviewed["jobs"]))
+                        for job_name in ("ci", "windows"):
+                            steps = document["jobs"][job_name]["steps"]
+                            self.assertEqual(["Checkout", "Python", "Node"],
+                                             [step["name"] for step in steps[:3]])
+                            self.assertEqual("Install uv", steps[3]["name"])
+                            preparation = reviewed["jobs"][job_name]["steps"][3]
+                            self.assertEqual({"name", "run"}, set(preparation))
+                            self.assertEqual("Prepare security tools", preparation["name"])
+                            steps.insert(3, preparation)
                         expected = previous.encoded(document)
                     with self.subTest(repository=name, setup=setup):
                         actual = generator.workflow(name, setup=setup)
