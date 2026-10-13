@@ -16,9 +16,10 @@ this one reach the trigger, the report proposes a
 quarantine with the package owner, a ticket requested through the TicketPort and an expiry at the maximum age;
 security, privacy and money tests are never quarantined. Active quarantines of the job are taken out of the
 gating set, still run and are reported. The run fails when a quarantine is older than the maximum age or past its
-expiry, when a quarantined test is skipped or disappears without an approved deletion record (a released test stays
-under that rule for the flake window), when the base-revision ledger or manifest is missing, when the ledger is not
-append-only against it, or when the manifest relaxes a protected test or a money-path job against it. The quarantine
+expiry, when a quarantined test is skipped or disappears without an approved deletion record (a test released in
+this change must still run in it), when a release or deletion appended in this change is dated more than
+CLOSURE_DATE_TOLERANCE_DAYS before the run (both proposed controls beyond flake_policy), when the base-revision
+ledger or manifest is missing, when the ledger is not append-only against it, or when the manifest relaxes a protected test or a money-path job against it. The quarantine
 rate ceiling counts a repository's tests and is judged by scripts/qa_gates_rate.py; this report publishes the job's
 share only.
 
@@ -42,6 +43,9 @@ from qa_gates_common import REFERENCE, RUN_ID, Refused, canonical_sha256, read_b
 
 REPORT_SCHEMA = "pennilogic.qa-gates.quarantine-report/1"
 MAX_ATTEMPTS = 8
+# A release or deletion appended in this change must be dated no earlier than this many days before the run, so a
+# backdated closure cannot shorten the hold on a released test or reuse evidence (proposed, ADVSEC-R2-01).
+CLOSURE_DATE_TOLERANCE_DAYS = 3
 OUTCOMES = ("passed", "failed", "flaky", "skipped")
 
 
@@ -148,11 +152,19 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
             find("QG-QUARANTINED-NOT-RUN", "fail", test)
         quarantined_tests.append({**record.record(), "age_days": age, "outcome": outcome, "exempt": test in exempt})
 
-    # A release closes a quarantine without approval, so a released test stays under the disappearance rule for
-    # the flake window after its release; only an approved deletion lets a quarantined test go.
-    for test, released_on in sorted(ledger.released_for(job_id).items()):
-        if (today - released_on).days <= policy.flake_window_days and \
-                combination.outcomes.get(test, "missing") in ("missing", "skipped"):
+    # Closures appended in this change compared with the base ledger (every closure when the base is missing,
+    # which fails on its own). A release closes a quarantine without approval, so a test released in this change
+    # must still run in it (review round 1 PS-3; round 2 PS-3: a release already in the base no longer holds the
+    # test, so it can be renamed or removed in a later change). Its date must be recent (ADVSEC-R2-01).
+    appended = {name: ledger.document[name][len(base_ledger.document[name]) if base_ledger is not None else 0:]
+                for name in ("releases", "deletions")}
+    for name, field in (("releases", "released_on"), ("deletions", "approved_on")):
+        for record in appended[name]:
+            if (today - datetime.date.fromisoformat(record[field])).days > CLOSURE_DATE_TOLERANCE_DAYS:
+                find("QG-CLOSURE-BACKDATED", "fail", record["test"])
+    new_releases = {record["test"] for record in appended["releases"] if record["job"] == job_id}
+    for test in sorted(ledger.released_for(job_id)):
+        if test in new_releases and combination.outcomes.get(test, "missing") in ("missing", "skipped"):
             find("QG-RELEASED-TEST-MISSING", "fail", test)
 
     events, proposals = [], []

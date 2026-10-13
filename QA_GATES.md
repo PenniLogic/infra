@@ -168,9 +168,14 @@ instructions, duplicate cases and rerun elements.
 - Active quarantines still run and are reported (`QG-QUARANTINED-FAILURE`, `QG-QUARANTINED-FLAKE`, effect
   `report`). The run fails when a quarantine is older than 14 days or past its expiry (`QG-QUARANTINE-AGE`,
   `QG-QUARANTINE-EXPIRED`), when a quarantined test is skipped or not run (`QG-QUARANTINED-NOT-RUN`) or disappears
-  without an approved deletion record (`QG-QUARANTINED-TEST-MISSING`). A release closes a quarantine without
-  reviewer approval, so a released test must still run (passed or failed) for 14 days after its release
-  (`QG-RELEASED-TEST-MISSING` when it is missing or skipped); only an approved deletion lets a quarantined test go.
+  without an approved deletion record (`QG-QUARANTINED-TEST-MISSING`); only an approved deletion lets a
+  quarantined test go. A release closes a quarantine without reviewer approval, so the change that appends a
+  release must still run the released test (`QG-RELEASED-TEST-MISSING` when it is missing or skipped); a later
+  change may rename or remove it like any other test. A release or deletion appended in the change (compared with
+  `--base-ledger`) must be dated no more than 3 days before the run (`QG-CLOSURE-BACKDATED`), so a backdated
+  closure cannot end that hold or move the post-closure trigger. Both rules are **proposed controls beyond
+  `flake_policy`** (pending QA/Reliability); the 3-day tolerance (`CLOSURE_DATE_TOLERANCE_DAYS`) leaves time for
+  review and is not a policy number.
   A first attempt in which no case outside the active quarantines ran (every other case skipped) fails
   (`QG-NOTHING-RAN`). A ledger change that is not append-only
   against `--base-ledger` fails (`QG-LEDGER-NOT-APPEND-ONLY`).

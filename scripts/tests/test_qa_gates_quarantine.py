@@ -324,27 +324,45 @@ class QuarantinedTestTests(GateCase):
         self.assertFindings(qs.run_gate(failing, ledger_doc=released), [("QG-REAL-FAILURE", "fail", A)], "fail")
 
 
-    def test_released_test_cannot_disappear_within_the_window(self):
+    def test_released_test_cannot_disappear_in_the_releasing_change(self):
         # Review round 1, PS-3 / ADVSEC-R1-03: a release needs no approval, so it must not bypass the deletion rule.
         released = quarantined_a()
         released["releases"].append(qs.release(A, -1))
-        self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=released), [], "pass")
-        report = qs.run_gate(run(("test_b", "passed")), ledger_doc=released)
+        base = quarantined_a()
+        self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=released, base_doc=base), [], "pass")
+        report = qs.run_gate(run(("test_b", "passed")), ledger_doc=released, base_doc=base)
         self.assertFindings(report, [("QG-RELEASED-TEST-MISSING", "fail", A)], "fail")
 
-    def test_released_test_skipped_within_the_window_fails(self):
+    def test_released_test_skipped_in_the_releasing_change_fails(self):
         released = quarantined_a()
         released["releases"].append(qs.release(A, -1))
-        report = qs.run_gate(run(("test_a", "skipped")), ledger_doc=released)
+        report = qs.run_gate(run(("test_a", "skipped")), ledger_doc=released, base_doc=quarantined_a())
         self.assertFindings(report, [("QG-RELEASED-TEST-MISSING", "fail", A)], "fail")
 
-    def test_released_test_may_disappear_after_the_window(self):
-        released = quarantined_a(start=-17)
-        released["releases"].append(qs.release(A, -15))
-        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=released), [], "pass")
-        released["releases"][0]["released_on"] = qs.day(-14)
-        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=released),
-                            [("QG-RELEASED-TEST-MISSING", "fail", A)], "fail")
+    def test_released_test_may_disappear_in_a_later_change(self):
+        # Review round 2, PS-3: a release already in the base ledger no longer holds the test (no approval path
+        # exists for a released test); only the releasing change must still run it.
+        released = quarantined_a(start=-10)
+        released["releases"].append(qs.release(A, -5))
+        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=released, base_doc=released), [], "pass")
+        report = qs.run_gate(run(("test_b", "passed")), ledger_doc=released, base_doc=quarantined_a(start=-10))
+        self.assertFindings(report, [("QG-RELEASED-TEST-MISSING", "fail", A), ("QG-CLOSURE-BACKDATED", "fail", A)],
+                            "fail")
+
+    def test_closure_appended_in_this_change_must_be_recent(self):
+        # Review round 2, ADVSEC-R2-01: a backdated release must not end the hold or reuse evidence.
+        expired = quarantined_a(start=-20)
+        for offset, expected in ((-gate.CLOSURE_DATE_TOLERANCE_DAYS, []),
+                                 (-gate.CLOSURE_DATE_TOLERANCE_DAYS - 1, [("QG-CLOSURE-BACKDATED", "fail", A)])):
+            with self.subTest(offset=offset):
+                head = copy.deepcopy(expired)
+                head["releases"].append(qs.release(A, offset))
+                self.assertFindings(qs.run_gate(run(("test_a", "passed")), ledger_doc=head, base_doc=expired),
+                                    expected, "fail" if expected else "pass")
+        deleted = copy.deepcopy(expired)
+        deleted["deletions"].append(qs.deletion(A, -15))
+        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=deleted, base_doc=expired),
+                            [("QG-CLOSURE-BACKDATED", "fail", A)], "fail")
 
     def test_deletion_after_release_requarantine_allows_disappearance(self):
         ledger = quarantined_a(start=-10)
