@@ -3,7 +3,8 @@
     python scripts/qa_gates_sast.py --report SEMGREP.json --root SOURCE_ROOT [--policy POLICY.json]
 
 Reads one Semgrep JSON report. A report with a non-empty `errors` list, a skipped rule or zero scanned paths is
-incomplete, and incomplete fails. Every finding blocks unless its rule is in `warn` mode inside a recorded window of
+incomplete, and incomplete fails; so is a checkout that uses Semgrep's own suppression (an inline marker in a
+scanned source or any ignore file), because that would be an unrecorded exception. Every finding blocks unless its rule is in `warn` mode inside a recorded window of
 at most seven days (`warn_from`..`warn_until`, judged against an injected clock); an expired or unknown rule blocks.
 Exceptions are unavailable until infra#23 integrates, so no finding is ever excepted here. The rule set and this
 report vocabulary are proposed, not agreed.
@@ -47,6 +48,12 @@ POLICY_LIMIT = 65536
 REPORT_LIMIT = 32 * 1024 * 1024
 SOURCE_LIMIT = 4 * 1024 * 1024
 RESULT_LIMIT = 100000
+# Semgrep honours an inline suppression comment (a space, then the marker below, optionally followed by "grep",
+# any case) unless run with --disable-nosem, and drops the suppressed match from its JSON output. The marker is
+# spelled in parts so this file never carries it. Any occurrence in a scanned source counts, comment or not (a
+# superset of Semgrep's own condition).
+INLINE_MARKER = re.compile(b" no" b"sem", re.IGNORECASE)
+IGNORE_FILE = ".semgrepignore"
 
 
 def load_rule_ids(rules_dir=RULES_DIR):
@@ -216,6 +223,34 @@ def _finding(result, rule_ids, scanned, root, sources, modes, today):
     }
 
 
+def ignore_files(root):
+    """Sorted relative POSIX paths of every `.semgrepignore` under ``root`` (links not followed, `.git` pruned)."""
+    found = []
+    try:
+        for directory, subdirectories, names in os.walk(root, followlinks=False):
+            subdirectories[:] = sorted(name for name in subdirectories if name != ".git")
+            if IGNORE_FILE in names:
+                found.append(Path(directory, IGNORE_FILE).relative_to(root).as_posix())
+    except (OSError, ValueError):
+        raise Refused("SAST-SOURCE-UNREADABLE") from None
+    return sorted(found)
+
+
+def suppression(root, scanned, sources):
+    """Semgrep's own suppression channels in the checkout: inline markers in scanned sources and ignore files.
+
+    Either one is an unrecorded exception (Semgrep drops the match or the file without an error), and exceptions
+    are refused until infra#23 integrates, so the gate treats either as an incomplete scan.
+    """
+    marked = []
+    for path in scanned:
+        if path not in sources:
+            sources[path] = _source(root, path)
+        if INLINE_MARKER.search(sources[path]) is not None:
+            marked.append(path)
+    return {"inline_marker_paths": marked, "ignore_files": ignore_files(root)}
+
+
 def evaluate(data, root, modes, today, rule_ids=None):
     """Gate one Semgrep report: incomplete fails first, then any `block`-mode finding fails."""
     rule_ids = tuple(sorted(modes)) if rule_ids is None else tuple(rule_ids)
@@ -225,6 +260,7 @@ def evaluate(data, root, modes, today, rule_ids=None):
         (_finding(result, rule_ids, scanned_set, root, sources, modes, today) for result in results),
         key=lambda item: (item["path"], item["line"], item["rule_id"], item["fingerprint"], item["scanner_severity"]),
     )
+    suppressed = suppression(root, scanned, sources)
     blocking = sum(item["mode"] == "block" for item in findings)
     by_severity = {}
     for item in findings:
@@ -235,6 +271,10 @@ def evaluate(data, root, modes, today, rule_ids=None):
         reason = "SAST-INCOMPLETE-SKIPPED-RULES"
     elif not scanned:
         reason = "SAST-INCOMPLETE-NO-PATHS"
+    elif suppressed["inline_marker_paths"]:
+        reason = "SAST-INCOMPLETE-INLINE-SUPPRESSION"
+    elif suppressed["ignore_files"]:
+        reason = "SAST-INCOMPLETE-IGNORE-FILE"
     elif blocking:
         reason = "SAST-BLOCKING-FINDINGS"
     else:
@@ -242,10 +282,10 @@ def evaluate(data, root, modes, today, rule_ids=None):
     return {
         "schema": REPORT_SCHEMA, "vocabulary_status": VOCABULARY_STATUS, "rule_set_status": PROPOSED,
         "decision": "pass" if reason is None else "fail", "reason": reason,
-        "complete": not (error_count or skipped_count or not scanned),
+        "complete": reason in (None, "SAST-BLOCKING-FINDINGS"),
         "scanner": {"name": "semgrep", "version": version, "kind": "sast"},
         "evaluated_on": today.isoformat(),
-        "scanned_path_count": len(scanned), "error_count": error_count, "skipped_rule_count": skipped_count,
+        "suppression": suppressed, "scanned_path_count": len(scanned), "error_count": error_count, "skipped_rule_count": skipped_count,
         "counts": {"blocking": blocking, "warning": len(findings) - blocking, "by_scanner_severity": by_severity},
         "expired_warnings": expired_warnings(modes, today),
         "exceptions": {"status": EXCEPTIONS_STATUS, "planned_binding": PLANNED_EXCEPTIONS_BINDING, "count": 0},
@@ -259,7 +299,9 @@ PROVENANCE_KEYS = (
     "working_directory", "rules_dir", "rules_sha256", "fixture_dir", "fixture_sha256", "scanned_paths",
     "raw_output_sha256", "committed_form", "report_sha256", "generated_on", "generated_by",
 )
-REQUIRED_FLAGS = ("--metrics=off", "--disable-version-check", "--json")
+REQUIRED_FLAGS = (
+    "--metrics=off", "--disable-version-check", "--json", "--disable-nosem", "--x-ignore-semgrepignore-files",
+)
 
 
 def tree_files(root, relative_dir, suffix=None):

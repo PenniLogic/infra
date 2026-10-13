@@ -208,11 +208,21 @@ class SastReportGateTests(unittest.TestCase):
     def test_dot_directory_path_accepted_but_dot_segments_refused(self):
         document = clean()
         document["paths"]["scanned"].append(".github/scripts/check.py")
-        self.assertEqual(gate(document)["scanned_path_count"], 7)
+        with copied_root() as root:
+            (root / ".github/scripts").mkdir(parents=True)
+            (root / ".github/scripts/check.py").write_bytes(b"x = 1\n")
+            self.assertEqual(gate(document, root=root)["scanned_path_count"], 7)
         for bad in ("scripts/./check.py", "/etc/passwd", "C:/x.py", "a//b.py"):
             document = clean()
             document["paths"]["scanned"].append(bad)
             self.assertRefused("SAST-REPORT-PATH", gate, document)
+
+    def test_scanned_path_missing_from_the_root_refused(self):
+        # Review round 1 SS-R1-02: every scanned source is read for suppression markers.
+        self.assertEqual(gate(clean())["decision"], "pass")
+        document = clean()
+        document["paths"]["scanned"].append("scripts/qa-gates/fixtures/planted/python/absent.py")
+        self.assertRefused("SAST-SOURCE-UNREADABLE", gate, document)
 
     def test_result_empty_span_refused(self):
         document = only(EVAL_RULE)
@@ -499,6 +509,66 @@ class SastCannedReportBindingTests(unittest.TestCase):
     def test_provenance_missing_key_refused(self):
         mutated = self.provenance_with(lambda document: document.pop("rules_sha256"))
         self.assertRefused("SAST-CANNED-KEYS", sast.verify_canned, self.report, mutated, ROOT)
+
+
+# Semgrep's inline suppression marker, spelled in parts so this file never carries it (review round 1 SS-R1-02).
+MARKER = b" no" b"semgrep"
+CLEAN_PY = "scripts/qa-gates/fixtures/planted/python/clean_control.py"
+
+
+class SastSuppressionTests(unittest.TestCase):
+    """Semgrep's own suppression channels are unrecorded exceptions: the gate treats them as an incomplete scan."""
+
+    def test_inline_marker_in_a_scanned_source_is_incomplete(self):
+        with copied_root() as root:
+            self.assertEqual(gate(clean(), root=root)["decision"], "pass")
+            source = root / CLEAN_PY
+            source.write_bytes(source.read_bytes() + b"x = 1  #" + MARKER + b"\n")
+            report = gate(clean(), root=root)
+        self.assertEqual((report["decision"], report["reason"], report["complete"]),
+                         ("fail", "SAST-INCOMPLETE-INLINE-SUPPRESSION", False))
+        self.assertEqual(report["suppression"], {"inline_marker_paths": [CLEAN_PY], "ignore_files": []})
+
+    def test_inline_marker_outranks_blocking_findings(self):
+        with copied_root() as root:
+            self.assertEqual(gate(only(EVAL_RULE), root=root)["reason"], "SAST-BLOCKING-FINDINGS")
+            source = root / CLEAN_PY
+            source.write_bytes(source.read_bytes() + b"#" + MARKER.upper() + b": " + EVAL_RULE.encode() + b"\n")
+            self.assertEqual(gate(only(EVAL_RULE), root=root)["reason"], "SAST-INCOMPLETE-INLINE-SUPPRESSION")
+
+    def test_marker_text_without_a_leading_space_is_not_a_suppression(self):
+        with copied_root() as root:
+            self.assertEqual(gate(clean(), root=root)["decision"], "pass")
+            source = root / CLEAN_PY
+            source.write_bytes(source.read_bytes() + b'FLAG = "--disable-' + MARKER.strip()[:5] + b'"\n')
+            self.assertEqual(gate(clean(), root=root)["reason"], None)
+
+    def test_ignore_file_anywhere_in_the_checkout_is_incomplete(self):
+        for relative in (".semgrepignore", "scripts/qa-gates/.semgrepignore"):
+            with self.subTest(relative=relative), copied_root() as root:
+                self.assertEqual(gate(clean(), root=root)["decision"], "pass")
+                (root / relative).write_bytes(b"src/\n")
+                report = gate(clean(), root=root)
+                self.assertEqual((report["reason"], report["complete"]), ("SAST-INCOMPLETE-IGNORE-FILE", False))
+                self.assertEqual(report["suppression"]["ignore_files"], [relative])
+
+    def test_ignore_file_inside_git_metadata_is_not_walked(self):
+        with copied_root() as root:
+            (root / ".git").mkdir()
+            self.assertEqual(gate(clean(), root=root)["decision"], "pass")
+            (root / ".git" / ".semgrepignore").write_bytes(b"src/\n")
+            self.assertEqual(gate(clean(), root=root)["decision"], "pass")
+
+    def test_canned_command_must_disable_both_suppression_channels(self):
+        report, provenance = CANNED.read_bytes(), json.loads(PROVENANCE.read_text(encoding="utf-8"))
+        sast.verify_canned(report, dump(provenance), ROOT)
+        for flag in ("--disable-nosem", "--x-ignore-semgrepignore-files"):
+            with self.subTest(flag=flag):
+                mutated = json.loads(json.dumps(provenance))
+                mutated["command"].remove(flag)
+                with self.assertRaises(Refused) as caught:
+                    sast.verify_canned(report, dump(mutated), ROOT)
+                self.assertEqual(caught.exception.code, "SAST-CANNED-COMMAND")
 
 
 def run_cli(argv, today=TODAY):

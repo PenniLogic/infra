@@ -9,6 +9,8 @@
     "scan",
     "--metrics=off",
     "--disable-version-check",
+    "--disable-nosem",
+    "--x-ignore-semgrepignore-files",
     "--json",
     "--output",
     "<tmp>/semgrep-planted.raw.json",
@@ -29,9 +31,9 @@
     "scripts/qa-gates/fixtures/planted/typescript/clean-control.ts",
     "scripts/qa-gates/fixtures/planted/typescript/planted-injection.ts"
   ],
-  "raw_output_sha256": "08014c2cfa19e123384452b6a8536309c8f8d3451e9073be1bfb43459f7f146b",
+  "raw_output_sha256": "94d0d84f5374cfe3097736d738b3adcccd40aa3905200d737f714214563f4c8f",
   "committed_form": "the raw Semgrep JSON output re-serialized with json.dumps(indent=2, ensure_ascii=True) plus LF; content unchanged",
-  "report_sha256": "cb1d825db5ffe53aa654f66b25a936c58c35096879750b18a5a683712114b5cb",
+  "report_sha256": "31427a9f6ed7472df06899e992e6e32637b894ae56c57317d0541e2321d57cbc",
   "generated_on": "2026-10-13",
   "generated_by": "the implementing session (Claude Code, Claude Opus 5.5) on a local Linux workstation; not CI, not acceptance evidence"
 }

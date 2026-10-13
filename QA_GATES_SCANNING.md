@@ -32,7 +32,14 @@ including a missing report. stdout carries one ASCII JSON report (`pennilogic.qa
 2. **Incomplete fails.** A non-empty `errors` list (`SAST-INCOMPLETE-ERRORS`), a skipped rule
    (`SAST-INCOMPLETE-SKIPPED-RULES`) or zero scanned paths (`SAST-INCOMPLETE-NO-PATHS`) fails the gate, even when
    no finding is reported.
-3. **Everything blocks** (`SAST-BLOCKING-FINDINGS`), as the accepted test strategy states for
+3. **Semgrep's own suppression is an incomplete scan.** Semgrep drops a match on a line carrying its inline
+   suppression comment (`nosemgrep`, any case, after a space) and skips files named in a `.semgrepignore`, without
+   any error entry, unless it runs with `--disable-nosem` and `--x-ignore-semgrepignore-files`. Either channel would
+   be an unrecorded exception without expiry, so the gate reads every scanned source and fails when one carries the
+   marker (`SAST-INCOMPLETE-INLINE-SUPPRESSION`, listing the paths) or when the checkout holds any `.semgrepignore`
+   outside `.git` (`SAST-INCOMPLETE-IGNORE-FILE`). It does this whatever flags the run used, because a report does
+   not record them. A scanned path missing from `--root` is refused (`SAST-SOURCE-UNREADABLE`).
+4. **Everything blocks** (`SAST-BLOCKING-FINDINGS`), as the accepted test strategy states for
    `static_dependency_secret_gates` ("all blocking"). The only relaxation is a per-rule `warn` mode with a
    recorded window (below). A finding from a rule this repository does not define always blocks.
 
@@ -90,12 +97,14 @@ mode is a reviewed edit of this file; the one-week warning-only rollout itself h
 ### Exceptions
 
 None. The exception mechanism belongs to infra#23 (draft infra PR #88), which is not integrated, so every report
-says `exceptions: {"status": "unavailable: infra#23 not integrated", "count": 0}`. The planned binding is
+says `exceptions: {"status": "unavailable: infra#23 not integrated", "count": 0}`. Semgrep's inline and path
+suppression are exception channels too and are refused until then (decision step 3). The planned binding is
 `security_exceptions.Exceptions.suppression`; it is named only, never copied or re-implemented.
 
 ### Observability fields
 
 `counts.blocking`, `counts.warning`, `counts.by_scanner_severity`, `expired_warnings`, `exceptions.count`,
+`suppression.{inline_marker_paths, ignore_files}`,
 `scanned_path_count`, `error_count`, `skipped_rule_count`, `complete` and `evaluated_on`.
 Publishing them from CI is held with the CI wiring.
 
@@ -105,8 +114,9 @@ Planted positives and clean controls are in `scripts/qa-gates/fixtures/planted/{
 are never imported, compiled or run, and they sit outside every `tests/` path because Semgrep ignores test paths by
 default. The tests use `scripts/tests/fixtures/qa_gates_sast/semgrep-planted.json`, a report from a **local**
 Semgrep 1.178.0 run (user-local install, not pinned by infra), with
-`semgrep-planted.provenance.json`. The provenance records the command (`--metrics=off --disable-version-check`,
-local rules only, never a registry config), the Semgrep version, the SHA-256 of the rule files, of the planted
+`semgrep-planted.provenance.json`. The provenance records the command (`--metrics=off --disable-version-check
+--disable-nosem --x-ignore-semgrepignore-files`, local rules only, never a registry config; the binding check
+refuses a command without any of these flags), the Semgrep version, the SHA-256 of the rule files, of the planted
 tree and of the committed report, and the scanned path list. A unit test recomputes the bindings: editing a rule
 file or a planted source without regenerating the report fails it. The canned report is a `local-fixture` input
 and **never acceptance evidence** (`acceptance_evidence: false`).
@@ -115,8 +125,8 @@ To regenerate after a rule or planted-source change, run from the repository roo
 `json.dumps(indent=2, ensure_ascii=True)` plus a final LF and update every digest in the provenance file:
 
 ```text
-semgrep scan --metrics=off --disable-version-check --json --output <tmp>/semgrep-planted.raw.json \
-    --config scripts/qa-gates/rules scripts/qa-gates/fixtures/planted
+semgrep scan --metrics=off --disable-version-check --disable-nosem --x-ignore-semgrepignore-files --json \
+    --output <tmp>/semgrep-planted.raw.json --config scripts/qa-gates/rules scripts/qa-gates/fixtures/planted
 ```
 
 ## DAST: ZAP alerts and scan manifest gate
@@ -213,9 +223,16 @@ policies are all-blocking, and the warning week itself has not run.
 ## Held and not claimed
 
 - **CI wiring.** Criterion 1 ("fails the pull request") needs a Semgrep CI step with a pinned, trusted Semgrep
-  binary, and criterion 2 needs a deploy-pipeline DAST step; both are wired through the generator owner (the
+  binary run with `--metrics=off --disable-version-check --disable-nosem --x-ignore-semgrepignore-files` and only
+  this repository's rule directory as `--config`, and criterion 2 needs a deploy-pipeline DAST step; both are wired through the generator owner (the
   workflows are generated files). Scanner execution, timeouts and process cleanup wait for infra#23's process
   controls. Publishing the counts to the release checklist is held with the wiring.
+- **Scanned-target binding.** A live report is not yet bound to the target list expected from the trusted
+  checkout, so a CI step that passes `--exclude`, `--include` or a narrower target path could drop files without
+  the gate noticing. The held CI step must take that list from the trusted checkout and fail when `paths.scanned`
+  omits a target. Infra's own repository scan must exclude `scripts/qa-gates/fixtures/planted` only through an
+  explicit, recorded `--exclude` (never an inline marker or `.semgrepignore`, which this gate fails), and must scan
+  that directory separately as a positive control that is expected to fail with the 13 planted findings.
 - **Real authenticated scan.** Criterion 2 ("a dynamic scan of the running build reports and fails on a high
   severity finding") needs an ephemeral deployed build with synthetic data, a ZAP executor that calls
   `preflight_target` before the first request, short-lived credentials scoped to that environment, a committed
