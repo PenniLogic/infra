@@ -65,7 +65,8 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(check("pytest --reruns 1")[0], 0)
         code, report = check("pytest --reruns 2")
-        self.assertEqual((code, [finding["rule"] for finding in report["findings"]]), (1, ["RETRY-LIMIT-EXCEEDED"]))
+        self.assertEqual((code, [finding["rule"] for finding in report["findings"]]),
+                         (1, ["RETRY-ATTEMPT-HIDDEN", "RETRY-LIMIT-EXCEEDED", "RETRY-MANIFEST-JOB-UNCHECKED"]))
 
     def test_policy_subcommand_reports_the_pin(self):
         code, output = self.run_main("policy")

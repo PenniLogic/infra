@@ -78,15 +78,36 @@ values; it never matches substrings of free text.
   `--max-runs`, `-D...rerunFailingTestsCount=N`, Gradle `-PmaxRetries=N`; keys with the same names (any case or separator, for example
   `max_attempts`, `retryTimes`, `test.retry`); a retry-shaped action such as `nick-fields/retry` with its
   `max_attempts` input. Attempt counts become re-executions (attempts minus one); `false` counts as 0.
-- Several constructs in one job compound: executions multiply, so a retry action with two attempts around
-  `pytest --reruns 1` is three re-executions. Workflow-level keys (for example top-level `env`) count for every job.
+- Constructs compound only where one wraps the other: a retry action and the command it runs, several retry
+  flags of one command, and workflow-level or job-level keys (for example `env`) around every step. So a retry
+  action with two attempts around `pytest --reruns 1` is three re-executions. Independent steps of a job, scripts
+  of a `package.json` and commands of one shell string (separated by newlines, `;`, `&&`, `||` or `|`) do not
+  re-execute each other: the largest of them applies.
+- Flags inside the value of a `NAME=value` token are read (`PYTEST_ADDOPTS=--reruns=5`, `export ...`,
+  `echo "PYTEST_ADDOPTS=--reruns 5" >> "$GITHUB_ENV"`, `MAVEN_ARGS=-D...rerunFailingTestsCount=3`,
+  `pytest -o addopts=--reruns=5`), and an empty quote pair inside a word (`--re''runs`) is joined as the shell does.
+- **Re-execution model (proposed, pending a QA/Reliability decision).** The quarantine gate can record a flake
+  only when the failing first run and the re-execution arrive as separate JUnit reports. A retry inside the test
+  runner (`--reruns`, `--retry`, `rerunFailingTestsCount`, ...) or a whole-step retry action re-runs inside one
+  reported attempt: the report then shows a clean pass, or a rerun element the gate refuses, and an in-runner
+  retry plus a separate re-execution attempt can exceed one re-execution while both gates pass. The proposed model
+  is: in-runner and whole-step retries 0, and the one permitted re-execution is a separate CI step that re-runs
+  only the failed cases into its own report. The brief keeps "fail above 1", so every counted construct of at
+  least one re-execution is reported as `RETRY-ATTEMPT-HIDDEN` (effect `report`) for that decision; making it
+  fail is the decision's to take. Until then such a configuration can turn a flake into a clean pass.
 - Limits: `money_path_retry_limit` (0) for a job that `scripts/qa-gates/protected-tests.json` maps (workflow file
-  and job key) to a money-path package, `retry_limit` (1) for every other job. A runner configuration cannot be
-  mapped to one job, so it gets the strictest limit of any job in the manifest.
+  and job key) to a money-path package, `retry_limit` (1) for every other mapped job. A job the manifest does not
+  map, and a runner configuration (which cannot be mapped to one job), get the strictest limit of any job in the
+  manifest; an unmapped job is listed as `RETRY-JOB-UNMAPPED` when that limit is the money-path one, and a
+  manifest job missing from a checked workflow file is listed as `RETRY-MANIFEST-JOB-UNCHECKED`.
 - Fail closed: a retry-shaped key, flag or action whose count cannot be read (a non-number, an expression, a
-  retry action without an attempt input, an unknown retry flag) is `RETRY-UNKNOWN`. Gradle's `--rerun-tasks` and
-  `--rerun` force a task to run again and are not retries of a failure.
-- Reported only: a retry-shaped name inside a dependency map (`dependencies`, `devDependencies`, `overrides`, ...).
+  retry action without an attempt input, an unknown retry flag) is `RETRY-UNKNOWN`, and so is a request to re-run
+  a workflow run (`gh run rerun`, the `.../actions/runs/<id>/rerun` and `rerun-failed-jobs` endpoints). Gradle's
+  `--rerun-tasks` and `--rerun` force a task to run again and are not retries of a failure. Known non-count
+  modifiers of the named mechanisms (`--reruns-delay`, `--only-rerun`, and nick-fields/retry `retry_on`,
+  `retry_wait_seconds`, `retry_on_exit_code`, `on_retry_command`, `warning_on_retry`) are not retry counts.
+- Reported only: a retry-shaped name inside a top-level dependency map of a runner configuration
+  (`dependencies`, `devDependencies`, `overrides`, ...). In workflows and `env`, such keys are read like any other.
 - Script names in a `scripts` map (for example `test:flaky`) are labels: only the commands are read.
 
 | Rule | Effect | Meaning |
@@ -95,6 +116,9 @@ values; it never matches substrings of free text.
 | `RETRY-MONEY-PATH` | fail | A money-path job (or a runner configuration under the strictest limit) re-executes more than 0. |
 | `RETRY-UNKNOWN` | fail | A retry-shaped construct whose count cannot be read. |
 | `RETRY-DEPENDENCY` | report | A retry-shaped dependency name; not a configuration, listed for review. |
+| `RETRY-ATTEMPT-HIDDEN` | report | An in-runner or whole-step retry the quarantine gate cannot observe (see the re-execution model). |
+| `RETRY-JOB-UNMAPPED` | report | A job the manifest does not map, checked under the money-path limit. |
+| `RETRY-MANIFEST-JOB-UNCHECKED` | report | A manifest job missing from its checked workflow file. |
 
 Refusals (exit 2): `USAGE`, `INPUT-NONE` (no input named), `INPUT-PATHS` (duplicate or more than 64 inputs),
 `INPUT-PATH` (absolute, `..` or non-workflow path), `INPUT-UNREADABLE`, `CONFIG-SIZE`, `CONFIG-JSON` (not strict
@@ -117,7 +141,8 @@ instructions, duplicate cases and rerun elements.
   without any record; the 2-in-14-days trigger then never sees that event. Recording events and quarantining are
   therefore not automatic in this change (see [Still unmet](#still-unmet)). The gate only refuses to count a flake
   it can see as a clean pass; it cannot see a retry inside the test runner or a whole-step retry (see the retry
-  check's re-execution model). A case that still fails is `QG-REAL-FAILURE`. A re-execution beyond the policy (or any on a money-path job) is `QG-RETRY-LIMIT`.
+  check's re-execution model). A case that still fails is `QG-REAL-FAILURE`. A re-execution beyond the policy
+  (or any on a money-path job) is `QG-RETRY-LIMIT`.
 - When the recorded events of a test inside the 14-day window plus this one reach 2, the report proposes a
   quarantine (`QG-QUARANTINE-PROPOSED`) with the package owner from the manifest, a ticket requested through the
   `TicketPort` and an expiry at 14 days. Real ticket creation is held: the default port creates nothing and the
@@ -125,7 +150,8 @@ instructions, duplicate cases and rerun elements.
 - Security, privacy and money tests are never quarantined (`QG-QUARANTINE-REFUSED-PROTECTED`,
   `QG-QUARANTINE-PROTECTED`), as classified by the head manifest; a change that removes a tag from a known test or
   relaxes a money-path job compared with `--base-manifest` fails (`QG-MANIFEST-RELAXED`). This holds only when CI
-  passes the base revision's manifest, which is a wiring precondition; a test the manifest cannot classify, or classifies into two packages, fails closed
+  passes the base revision's manifest, which is a wiring precondition; a test the manifest cannot classify, or
+  classifies into two packages, fails closed
   (`QG-CLASSIFICATION-UNKNOWN`, `QG-CLASSIFICATION-AMBIGUOUS`), and so does a test whose package the job does not
   list (`QG-JOB-PACKAGE-UNMAPPED`).
 - Active quarantines still run and are reported (`QG-QUARANTINED-FAILURE`, `QG-QUARANTINED-FLAKE`, effect
@@ -192,6 +218,14 @@ per-rule warning switch with expiry is to be implemented with that wiring; it do
 - Only `-flag`, `--flag` and `name=value` tokens are read: Windows-style `/retry:3` switches, composite actions
   (`action.yml`) and expressions that compute a count at run time are not evaluated (an expression as the value of
   a known flag fails closed). Compounded re-executions are reported up to a cap of 1000000.
+- Retry mechanisms the token check does not see (criterion 6 depends on them being reviewed by hand): flag names
+  spliced from shell variables (`R=runs; pytest --re$R 5`) or from non-empty quoted fragments; shell-level
+  repetition (`pytest || pytest`, a `for` loop around a test command); a `continue-on-error` test step followed by
+  a conditional re-run step; a `workflow_run` workflow that re-runs failed runs through an action or script other
+  than `gh run rerun` and the rerun endpoints; `npm run` scripts that call each other (each script is read on its
+  own); a retry inside the reusable workflows, composite actions and non-JSON files listed above.
+- The quarantine gate relies on CI passing the base revision's ledger and manifest (`--base-ledger`,
+  `--base-manifest`) and running the `rate` step after every manifest job; both are wiring preconditions.
 - The ticket idempotency key includes the run id, so a real `TicketPort` must also deduplicate open tickets per
   job and test; a real port that raises is not caught by the gate (traceback, exit 1: fails closed without a
   refusal report). Decide both at integration.
@@ -203,7 +237,9 @@ Each item below stays open; none is claimed by this change.
 - Criteria 3 and 4 (dependency advisory with exceptions; planted secret with rotation ticket): require the
   infra#23 shared secret, dependency and exception mechanism to be integrated and verified.
 - Criteria 1 and 6 (planted SAST pattern fails the pull request; no pipeline step retries beyond the policy):
-  require CI wiring through the generator owner; the retry check exists but no workflow runs it yet.
+  require CI wiring through the generator owner; the retry check exists but no workflow runs it yet. Criterion 6
+  also depends on the re-execution model decision (`RETRY-ATTEMPT-HIDDEN` is report-only) and on the mechanisms
+  listed under Known limits.
 - Criterion 5 (quarantine creates a ticket): real ticket creation is held; tests use a fake `TicketPort`.
 - Criterion 5 and the Scope item "automatic quarantine after a defined number of flakes": flake events are not
   recorded automatically and quarantines are not applied automatically. Events persist only through a manual

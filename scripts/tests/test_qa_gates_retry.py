@@ -63,8 +63,9 @@ class DocumentConstructTests(unittest.TestCase):
         self.assertEqual(retry.constructs({"retries": {"count": 1}}), [("unknown", None)])
 
     def test_retry_shaped_dependency_is_reported_only(self):
-        self.assertEqual(retry.constructs({"devDependencies": {"vitest": "1.0.0"}}), [])
-        self.assertEqual(retry.constructs({"devDependencies": {"p-retry": "1.0.0"}}), [("report", None)])
+        top = {"dependency_maps": True}
+        self.assertEqual(retry.constructs({"devDependencies": {"vitest": "1.0.0"}}, **top), [])
+        self.assertEqual(retry.constructs({"devDependencies": {"p-retry": "1.0.0"}}, **top), [("report", None)])
 
     def test_script_names_are_labels(self):
         self.assertEqual(retry.constructs({"scripts": {"test:flaky": "vitest run"}}), [])
@@ -103,7 +104,9 @@ def judge(*documents, manifest_doc=None, runner_configs=()):
 
 
 def rules(report):
-    return [(finding["rule"], finding["job"], finding["count"]) for finding in report["findings"]]
+    """Findings other than RETRY-ATTEMPT-HIDDEN, which HiddenAttemptTests asserts on its own."""
+    return [(finding["rule"], finding["job"], finding["count"]) for finding in report["findings"]
+            if finding["rule"] != "RETRY-ATTEMPT-HIDDEN"]
 
 
 class EvaluateTests(unittest.TestCase):
@@ -235,3 +238,105 @@ class MainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def one_job(*steps, key="ci", **job_keys):
+    return {"name": "synthetic", "on": {"pull_request": {}},
+            "jobs": {key: {"runs-on": "ubuntu-24.04", **job_keys, "steps": list(steps)}}}
+
+
+def plain_manifest():
+    """The synthetic manifest without its money-path job (no strictest limit)."""
+    document = qs.manifest_document()
+    document["jobs"] = document["jobs"][:1]
+    return document
+
+
+class IndependentStepsTests(unittest.TestCase):
+    # Review round 1, PS-2: sequential steps, scripts and commands do not re-execute each other.
+    def test_two_independent_once_retried_steps_pass(self):
+        steps = [{"run": "python -m pytest --reruns 1 tests/unit"}, {"run": "python -m pytest --reruns 1 tests/it"}]
+        report = judge(one_job(*steps), manifest_doc=plain_manifest())
+        self.assertEqual((report["decision"], report["checked"][0]["re_executions"]), ("pass", 1))
+        wrapped = {"uses": "nick-fields/retry@v3", "with": {"max_attempts": 2, "command": steps[0]["run"]}}
+        report = judge(one_job(wrapped, steps[1]), manifest_doc=plain_manifest())
+        self.assertEqual(rules(report), [("RETRY-LIMIT-EXCEEDED", "ci", 3)])
+
+    def test_independent_commands_and_scripts_take_the_largest(self):
+        self.assertEqual(retry.re_executions(retry.command_constructs("pytest --reruns 1; pytest --reruns 1")), 1)
+        self.assertEqual(retry.re_executions(retry.command_constructs("pytest --reruns 1 --max-retries 1")), 3)
+        scripts = {"scripts": {"test": "vitest run --retry 1", "e2e": "playwright test --retries 1"}}
+        self.assertEqual(retry.re_executions(retry.constructs(scripts)), 1)
+        scripts["scripts"]["e2e"] = "playwright test --retries 2"
+        self.assertEqual(retry.re_executions(retry.constructs(scripts)), 2)
+
+
+class HiddenAttemptTests(unittest.TestCase):
+    # Review round 1, PS-5 / ADVSEC-R1-01: an in-runner or whole-step retry hides the failed attempt from the
+    # quarantine gate; the brief's "fail above 1" stands, so it is reported for the QA/Reliability decision.
+    def test_hidden_retry_is_reported(self):
+        clean = judge(one_job({"run": "python -m pytest"}), manifest_doc=plain_manifest())
+        self.assertEqual((clean["decision"], clean["findings"]), ("pass", []))
+        for step in ({"run": "mvn -Dsurefire.rerunFailingTestsCount=1 test"},
+                     {"uses": "nick-fields/retry@v3", "with": {"max_attempts": 2, "command": "python -m pytest"}}):
+            with self.subTest(step=sorted(step)):
+                report = judge(one_job(step), manifest_doc=plain_manifest())
+                self.assertEqual((report["decision"], [(f["rule"], f["effect"]) for f in report["findings"]]),
+                                 ("pass", [("RETRY-ATTEMPT-HIDDEN", "report")]))
+
+
+class ValueFlagTests(unittest.TestCase):
+    # Review round 1, ADVSEC-R1-02 / -08 / -09: flags inside NAME=value values, env maps and spliced quotes.
+    def test_flags_inside_name_value_values_are_read(self):
+        self.assertEqual(rules(judge(one_job({"run": "PYTEST_ADDOPTS=-v python -m pytest"}),
+                                     manifest_doc=plain_manifest())), [])
+        for command, count in (("PYTEST_ADDOPTS=--reruns=5 python -m pytest", 5),
+                               ("export PYTEST_ADDOPTS=--reruns=5", 5),
+                               ('echo "PYTEST_ADDOPTS=--reruns 5" >> "$GITHUB_ENV"', 5),
+                               ("MAVEN_ARGS=-Dsurefire.rerunFailingTestsCount=3 mvn -B test", 3),
+                               ("python -m pytest -o addopts=--reruns=5", 5),
+                               ("python -m pytest --re''runs 5", 5)):
+            with self.subTest(command=command):
+                report = judge(one_job({"run": command}), manifest_doc=plain_manifest())
+                self.assertEqual(rules(report), [("RETRY-LIMIT-EXCEEDED", "ci", count)])
+
+    def test_dependency_map_names_in_workflow_env_are_read(self):
+        control = judge(one_job({"run": "python -m pytest $OVERRIDES"}, env={"OVERRIDES": "-v"}),
+                        manifest_doc=plain_manifest())
+        self.assertEqual(control["decision"], "pass")
+        report = judge(one_job({"run": "python -m pytest $OVERRIDES"}, env={"OVERRIDES": "--reruns 5"}),
+                       manifest_doc=plain_manifest())
+        self.assertEqual(rules(report), [("RETRY-LIMIT-EXCEEDED", "ci", 5)])
+
+    def test_workflow_rerun_requests_fail_closed(self):
+        self.assertEqual(judge(one_job({"run": "gh run list --limit 1"}), manifest_doc=plain_manifest())["decision"],
+                         "pass")
+        for command in ("gh run rerun 123 --failed",
+                        "curl -X POST https://api.github.com/repos/o/r/actions/runs/1/rerun-failed-jobs"):
+            with self.subTest(command=command):
+                report = judge(one_job({"run": command}), manifest_doc=plain_manifest())
+                self.assertEqual(rules(report), [("RETRY-UNKNOWN", "ci", 1)])
+
+    def test_non_count_modifiers_of_named_mechanisms_pass(self):
+        # Review round 1, PS-6.
+        self.assertEqual(retry.command_constructs("pytest --reruns 1 --reruns-delay 2 --only-rerun x"),
+                         [("count", 1)])
+        step = {"uses": "nick-fields/retry@v3", "with": {"timeout_minutes": 10, "max_attempts": 2,
+                                                         "retry_on": "error", "retry_wait_seconds": 5,
+                                                         "command": "npm test"}}
+        self.assertEqual(judge(one_job(step), manifest_doc=plain_manifest())["decision"], "pass")
+        self.assertEqual(retry.command_constructs("pytest --reruns x --reruns-delay 2"), [("unknown", None)])
+
+
+class UnmappedJobTests(unittest.TestCase):
+    # Review round 1, ADVSEC-R1-07: an unmapped job never silently gets a laxer limit than the manifest's strictest.
+    def test_unmapped_job_takes_the_strictest_limit(self):
+        step = {"run": "python -m pytest --reruns 1"}
+        control = judge(one_job(step, key="money-tests"), manifest_doc=plain_manifest())
+        self.assertEqual((control["decision"], control["checked"][0]["limit"]), ("pass", 1))
+        self.assertEqual(rules(control), [("RETRY-MANIFEST-JOB-UNCHECKED", "ci", 1)])
+        report = judge(one_job(step, key="money-tests"))
+        self.assertEqual(rules(report), [("RETRY-JOB-UNMAPPED", "money-tests", 1),
+                                         ("RETRY-MANIFEST-JOB-UNCHECKED", "ci", 1),
+                                         ("RETRY-MANIFEST-JOB-UNCHECKED", "money", 1),
+                                         ("RETRY-MONEY-PATH", "money-tests", 1)])

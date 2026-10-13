@@ -12,8 +12,14 @@ Inputs are JSON-syntax workflow files and JSON runner configurations (for exampl
 `--root`. The check reads object keys, `uses` action names and command-line flag tokens of string values; it never
 matches free-text substrings. Known constructs (`--reruns`, `--retry`, `--retries`, `--max-attempts`,
 `rerunFailingTestsCount`, `retry`/`retries`/`max_attempts` keys, retry actions such as nick-fields/retry) are counted
-as re-executions; several constructs in one job compound. A retry-shaped key, flag or action whose count cannot be
-read fails closed (RETRY-UNKNOWN). A retry-shaped dependency name is reported without failing.
+as re-executions. Constructs compound only where they wrap each other (a retry action and its command, flags of one
+command, workflow or job `env` around every step); independent steps, package.json scripts and commands of one
+shell string take the largest. Flags inside `NAME=value` values (PYTEST_ADDOPTS, MAVEN_ARGS, `-o addopts=`) are
+read. A retry-shaped key, flag or action whose count cannot be read, and a workflow re-run request (`gh run rerun`,
+the rerun REST endpoints), fail closed (RETRY-UNKNOWN). A job the manifest does not map takes the manifest's
+strictest limit (RETRY-JOB-UNMAPPED, report). Every counted construct of at least one re-execution is reported as
+RETRY-ATTEMPT-HIDDEN: it re-runs inside the reported attempt, so the quarantine gate cannot record the flake. A
+retry-shaped name in a top-level dependency map of a runner configuration is reported without failing.
 
 Exit 0 pass, 1 fail, 2 refused input or usage. stdout carries one ASCII JSON report with static rule codes, the
 validated input paths and job keys only (no key names, values or other file content).
@@ -45,8 +51,12 @@ RE_EXECUTIONS = frozenset({
     "flakyretries", "testretrycount",
 })
 ATTEMPTS = frozenset({"maxattempts", "attempts", "maxruns"})
-# Normalized flag names that contain a retry-shaped word but do not retry a failure (Gradle forced task rerun).
-NOT_RETRY = frozenset({"reruntasks", "rerun"})
+# Normalized names that contain a retry-shaped word but do not set a count: Gradle forced task rerun, and the
+# non-count modifiers of the named mechanisms (pytest-rerunfailures, nick-fields/retry).
+NOT_RETRY = frozenset({
+    "reruntasks", "rerun", "rerunsdelay", "onlyrerun", "retryon", "retrywaitseconds", "retryonexitcode",
+    "onretrycommand", "warningonretry",
+})
 SHAPES = ("retry", "retries", "rerun", "attempt", "flaky")
 DEPENDENCY_MAPS = frozenset({
     "dependencies", "devdependencies", "peerdependencies", "optionaldependencies", "bundleddependencies",
@@ -55,6 +65,12 @@ DEPENDENCY_MAPS = frozenset({
 # Maps whose keys are labels (package.json script names): only their values are read.
 LABEL_MAPS = frozenset({"scripts"})
 SEPARATORS = re.compile(r"[\s'\"`;|&()<>]+")
+# Commands of one shell string run one after another; their retries do not wrap each other.
+COMMANDS = re.compile(r"(?:\n|;|&&|\|\||\|)+")
+# An empty quote pair inside a word (`--re''runs`) is removed by the shell; join the fragments before tokenising.
+EMPTY_QUOTES = re.compile(r"(?<=[A-Za-z0-9_.=-])(?:''|\"\")+(?=[A-Za-z0-9_.=-])")
+# Re-running a failed workflow run from a workflow (gh CLI or the REST endpoint) is a retry with no readable count.
+RERUN_ENDPOINT = re.compile(r"/actions/runs/[^/\s]+/(?:rerun|rerun-failed-jobs)\Z|\Arerun-failed-jobs\Z")
 
 
 def normalize(name):
@@ -94,11 +110,20 @@ def _named(name, value):
     return ("unknown", None) if number is None else ("count", number)
 
 
-def command_constructs(value):
-    """Retry constructs among the flag and ``name=value`` tokens of one string; plain words are never matched."""
-    tokens = [token for token in SEPARATORS.split(value) if token]
+def _alternatives(groups):
+    """Constructs of independent steps, scripts or commands: only the largest applies, nothing multiplies."""
+    groups = [group for group in groups if group]
+    if len(groups) <= 1:
+        return groups[0] if groups else []
+    return [("alternatives", tuple(groups))]
+
+
+def _token_constructs(tokens):
     found = []
     for index, token in enumerate(tokens):
+        if (token == "rerun" and tokens[max(index - 2, 0):index] == ["gh", "run"]) or RERUN_ENDPOINT.search(token):
+            found.append(("unknown", None))
+            continue
         dashed = token.startswith("-")
         if dashed:
             # -Dname=value (Java system property) and -Pname=value (Gradle project property).
@@ -110,16 +135,31 @@ def command_constructs(value):
         name, equals, inline = body.partition("=")
         if not name:
             continue
+        following = tokens[index + 1] if index + 1 < len(tokens) else None
         if equals:
             argument = inline
-        elif dashed and index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
-            argument = tokens[index + 1]
+        elif dashed and following is not None and not following.startswith("-"):
+            argument = following
         else:
             argument = None
         construct = _named(name, argument)
         if construct is not None:
             found.append(construct)
+        elif inline:
+            # The value of NAME=value can carry flags itself (PYTEST_ADDOPTS=--reruns=5, -o addopts=--reruns=5,
+            # MAVEN_ARGS=-D...=3); a following plain word can be the argument of such a flag.
+            plain = following is not None and not following.startswith("-") and "=" not in following
+            found.extend(_token_constructs([inline, following] if plain else [inline]))
     return found
+
+
+def command_constructs(value):
+    """Retry constructs among the flag and ``name=value`` tokens of one string; plain words are never matched.
+
+    Commands separated by newlines, `;`, `&&`, `||` or `|` are independent: the largest of them applies.
+    """
+    return _alternatives([_token_constructs([token for token in SEPARATORS.split(command) if token])
+                          for command in COMMANDS.split(EMPTY_QUOTES.sub("", value))])
 
 
 def _retry_action(node):
@@ -132,8 +172,14 @@ def _retry_action(node):
                 and any(normalize(key) in RE_EXECUTIONS or normalize(key) in ATTEMPTS for key in inputs))
 
 
-def constructs(node, depth=0, dependencies=False):
-    """Every retry construct in a JSON value: ("count", n), ("unknown", None) or ("report", None)."""
+def constructs(node, depth=0, dependencies=False, dependency_maps=False):
+    """Every retry construct in a JSON value: ("count", n), ("unknown", None), ("report", None) or
+    ("alternatives", groups) for independent steps, scripts or commands.
+
+    ``dependency_maps`` is true only at the top level of a runner configuration (package.json): there a dependency
+    map's names are package names, reported only. Everywhere else, including workflows and `env`, every string is
+    read.
+    """
     if depth > MAX_DEPTH:
         raise Refused("CONFIG-DEPTH")
     found = []
@@ -148,13 +194,15 @@ def constructs(node, depth=0, dependencies=False):
                     found.extend(constructs(value, depth + 1, True))
                 continue
             if normalize(key) in LABEL_MAPS and isinstance(value, dict):
-                for command in value.values():
-                    found.extend(constructs(command, depth + 2))
+                found.extend(_alternatives([constructs(command, depth + 2) for command in value.values()]))
+                continue
+            if key == "steps" and isinstance(value, list):
+                found.extend(_alternatives([constructs(step, depth + 2) for step in value]))
                 continue
             construct = _named(key, value)
             if construct is not None:
                 found.append(construct)
-            found.extend(constructs(value, depth + 1, normalize(key) in DEPENDENCY_MAPS))
+            found.extend(constructs(value, depth + 1, dependency_maps and normalize(key) in DEPENDENCY_MAPS))
     elif isinstance(node, list):
         for item in node:
             found.extend(constructs(item, depth + 1, dependencies))
@@ -163,12 +211,28 @@ def constructs(node, depth=0, dependencies=False):
     return found
 
 
+def leaves(found):
+    """The single constructs of a list, inside alternatives too."""
+    for kind, number in found:
+        if kind == "alternatives":
+            for group in number:
+                yield from leaves(group)
+        else:
+            yield kind, number
+
+
 def re_executions(found):
-    """Compounded re-executions of one job: every construct multiplies the executions of the ones it wraps."""
+    """Re-executions of one job: a construct multiplies the executions of what it wraps (a retry action around a
+    command, flags of one command, job or workflow `env` around every step); of alternatives the largest applies."""
     executions = 1
     for kind, number in found:
         if kind == "count":
-            executions = min(executions * (min(number, EXECUTION_CAP) + 1), EXECUTION_CAP + 1)
+            multiplier = min(number, EXECUTION_CAP) + 1
+        elif kind == "alternatives":
+            multiplier = max(re_executions(group) for group in number) + 1
+        else:
+            continue
+        executions = min(executions * multiplier, EXECUTION_CAP + 1)
     return executions - 1
 
 
@@ -179,22 +243,30 @@ def _limit(policy, money_path):
 def _judge(findings, found, limit, money_path, path, job):
     """Append the findings of one job (or runner configuration) and return its summary."""
     executions = re_executions(found)
-    unknown = sum(1 for kind, _number in found if kind == "unknown")
-    reported = sum(1 for kind, _number in found if kind == "report")
+    single = list(leaves(found))
+    unknown = sum(1 for kind, _number in single if kind == "unknown")
+    reported = sum(1 for kind, _number in single if kind == "report")
+    # An in-runner or whole-step retry re-executes inside the reported attempt, so the quarantine gate never sees
+    # the failed attempt and cannot record the flake (proposed re-execution model; QA/Reliability decision).
+    hidden = sum(1 for kind, number in single if kind == "count" and number >= 1)
     if unknown:
         findings.append({"rule": "RETRY-UNKNOWN", "effect": "fail", "input": path, "job": job, "count": unknown})
     if executions > limit:
         rule = "RETRY-MONEY-PATH" if money_path else "RETRY-LIMIT-EXCEEDED"
         findings.append({"rule": rule, "effect": "fail", "input": path, "job": job, "count": executions})
+    if hidden:
+        findings.append({"rule": "RETRY-ATTEMPT-HIDDEN", "effect": "report", "input": path, "job": job,
+                         "count": hidden})
     if reported:
         findings.append({"rule": "RETRY-DEPENDENCY", "effect": "report", "input": path, "job": job, "count": reported})
     return {"input": path, "job": job, "money_path": money_path, "limit": limit, "re_executions": executions,
-            "constructs": sum(1 for kind, _number in found if kind == "count"), "unknown": unknown}
+            "constructs": sum(1 for kind, _number in single if kind == "count"), "unknown": unknown}
 
 
 def evaluate(*, policy, manifest, workflows=(), runner_configs=()):
     """Judge (path, document) pairs; workflow paths are repository-relative `.github/workflows/...` names."""
     findings, checked = [], []
+    strictest = any(mapped.money_path for mapped in manifest.jobs.values())
     for path, document in workflows:
         if tags.WORKFLOW.fullmatch(path) is None:
             raise Refused("INPUT-PATH")
@@ -207,15 +279,23 @@ def evaluate(*, policy, manifest, workflows=(), runner_configs=()):
                 raise Refused("CONFIG-JOB-KEY")
             if not isinstance(job, dict):
                 raise Refused("CONFIG-SHAPE")
-            money_path = any(mapped.money_path for mapped in manifest.jobs.values()
-                             if mapped.workflow == path and mapped.job == key)
+            mapped = [job for job in manifest.jobs.values() if job.workflow == path and job.job == key]
+            # A job the manifest does not map gets the strictest limit of the manifest, never a silent relaxation.
+            money_path = any(job.money_path for job in mapped) if mapped else strictest
+            if not mapped and strictest:
+                findings.append({"rule": "RETRY-JOB-UNMAPPED", "effect": "report", "input": path, "job": key,
+                                 "count": 1})
             checked.append(_judge(findings, shared + constructs(job, 1), _limit(policy, money_path), money_path,
                                   path, key))
-    strictest = any(mapped.money_path for mapped in manifest.jobs.values())
+        for job in manifest.jobs.values():
+            if job.workflow == path and job.job not in jobs:
+                findings.append({"rule": "RETRY-MANIFEST-JOB-UNCHECKED", "effect": "report", "input": path,
+                                 "job": job.job, "count": 1})
     for path, document in runner_configs:
         if RELATIVE.fullmatch(path) is None or not path.endswith(".json"):
             raise Refused("INPUT-PATH")
-        checked.append(_judge(findings, constructs(document), _limit(policy, strictest), strictest, path, None))
+        checked.append(_judge(findings, constructs(document, dependency_maps=True), _limit(policy, strictest),
+                              strictest, path, None))
     failing = [finding for finding in findings if finding["effect"] == "fail"]
     return {
         "schema": REPORT_SCHEMA,
