@@ -416,7 +416,38 @@ class LedgerInputTests(GateCase):
         relaxed = qs.manifest_document()
         relaxed["rules"][1]["tags"] = []
         report = qs.run_gate(attempt, manifest_doc=relaxed, base_manifest_doc=qs.manifest_document())
-        self.assertFindings(report, [("QG-MANIFEST-RELAXED", "fail", security)], "fail")
+        self.assertFindings(report, [("QG-MANIFEST-RELAXED", "fail", security), ("QG-MANIFEST-RELAXED", "fail", None)],
+                            "fail")
+
+    def test_renamed_protected_rule_without_its_tags_fails_whatever_ran(self):
+        # Review round 2, ADVSEC-R2-02: compare rules by id, not only the identities of this run.
+        renamed = (qs.SECURITY.replace("security", "security_env"), "test_rejects_untrusted")
+        attempt = [(*renamed, "failed")] + list(FILLER)
+        events, record = qs.justified(qs.identity(*renamed), -1)
+        ledger = qs.ledger_document(events=events, quarantines=[record])
+        kept = qs.manifest_document()
+        kept["rules"][1]["value"] = "synthetic.security_env"
+        report = qs.run_gate(attempt, ledger_doc=ledger, manifest_doc=kept, base_manifest_doc=qs.manifest_document())
+        self.assertFindings(report, [("QG-QUARANTINE-PROTECTED", "fail", qs.identity(*renamed)),
+                                     ("QG-REAL-FAILURE", "fail", qs.identity(*renamed))], "fail")
+        dropped = copy.deepcopy(kept)
+        dropped["rules"][1]["tags"] = []
+        report = qs.run_gate(attempt, ledger_doc=ledger, manifest_doc=dropped, base_manifest_doc=qs.manifest_document())
+        self.assertFindings(report, [("QG-QUARANTINED-FAILURE", "report", qs.identity(*renamed)),
+                                     ("QG-MANIFEST-RELAXED", "fail", None)], "fail")
+        money = qs.manifest_document()
+        money["packages"][0]["money_path"] = False
+        report = qs.run_gate(list(FILLER), manifest_doc=money, base_manifest_doc=qs.manifest_document())
+        self.assertFindings(report, [("QG-MANIFEST-RELAXED", "fail", None)], "fail")
+
+    def test_new_unprotected_rule_is_reported(self):
+        added = qs.manifest_document()
+        added["rules"].append({**added["rules"][1], "id": "PT-006", "value": "synthetic.extra"})
+        self.assertFindings(qs.run_gate(list(FILLER), manifest_doc=added, base_manifest_doc=qs.manifest_document()),
+                            [], "pass")
+        added["rules"][-1]["tags"] = []
+        self.assertFindings(qs.run_gate(list(FILLER), manifest_doc=added, base_manifest_doc=qs.manifest_document()),
+                            [("QG-MANIFEST-RULE-UNPROTECTED", "report", None)], "pass")
 
     def test_money_path_job_relaxed_in_the_same_change_fails(self):
         attempt = qs.cases(("test_a", "passed"))

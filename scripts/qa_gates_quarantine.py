@@ -19,9 +19,10 @@ gating set, still run and are reported. The run fails when a quarantine is older
 expiry, when a quarantined test is skipped or disappears without an approved deletion record (a test released in
 this change must still run in it), when a release or deletion appended in this change is dated more than
 CLOSURE_DATE_TOLERANCE_DAYS before the run (both proposed controls beyond flake_policy), when the base-revision
-ledger or manifest is missing, when the ledger is not append-only against it, or when the manifest relaxes a protected test or a money-path job against it. The quarantine
-rate ceiling counts a repository's tests and is judged by scripts/qa_gates_rate.py; this report publishes the job's
-share only.
+ledger or manifest is missing, when the ledger is not append-only against it, or when the manifest relaxes a
+protected test, a protecting rule or a money-path job against it (a new untagged rule is reported for review).
+The quarantine rate ceiling counts a repository's tests and is judged by scripts/qa_gates_rate.py; this report
+publishes the job's share only.
 
 Exit 0 pass, 1 fail, 2 refused input or usage. stdout carries one ASCII JSON report with static rule codes
 and grammar-validated test identities only (no messages, captured output, paths or file content).
@@ -75,13 +76,36 @@ def _utc_today():
     return datetime.datetime.now(datetime.timezone.utc).date()
 
 
+def _rule_tags(manifest, rule):
+    """The protection a rule gives: its tags, plus money for a money-path package (as ``classify`` adds it)."""
+    return rule.tags | ({"money"} if manifest.packages[rule.package].money_path else set())
+
+
+def _rule_relaxed(base_manifest, manifest):
+    """(relaxed, added): a protecting base rule was removed or lost protection (tags, or its package's money_path);
+    rules new in the head manifest give no protection (review round 2, ADVSEC-R2-02). Compared by rule id, whatever
+    tests ran, so renaming a protected module and pointing its rule at the new name with the tags dropped is seen."""
+    head = {rule.id: rule for rule in manifest.rules}
+    relaxed = False
+    for rule in base_manifest.rules:
+        before = _rule_tags(base_manifest, rule)
+        after = head.get(rule.id)
+        if before and (after is None or not before <= _rule_tags(manifest, after)):
+            relaxed = True
+    base_ids = {rule.id for rule in base_manifest.rules}
+    added = any(rule.id not in base_ids and not _rule_tags(manifest, rule) for rule in manifest.rules)
+    return relaxed, added
+
+
 def _relaxations(base_manifest, manifest, job_id, identities):
-    """Tests (and the job, as None) whose protection the head manifest removed compared with the base manifest."""
+    """Tests (and the job or a rule, as None) whose protection the head manifest removed against the base."""
     if base_manifest.repository != manifest.repository:
         return [None]
     relaxed = []
     base_job = base_manifest.jobs.get(job_id)
     if base_job is not None and base_job.money_path and not manifest.jobs[job_id].money_path:
+        relaxed.append(None)
+    if _rule_relaxed(base_manifest, manifest)[0] and None not in relaxed:
         relaxed.append(None)
     for identity in identities:
         before, after = base_manifest.classify(identity), manifest.classify(identity)
@@ -126,6 +150,10 @@ def evaluate(*, policy, manifest, ledger, attempts, job_id, run_id, today, ticke
     else:
         for identity in _relaxations(base_manifest, manifest, job_id, classes):
             find("QG-MANIFEST-RELAXED", "fail", identity)
+        # A new rule without protection is listed for review: moving a protected test under it is a relaxation
+        # only review can see (Known limits).
+        if _rule_relaxed(base_manifest, manifest)[1]:
+            find("QG-MANIFEST-RULE-UNPROTECTED", "report")
 
     money_path = job.money_path or any(classes[identity].money_path for identity in first)
     allowed = policy.money_path_retry_limit if money_path else policy.retry_limit

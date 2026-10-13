@@ -19,6 +19,9 @@ python scripts/qa_gates.py rate --attempt JOB=FIRST.xml [--attempt JOB=RETRY.xml
                                 [--ledger PATH] [--manifest PATH] [--fix-only PenniLogic/<repo>#N]
 ```
 
+In CI the gate code and the vendored policy must also come from the protected base revision (see the wiring
+precondition under [Known limits](#known-limits)); otherwise a change can edit the checks it is judged by.
+
 `--base-ledger` and `--base-manifest` name the ledger and manifest of the protected base revision (in CI: the
 files from the pull request's base commit; locally: the committed files). Without them the quarantine gate fails
 (`QG-LEDGER-BASE-MISSING`, `QG-MANIFEST-BASE-MISSING`), so the append-only and no-relaxation checks are never
@@ -159,9 +162,12 @@ instructions, duplicate cases and rerun elements.
   package owner from the manifest, a ticket requested through the `TicketPort` and an expiry at 14 days. Real ticket creation is held: the default port creates nothing and the
   report says `ticket_creation: held`, so a proposal without a ticket fails with `QG-QUARANTINE-TICKET-MISSING`.
 - Security, privacy and money tests are never quarantined (`QG-QUARANTINE-REFUSED-PROTECTED`,
-  `QG-QUARANTINE-PROTECTED`), as classified by the head manifest; a change that removes a tag from a known test or
-  relaxes a money-path job compared with `--base-manifest` fails (`QG-MANIFEST-RELAXED`). This holds only when CI
-  passes the base revision's manifest, which is a wiring precondition; a test the manifest cannot classify, or
+  `QG-QUARANTINE-PROTECTED`), as classified by the head manifest; a change that removes a tag from a known test,
+  relaxes a money-path job, or removes a protecting rule, drops tags from a rule or takes `money_path` from its
+  package (rules compared by id, whatever tests ran, so a renamed module whose rule loses its tags is seen) compared
+  with `--base-manifest` fails (`QG-MANIFEST-RELAXED`); a new rule without tags is listed for review
+  (`QG-MANIFEST-RULE-UNPROTECTED`, effect `report`). This holds only when CI passes the base revision's manifest,
+  which is a wiring precondition; a test the manifest cannot classify, or
   classifies into two packages, fails closed
   (`QG-CLASSIFICATION-UNKNOWN`, `QG-CLASSIFICATION-AMBIGUOUS`), and so does a test whose package the job does not
   list (`QG-JOB-PACKAGE-UNMAPPED`).
@@ -252,6 +258,16 @@ per-rule warning switch with expiry is to be implemented with that wiring; it do
   started through a launcher (`npx retry-cli ...`, `uvx ...`, `python -m ...`: only the command word is read);
   runner options read from a file (pytest `@args.txt` arguments, `pytest.ini`, `setup.cfg`) or injected from a
   repository or organization variable (`PYTEST_ADDOPTS: ${{ vars.X }}`), whose value is not in the repository.
+- Renaming or moving a protected test into a module that an existing untagged rule covers (for example a class
+  moved into an untagged test module) changes no rule, so the gate cannot see it; only review of the test diff
+  can. New untagged rules are reported (`QG-MANIFEST-RULE-UNPROTECTED`) for that review.
+- **Wiring precondition: run the gates from the protected base.** The append-only check, `QG-MANIFEST-RELAXED`,
+  `QG-CLOSURE-BACKDATED`, the policy pin and every other same-change protection hold only if the code and data
+  that enforce them are not the candidate's: CI must run `scripts/qa_gates*.py`, `scripts/qa-gates/flake-policy.json`
+  and the base ledger and manifest from the pull request's base revision (for example a separate base checkout), or
+  bind those files to the base the way the `pr-workflow-integrity` workflow binds `scripts/check_repository.py`.
+  A step that runs the checked-out head code can re-pin the policy (for example `retry_limit` 5 with a recomputed
+  digest and `PIN`) or drop a check in the same change, and then none of these protections hold.
 - The quarantine gate relies on CI passing the base revision's ledger and manifest (`--base-ledger`,
   `--base-manifest`; `--base-ledger` also for `rate`) and running the `rate` step after every manifest job; both
   are wiring preconditions.
