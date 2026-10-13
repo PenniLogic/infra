@@ -394,6 +394,21 @@ class QuarantinedTestTests(GateCase):
                                                approval=qs.APPROVAL.replace("/900001#", "/900002#")))
         self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=ledger), [], "pass")
 
+    def test_requarantine_in_the_releasing_change_ends_the_release_hold(self):
+        # Review round 2, PS-3: a release followed by a new quarantine and an approved deletion in the same change
+        # lets the test go; the released-test hold applies only while the latest closure is that release.
+        base = quarantined_a(start=-10)
+        head = copy.deepcopy(base)
+        head["releases"].append(qs.release(A, -2))
+        head["flake_events"] += [qs.event(A, -1, run="synthetic-again"), qs.event(A, -1, run="synthetic-twice")]
+        head["quarantines"].append(qs.quarantine(A, -1, ticket=qs.OTHER_TICKET))
+        deleted = copy.deepcopy(head)
+        deleted["deletions"].append(qs.deletion(A, 0, ticket=qs.OTHER_TICKET,
+                                                approval=qs.APPROVAL.replace("/900001#", "/900002#")))
+        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=deleted, base_doc=base), [], "pass")
+        self.assertFindings(qs.run_gate(run(("test_b", "passed")), ledger_doc=head, base_doc=base),
+                            [("QG-QUARANTINED-TEST-MISSING", "fail", A)], "fail")
+
 
 class NothingRanTests(GateCase):
     def test_all_skipped_first_attempt_fails(self):

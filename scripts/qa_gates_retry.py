@@ -117,7 +117,7 @@ def _named(name, value):
 
 
 def _alternatives(groups):
-    """Constructs of independent steps, scripts or commands: only the largest applies, nothing multiplies."""
+    """Constructs of independent scripts or commands: only the largest applies, nothing multiplies."""
     groups = [group for group in groups if group]
     if len(groups) <= 1:
         return groups[0] if groups else []
@@ -218,7 +218,8 @@ def _retry_action(node, depth):
 
 def constructs(node, depth=0, dependencies=False, dependency_maps=False):
     """Every retry construct in a JSON value: ("count", n), ("unknown", None), ("report", None) or
-    ("alternatives", groups) for independent steps, scripts or commands.
+    ("alternatives", groups) for independent scripts or commands, ("wrap", count, inner) for a retry action. Of
+    the items of a list (steps of a job, keys of a step) the largest applies too (``re_executions``).
 
     ``dependency_maps`` is true only at the top level of a runner configuration (package.json): there a dependency
     map's names are package names, reported only. Everywhere else, including workflows and `env`, every string is
@@ -244,9 +245,6 @@ def constructs(node, depth=0, dependencies=False, dependency_maps=False):
                 continue
             if key in ("run", "shell") and isinstance(value, str):
                 found.extend(command_constructs(value, True))
-                continue
-            if key == "steps" and isinstance(value, list):
-                found.extend(_alternatives([constructs(step, depth + 2) for step in value]))
                 continue
             construct = _named(key, value)
             if construct is not None:
