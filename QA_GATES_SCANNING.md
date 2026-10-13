@@ -5,6 +5,15 @@ The flake, quarantine and retry gates of the same ticket are a separate change w
 Nothing here is wired into CI yet, and no acceptance criterion of infra#28 is met by this source alone
 (see [Held and not claimed](#held-and-not-claimed)).
 
+Entry points (stdlib Python, no network, run from the repository root; `--help` prints the usage):
+
+- `python scripts/qa_gates_sast.py` gates one Semgrep JSON report ([SAST](#sast-semgrep-report-gate)).
+- `python scripts/qa_gates_dast.py` gates one ZAP alerts report bound to its scan manifest
+  ([DAST](#dast-zap-alerts-and-scan-manifest-gate)).
+
+Both print one ASCII JSON report on stdout and exit 0 (pass), 1 (gate failure, including incomplete input) or 2
+(refused input or usage, including a missing file). Refusals print a static rule code only.
+
 ## SAST: Semgrep report gate
 
 ```text
@@ -106,13 +115,109 @@ semgrep scan --metrics=off --disable-version-check --json --output <tmp>/semgrep
     --config scripts/qa-gates/rules scripts/qa-gates/fixtures/planted
 ```
 
+## DAST: ZAP alerts and scan manifest gate
+
+```text
+python scripts/qa_gates_dast.py --alerts ZAP.json --manifest SCAN-MANIFEST.json --surface SURFACE.json \
+    [--policy POLICY.json]
+```
+
+No ZAP or scan executor exists in this repository yet. The gate reads what a held executor will produce:
+
+- `--alerts`: one ZAP **traditional JSON** report (`@version`, `site[].@name`, `site[].alerts[]` with `pluginid`,
+  optional `alertRef`, `riskcode`, `confidence`, `cweid` and `instances[]` with `uri`, `method`, `param`). Other
+  keys are ignored and never echoed. **Parser fidelity is unverified**: every report used in the tests is
+  synthetic, built from ZAP's documented shape, and the report says `parser_fidelity: "unverified: no real ZAP
+  sample exists"` until a real sample is checked in.
+- `--manifest`: the executor's scan manifest (`pennilogic.qa-gates.dast-scan-manifest/1`, proposed): `target`
+  origin, `zap_version`, `synthetic_data: true`, `contexts[]` (`name`, `authenticated`, and for an authenticated
+  context a `user` with `name` and `credential_env`, the **name** of the environment variable that holds a
+  short-lived credential, never the value), `scanned_urls[]` (`context`, `method`, `url`), and the SHA-256 of the
+  exact alerts report bytes (`alerts_sha256`) and expected-surface bytes (`surface_sha256`).
+- `--surface`: the expected-surface manifest (`pennilogic.qa-gates.dast-surface/1`, proposed): entries `{id, auth,
+  method, path}` where `auth` is `authenticated` or `unauthenticated` and `path` is a template such as
+  `/accounts/{account_id}`. No surface for the real api or web build is committed: the routes belong to their
+  owning repositories and the deployed build does not exist yet.
+- `--policy` defaults to `scripts/qa-gates/rules/dast-policy.json`.
+
+Exit codes and stdout follow the SAST gate (`pennilogic.qa-gates.dast-report/1`).
+
+### Decision order
+
+1. **Refused (exit 2)** when an input is malformed or the binding breaks: the alerts or surface digest differs
+   from the manifest (`DAST-MANIFEST-ALERTS-DIGEST`, `DAST-MANIFEST-SURFACE-DIGEST`), the ZAP versions differ
+   (`DAST-ALERTS-VERSION-MISMATCH`), `synthetic_data` is not `true`, the target fails `preflight_target`
+   (`DAST-TARGET-NOT-ALLOWLISTED`), a report site is not the target (`DAST-SITE-NOT-ALLOWLISTED`,
+   `DAST-SITE-OFF-TARGET`), or an alert instance or scanned URL is on another origin (`...-OFF-TARGET`). An alert
+   without instances is refused rather than dropped.
+2. **Incomplete fails (exit 1)**: no authenticated context (`DAST-INCOMPLETE-NO-AUTHENTICATED-CONTEXT`), no
+   unauthenticated context (`DAST-INCOMPLETE-NO-UNAUTHENTICATED-CONTEXT`), a declared context without any scanned
+   URL (`DAST-INCOMPLETE-EMPTY-CONTEXT`), or an expected-surface entry that no scanned URL of the same auth kind and
+   method covers (`DAST-INCOMPLETE-SURFACE`, with the missing surface IDs).
+3. **A `high` alert blocks** (`DAST-BLOCKING-FINDINGS`): the accepted test strategy's
+   `security_regression_smoke` evidence says "a high-severity finding ... fails the deploy gate". `medium`, `low`
+   and `info` alerts are counted and listed with mode `report`; they are never dropped. The policy refuses a
+   `blocking_risks` list without `high`; widening it (for example adding `medium`) is a reviewed policy edit.
+
+The scan manifest's contexts are declared by the executor; this gate checks that both kinds exist and were
+exercised, not that a login really succeeded. Proving that is part of the held real authenticated scan.
+
+### Target allowlist and `preflight_target`
+
+`preflight_target(url, policy)` is pure (no DNS, no socket) and returns `{origin, class}` or refuses. It accepts an
+`http`/`https` origin (lowercase, no user info, path, query or fragment) whose host is a loopback IP literal
+(`127.0.0.0/8` or `[::1]`) or a DNS name under a declared ephemeral suffix (`targets.ephemeral_host_suffixes`;
+the suffix itself is not a valid target). `localhost`, other names, private and public addresses, integer or
+zero-padded IPv4 forms and IPv4-mapped IPv6 are refused. The committed policy declares **no** ephemeral suffix
+because no ephemeral environment exists; adding one is a reviewed edit of `dast-policy.json`. DNS resolution,
+rebinding protection and "fails before the first request" (E25-F04) are execution-time controls of the held
+executor, which must call `preflight_target` before it starts ZAP.
+
+### Finding record (proposed vocabulary)
+
+| Field | Meaning |
+| --- | --- |
+| `plugin_id`, `alert_ref` | ZAP scan rule ID and alert reference (digits; `alertRef` must start with the plugin ID). |
+| `risk`, `confidence` | `riskcode` 3/2/1/0 as `high`/`medium`/`low`/`info`; confidence 4..0 as `confirmed`..`false-positive`. |
+| `cwe_id`, `method` | CWE number (`-1` when ZAP has none) and HTTP method. |
+| `fingerprint` | `sha256:` over the canonical JSON of `[alert_ref, method, URL path, parameter name]`; the query is excluded. |
+| `mode` | `block`, `warn` (inside a recorded window) or `report` (risk below the blocking set). |
+
+The report never carries URIs, hosts, query values, parameter names, attack strings, evidence, alert text,
+context or user names, environment variable names or credential values. It reports `target_class`,
+context counts, `scanned_url_count`, `surface.{expected, covered, missing}` (validated surface IDs only),
+`counts.{blocking, warning, reported, by_risk}`, `expired_warnings` and the same `exceptions` block as SAST.
+
+### Per-plugin warn mode, rollout and rollback
+
+`dast-policy.json` `rules` maps a ZAP plugin ID to `{"mode": "warn", "warn_from", "warn_until"}` with the same
+seven-day rule as SAST. Inside the window a blocking-risk alert of that plugin is `warn`; outside it blocks again
+and an ended window is listed in `expired_warnings`. The committed policy has no warn entry.
+
+## Rollout and rollback (both gates)
+
+The ticket introduces the gates as **warning-only for one week** to measure noise, then blocking. Once the CI
+steps exist, the warning week is recorded the same way as a per-rule rollback: each rule (SAST) or plugin (DAST)
+gets a `warn` entry whose `warn_from`..`warn_until` covers at most seven days, in a reviewed policy edit. Findings
+in that window are counted under `counts.warning`; when the window ends they block again without another change,
+and `expired_warnings` lists the rules so the entries can be removed. Rolling back one noisy rule later uses the
+same entry with a new recorded window; there is no open-ended warning and no global switch. The committed
+policies are all-blocking, and the warning week itself has not run.
+
 ## Held and not claimed
 
-- Criterion 1 ("fails the pull request") needs a Semgrep CI step with a pinned, trusted Semgrep binary, wired
-  through the generator owner. Scanner execution, timeouts and process cleanup wait for infra#23's process
-  controls.
-- The rule set and the report vocabulary are proposals; no owner decision is recorded.
+- **CI wiring.** Criterion 1 ("fails the pull request") needs a Semgrep CI step with a pinned, trusted Semgrep
+  binary, and criterion 2 needs a deploy-pipeline DAST step; both are wired through the generator owner (the
+  workflows are generated files). Scanner execution, timeouts and process cleanup wait for infra#23's process
+  controls. Publishing the counts to the release checklist is held with the wiring.
+- **Real authenticated scan.** Criterion 2 ("a dynamic scan of the running build reports and fails on a high
+  severity finding") needs an ephemeral deployed build with synthetic data, a ZAP executor that calls
+  `preflight_target` before the first request, short-lived credentials scoped to that environment, a committed
+  expected surface from the owning repositories, and a real ZAP report to verify this parser. None exists;
+  the DAST tests use synthetic reports only.
+- The rule sets, the DAST blocking-risk choice, the manifest and surface schemas and the report vocabulary are
+  proposals; no owner decision is recorded (`decision_ref` stays `null`).
 - The one-week warning window has not run.
-- infra#23 (exceptions) and the infra#22 conformance hold are unresolved.
+- infra#23 (exceptions, process controls; draft infra PR #88) and the infra#22 conformance hold are unresolved.
 - The Windows test leg was not run locally; the tests are written to pass on Linux and Windows without skips.
 - Independent Core, Security, QA, Privacy and Reliability reviews are required and not done.

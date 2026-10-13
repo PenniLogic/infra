@@ -1,0 +1,14 @@
+{
+  "schema": "pennilogic.qa-gates.dast-policy/1",
+  "status": "proposed, not agreed",
+  "basis": "PenniLogic/docs governance/test-strategy.json @ 1722fc79 (strategy 1.1.1) category security_regression_smoke: a high-severity finding fails the deploy gate; other risks are reported; per-plugin warn only with a recorded expiry (infra#28 rollout and rollback)",
+  "decision_ref": null,
+  "blocking_risks": [
+    "high"
+  ],
+  "targets": {
+    "loopback": true,
+    "ephemeral_host_suffixes": []
+  },
+  "rules": {}
+}
