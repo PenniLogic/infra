@@ -250,7 +250,8 @@ policies are all-blocking, and the warning week itself has not run.
 ## Held and not claimed
 
 - **CI wiring.** Criterion 1 ("fails the pull request") needs a Semgrep CI step with a pinned, trusted Semgrep
-  binary run with `--metrics=off --disable-version-check --disable-nosem --x-ignore-semgrepignore-files --time`,
+  binary run with `--metrics=off --disable-version-check --disable-nosem --x-ignore-semgrepignore-files --time
+  --max-target-bytes=0` (or an explicit, recorded size limit; see scanned-target binding below),
   only this repository's rule directory as `--config` and no rule or severity filter (`--exclude-rule`,
   `--severity`, a second `--config` or `-c`); the step must also fail unless `rule_binding.status` is
   `bound: time.rules`, because the gate accepts an unbound report (the committed canned report has none), and criterion 2 needs a deploy-pipeline DAST step; both are wired through the generator owner (the
@@ -258,8 +259,13 @@ policies are all-blocking, and the warning week itself has not run.
   controls. Publishing the counts to the release checklist is held with the wiring.
 - **Scanned-target binding.** A live report is not yet bound to the target list expected from the trusted
   checkout, so a CI step that passes `--exclude`, `--include` or a narrower target path could drop files without
-  the gate noticing. The held CI step must take that list from the trusted checkout and fail when `paths.scanned`
-  omits a target. Infra's own repository scan must exclude `scripts/qa-gates/fixtures/planted` only through an
+  the gate noticing. Semgrep also drops files silently by size: any target larger than `--max-target-bytes`
+  (Semgrep 1.178.0 default 1000000 bytes) is left out of `paths.scanned` with no `errors` entry, so a planted
+  source padded above 1 MB would pass as a complete scan of the remaining files. The held CI step must therefore
+  run with `--max-target-bytes=0` (no size filter) or an explicit, recorded value, must take the target list
+  from the trusted checkout and must fail when `paths.scanned` omits any of its files. A file Semgrep cannot
+  fully parse is reported in `errors` (for example `PartialParsing`) and already fails this gate as
+  `SAST-INCOMPLETE-ERRORS`. Infra's own repository scan must exclude `scripts/qa-gates/fixtures/planted` only through an
   explicit, recorded `--exclude` (never an inline marker or `.semgrepignore`, which this gate fails), and must scan
   that directory separately as a positive control that is expected to fail with the 13 planted findings.
 - **Policy, surface, rules and gate from the protected base.** `--policy` (both gates) and `--surface` (DAST) default to or are
