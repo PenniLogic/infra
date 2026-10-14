@@ -264,6 +264,8 @@ class Completeness(unittest.TestCase):
 
 class Binding(unittest.TestCase):
     def refused(self, code, **kwargs):
+        # The passing control: the unmutated defaults pass (review round 1 SS-R1-08).
+        self.assertEqual(gate()["decision"], "pass")
         with self.assertRaises(Refused) as caught:
             gate(**kwargs)
         self.assertEqual(caught.exception.code, code)
@@ -302,6 +304,7 @@ class Binding(unittest.TestCase):
 
     def test_alert_instance_off_target_refused(self):
         item = alert()
+        self.assertEqual(gate(alerts(item))["reason"], "DAST-BLOCKING-FINDINGS")
         item["instances"][0]["uri"] = "http://127.0.0.1:18081/accounts/7"
         self.refused("DAST-INSTANCE-URL-OFF-TARGET", alerts_doc=alerts(item))
 

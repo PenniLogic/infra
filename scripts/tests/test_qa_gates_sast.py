@@ -1,7 +1,7 @@
 """Tests of the infra#28 SAST report ingestion and severity gate (scripts/qa_gates_sast.py).
 
-Each negative pairs a passing control with exactly one mutation and asserts the exact static rule code. Inputs are
-the committed canned Semgrep report (a local-fixture input, never acceptance evidence), its provenance and
+Each negative pairs a control on the unmutated input (a pass, or the expected unrelated outcome) with exactly one
+mutation and asserts the exact static rule code. Inputs are the committed canned Semgrep report (a local-fixture input, never acceptance evidence), its provenance and
 in-memory mutations; temporary copies live in the system temporary directory, never inside the repository.
 """
 
@@ -129,6 +129,7 @@ class SastReportGateTests(unittest.TestCase):
 
     def test_report_version_grammar_refused(self):
         document = clean()
+        self.assertEqual(gate(document)["decision"], "pass")
         document["version"] = "latest"
         self.assertRefused("SAST-REPORT-VERSION", gate, document)
     def test_report_version_control(self):
@@ -196,6 +197,7 @@ class SastReportGateTests(unittest.TestCase):
 
     def test_result_path_traversal_refused(self):
         document = only(EVAL_RULE)
+        self.assertEqual(gate(document)["reason"], "SAST-BLOCKING-FINDINGS")
         document["results"][0]["path"] = "scripts/../scripts/qa-gates/fixtures/planted/python/planted_injection.py"
         self.assertRefused("SAST-RESULT-PATH", gate, document)
 
@@ -226,21 +228,25 @@ class SastReportGateTests(unittest.TestCase):
 
     def test_result_empty_span_refused(self):
         document = only(EVAL_RULE)
+        self.assertEqual(gate(document)["reason"], "SAST-BLOCKING-FINDINGS")
         document["results"][0]["end"]["offset"] = document["results"][0]["start"]["offset"]
         self.assertRefused("SAST-RESULT-SPAN", gate, document)
 
     def test_result_position_type_refused(self):
         document = only(EVAL_RULE)
+        self.assertEqual(gate(document)["reason"], "SAST-BLOCKING-FINDINGS")
         document["results"][0]["start"]["line"] = True
         self.assertRefused("SAST-RESULT-POSITION", gate, document)
 
     def test_result_severity_outside_semgrep_levels_refused(self):
         document = only(EVAL_RULE)
+        self.assertEqual(gate(document)["reason"], "SAST-BLOCKING-FINDINGS")
         document["results"][0]["extra"]["severity"] = "error"
         self.assertRefused("SAST-RESULT-SEVERITY", gate, document)
 
     def test_missing_source_file_refused(self):
         document = only(EVAL_RULE)
+        self.assertEqual(gate(document)["reason"], "SAST-BLOCKING-FINDINGS")
         with tempfile.TemporaryDirectory() as empty:
             self.assertRefused("SAST-SOURCE-UNREADABLE", gate, document, None, TODAY, Path(empty))
 
@@ -337,41 +343,49 @@ class SastPolicyTests(unittest.TestCase):
 
     def test_warn_until_not_after_warn_from_refused(self):
         document = policy_document()
+        self.assertEqual(sast.parse_policy(policy_bytes(document), RULE_IDS), sast.load_policy())
         document["rules"][EVAL_RULE] = {"mode": "warn", "warn_from": "2026-10-13", "warn_until": "2026-10-13"}
         self.assertRefused("SAST-POLICY-WARN-WINDOW", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
     def test_invalid_calendar_date_refused(self):
         document = policy_document()
+        self.assertEqual(sast.parse_policy(policy_bytes(document), RULE_IDS), sast.load_policy())
         document["rules"][EVAL_RULE] = {"mode": "warn", "warn_from": "2026-02-27", "warn_until": "2026-02-30"}
         self.assertRefused("SAST-POLICY-WARN", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
     def test_block_with_extra_key_refused(self):
         document = policy_document()
+        self.assertEqual(sast.parse_policy(policy_bytes(document), RULE_IDS), sast.load_policy())
         document["rules"][EVAL_RULE] = {"mode": "block", "warn_until": "2026-10-14"}
         self.assertRefused("SAST-POLICY-MODE", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
     def test_unknown_mode_refused(self):
         document = policy_document()
+        self.assertEqual(sast.parse_policy(policy_bytes(document), RULE_IDS), sast.load_policy())
         document["rules"][EVAL_RULE] = {"mode": "off"}
         self.assertRefused("SAST-POLICY-MODE", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
     def test_policy_rule_set_must_equal_rule_files(self):
         document = policy_document()
+        self.assertEqual(sast.parse_policy(policy_bytes(document), RULE_IDS), sast.load_policy())
         del document["rules"][EVAL_RULE]
         self.assertRefused("SAST-POLICY-RULES", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
     def test_recorded_decision_reference_refused(self):
         document = policy_document()
+        self.assertEqual(sast.parse_policy(policy_bytes(document), RULE_IDS), sast.load_policy())
         document["decision_ref"] = "PenniLogic/infra#28"
         self.assertRefused("SAST-POLICY-DECISION", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
     def test_policy_claiming_agreement_refused(self):
         document = policy_document()
+        self.assertEqual(sast.parse_policy(policy_bytes(document), RULE_IDS), sast.load_policy())
         document["status"] = "agreed"
         self.assertRefused("SAST-POLICY-SCHEMA", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
     def test_policy_extra_key_refused(self):
         document = policy_document()
+        self.assertEqual(sast.parse_policy(policy_bytes(document), RULE_IDS), sast.load_policy())
         document["severity_threshold"] = "high"
         self.assertRefused("SAST-POLICY-KEYS", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
@@ -405,12 +419,14 @@ class SastRuleFileTests(unittest.TestCase):
     def test_rule_without_proposed_status_refused(self):
         with copied_root() as root:
             rules = root / "scripts/qa-gates/rules"
+            self.assertEqual(sast.load_rule_ids(rules), RULE_IDS)
             edit_json(rules / "python.yml", lambda document: document["rules"][0]["metadata"].update(status="agreed"))
             self.assertRefused("SAST-RULES-STATUS", sast.load_rule_ids, rules)
 
     def test_duplicate_rule_id_refused(self):
         with copied_root() as root:
             rules = root / "scripts/qa-gates/rules"
+            self.assertEqual(sast.load_rule_ids(rules), RULE_IDS)
             edit_json(rules / "kotlin.yml",
                       lambda document: document["rules"][1].update(id="pennilogic-python-dynamic-eval"))
             self.assertRefused("SAST-RULES-DUPLICATE", sast.load_rule_ids, rules)
@@ -418,12 +434,17 @@ class SastRuleFileTests(unittest.TestCase):
     def test_rule_id_outside_namespace_refused(self):
         with copied_root() as root:
             rules = root / "scripts/qa-gates/rules"
+            self.assertEqual(sast.load_rule_ids(rules), RULE_IDS)
             edit_json(rules / "kotlin.yml", lambda document: document["rules"][1].update(id="Kotlin.Exec"))
             self.assertRefused("SAST-RULES-ID", sast.load_rule_ids, rules)
 
     def test_empty_rule_directory_refused(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self.assertRefused("SAST-RULES-EMPTY", sast.load_rule_ids, Path(directory))
+        with copied_root() as root:
+            rules = root / "scripts/qa-gates/rules"
+            self.assertEqual(sast.load_rule_ids(rules), RULE_IDS)
+            for rule_file in rules.glob("*.yml"):
+                rule_file.unlink()
+            self.assertRefused("SAST-RULES-EMPTY", sast.load_rule_ids, rules)
 
 
 class SastRuleDirectoryEntryTests(unittest.TestCase):
@@ -483,10 +504,12 @@ class SastCannedReportBindingTests(unittest.TestCase):
 
     def test_added_planted_source_not_in_the_report_is_stale(self):
         with copied_root() as root:
+            sast.verify_canned(self.report, self.provenance, root)
             (root / "scripts/qa-gates/fixtures/planted/python/extra.py").write_bytes(b"x = 1\n")
             self.assertRefused("SAST-CANNED-FIXTURE-STALE", sast.verify_canned, self.report, self.provenance, root)
 
     def test_edited_report_bytes_refused(self):
+        sast.verify_canned(self.report, self.provenance, ROOT)
         mutated = self.report.replace(b'"line": 28', b'"line": 29', 1)
         self.assertNotEqual(mutated, self.report)
         self.assertRefused("SAST-CANNED-REPORT-DIGEST", sast.verify_canned, mutated, self.provenance, ROOT)
@@ -504,20 +527,24 @@ class SastCannedReportBindingTests(unittest.TestCase):
         self.assertRefused("SAST-CANNED-VERSION", sast.verify_canned, self.report, mutated, ROOT)
 
     def test_provenance_scanned_path_list_mismatch_refused(self):
+        sast.verify_canned(self.report, self.provenance, ROOT)
         mutated = self.provenance_with(lambda document: document["scanned_paths"].pop())
         self.assertRefused("SAST-CANNED-PATHS", sast.verify_canned, self.report, mutated, ROOT)
 
     def test_registry_config_command_refused(self):
+        sast.verify_canned(self.report, self.provenance_with(lambda document: None), ROOT)
         def registry(document):
             document["command"][document["command"].index("--config") + 1] = "auto"
         self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report,
                            self.provenance_with(registry), ROOT)
 
     def test_command_without_metrics_off_refused(self):
+        sast.verify_canned(self.report, self.provenance, ROOT)
         mutated = self.provenance_with(lambda document: document["command"].remove("--metrics=off"))
         self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report, mutated, ROOT)
 
     def test_second_inline_config_refused(self):
+        sast.verify_canned(self.report, self.provenance, ROOT)
         mutated = self.provenance_with(lambda document: document["command"].insert(2, "--config=p/default"))
         self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report, mutated, ROOT)
 
@@ -528,10 +555,12 @@ class SastCannedReportBindingTests(unittest.TestCase):
         self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report, mutated, ROOT)
 
     def test_canned_report_claimed_as_acceptance_evidence_refused(self):
+        sast.verify_canned(self.report, self.provenance, ROOT)
         mutated = self.provenance_with(lambda document: document.update(acceptance_evidence=True))
         self.assertRefused("SAST-CANNED-KIND", sast.verify_canned, self.report, mutated, ROOT)
 
     def test_provenance_missing_key_refused(self):
+        sast.verify_canned(self.report, self.provenance_with(lambda document: None), ROOT)
         mutated = self.provenance_with(lambda document: document.pop("rules_sha256"))
         self.assertRefused("SAST-CANNED-KEYS", sast.verify_canned, self.report, mutated, ROOT)
 
