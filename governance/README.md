@@ -351,8 +351,11 @@ allowance are not changed. Existing capture/Job/timing exception-note parsers
 retain only their bounded public projections. No replacement controller, native
 operation at import time, raw output or environment dump is introduced.
 
-The workflow binds the actual job-selected Git image before checkout and places
-that exact directory first for checkout. The same pinned checkout/setup-Python/
+The workflow binds only the first application in PowerShell's Git command-resolution
+order before checkout and places that exact directory first for checkout. It selects
+the command before reading its path or hashing it: multiple candidates never become
+a space-joined path/digest, and an invalid first candidate refuses without fallback.
+The same pinned checkout/setup-Python/
 setup-Java actions supply the executed commit, Python image/version and JDK
 home/version to the opt-in call. Its same-job read-only Git admission requires a
 clean standalone checkout, matching workspace/Git/common directories and the

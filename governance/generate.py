@@ -355,7 +355,7 @@ def api_observer_git_step():
         "shell": "pwsh",
         "run": r"""$ErrorActionPreference = 'Stop'
 try {
-    $git = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+    $git = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     if (![IO.Path]::IsPathFullyQualified($git) -or [IO.Path]::GetFileName($git) -cne 'git.exe' -or
         $git -match '[\x00-\x1f\x7f]') { throw 'selection' }
     $hash = (Get-FileHash -LiteralPath $git -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -324,6 +324,23 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, "API CI must match"):
                 validate(CI, generator.encoded(changed).encode("utf-8"))
 
+    def test_checkout_git_selection_and_serialization_are_exact_checker_inputs(self):
+        original = json.loads(generator.workflow("api"))
+        validate = api_checker()
+        validate(CI, generator.encoded(original).encode("utf-8"))
+        for before, after in (
+            (" | Select-Object -First 1", ""),
+            ("Select-Object -First 1", "Select-Object -Last 1"),
+            ("Select-Object -First 1", "Sort-Object Source | Select-Object -First 1"),
+            ('"path=$git`nsha256=$hash`n"', '"path=$git $git`nsha256=$hash $hash`n"'),
+        ):
+            changed = copy.deepcopy(original)
+            selection = changed["jobs"]["windows"]["steps"][0]
+            self.assertEqual(1, selection["run"].count(before))
+            selection["run"] = selection["run"].replace(before, after, 1)
+            with self.subTest(drift=after), self.assertRaisesRegex(ValueError, "API CI must match"):
+                validate(CI, generator.encoded(changed).encode("utf-8"))
+
     def test_input_preparation_omission_stub_reordering_and_missing_guard_are_refused(self):
         validate = api_checker()
         original = json.loads(generator.workflow("api"))
@@ -415,6 +432,191 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         current_template = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
         current_generated = generator.artifacts("api")["scripts/qualify_windows.py"].encode("utf-8")
         self.assertEqual(current_template, current_generated)
+
+
+class WindowsObserverGitBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.powershell = shutil.which("pwsh")
+        self.assertIsNotNone(self.powershell, "PowerShell is required for the emitted Git binding fixture")
+        temporary = tempfile.TemporaryDirectory(prefix="api-git-binding-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.images = [self.root / "Git with spaces [literal]" / name / "git.exe"
+                       for name in (Path("bin"), Path("cmd"), Path("mingw64") / "bin")]
+        for index, path in enumerate(self.images):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"synthetic Git image {index}, never execute\n".encode("ascii"))
+        self.checkout = self.root / "checkout with spaces [literal]"
+        (self.checkout / ".git").mkdir(parents=True)
+        for name in ("HEAD", "index", "config"):
+            (self.checkout / ".git" / name).write_bytes(("synthetic " + name + "\n").encode("ascii"))
+        self.output, self.path_output = self.root / "step output", self.root / "step path"
+        self.git_calls, self.qualifier_calls = self.root / "git calls", self.root / "qualifier calls"
+        self.environment = {name: value for name, value in support.defects.probe_environment().items()
+                            if not name.upper().startswith("GIT_")}
+        self.environment.update({
+            "GITHUB_OUTPUT": str(self.output), "GITHUB_PATH": str(self.path_output),
+            "GITHUB_WORKSPACE": str(self.checkout), "GITHUB_SHA": "a" * 40,
+            "PENNILOGIC_API106_CHECKOUT": "a" * 40, "PENNILOGIC_API106_OBSERVER_PAIR": "true",
+            "PENNILOGIC_API106_PYTHON": str(self.root / "synthetic python.exe"),
+            "FIXTURE_GIT_CALLS": str(self.git_calls), "FIXTURE_QUALIFIER_CALLS": str(self.qualifier_calls),
+        })
+        self.selection = json.loads(generator.workflow("api"))["jobs"]["windows"]["steps"][0]["run"]
+
+    def run_powershell(self, source, environment):
+        for path in (self.output, self.path_output, self.git_calls, self.qualifier_calls):
+            path.write_bytes(b"")
+        script = self.root / "fixture.ps1"
+        script.write_text(source, encoding="ascii", newline="\n")
+        return subprocess.run(
+            [self.powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)],
+            cwd=self.root, env=environment, capture_output=True, check=False, timeout=15,
+        )
+
+    def select(self, candidates):
+        environment = {**self.environment, "FIXTURE_CANDIDATES": json.dumps(candidates)}
+        fixture = r"""function Get-Command {
+    [CmdletBinding()]
+    param([string]$Name, [System.Management.Automation.CommandTypes]$CommandType)
+    if ($Name -cne 'git' -or $CommandType -ne 'Application' -or
+        $PSBoundParameters['ErrorAction'] -ne 'Stop') { throw 'unexpected command lookup' }
+    $candidates = @(ConvertFrom-Json -InputObject $env:FIXTURE_CANDIDATES)
+    if ($candidates.Count -eq 0) { throw 'no application' }
+    foreach ($candidate in $candidates) { [pscustomobject]@{ Source = $candidate } }
+}
+"""
+        return self.run_powershell(fixture + self.selection, environment)
+
+    def owning(self, binding, **overrides):
+        command = generator.api_observer_command()
+        # Only external calls are fixtures; all rendered binding/refusal logic runs unchanged.
+        for original, fixture, count in (
+            ("& $git @prefix diff --no-ext-diff --no-textconv --quiet HEAD --",
+             "Invoke-FixtureGit $git @prefix diff --no-ext-diff --no-textconv --quiet HEAD '--'", 1),
+            ("& $git @prefix", "Invoke-FixtureGit $git @prefix", 2),
+            ("& $env:PENNILOGIC_API106_PYTHON", "Invoke-FixtureQualifier $env:PENNILOGIC_API106_PYTHON", 1),
+        ):
+            self.assertEqual(count, command.count(original))
+            command = command.replace(original, fixture)
+        fixture = r"""function Invoke-FixtureGit {
+    if ($args[0] -cne $env:FIXTURE_EXPECTED_GIT) { throw 'unexpected Git image' }
+    [IO.File]::AppendAllText($env:FIXTURE_GIT_CALLS, (ConvertTo-Json -Compress -InputObject @($args)) + "`n")
+    $global:LASTEXITCODE = 0
+    switch ($args[5]) {
+        'rev-parse' {
+            $env:GITHUB_WORKSPACE
+            Join-Path $env:GITHUB_WORKSPACE '.git'
+            Join-Path $env:GITHUB_WORKSPACE '.git'
+            $env:GITHUB_SHA
+            'b' * 40
+        }
+        'status' {}
+        'diff' {}
+        default { throw 'unexpected Git command' }
+    }
+}
+function Invoke-FixtureQualifier {
+    $record = @{
+        argv = @($args); prepared = $env:PENNILOGIC_API106_PREPARED; tree = $env:PENNILOGIC_API106_TREE
+        head = $env:PENNILOGIC_API106_HEAD_SHA256; index = $env:PENNILOGIC_API106_INDEX_SHA256
+        config = $env:PENNILOGIC_API106_CONFIG_SHA256
+    }
+    [IO.File]::AppendAllText($env:FIXTURE_QUALIFIER_CALLS, (ConvertTo-Json -Compress $record) + "`n")
+    $global:LASTEXITCODE = 0
+}
+function python {
+    [IO.File]::AppendAllText($env:FIXTURE_QUALIFIER_CALLS, (ConvertTo-Json -Compress -InputObject @($args)) + "`n")
+    $global:LASTEXITCODE = 0
+}
+"""
+        environment = {
+            **self.environment, "PENNILOGIC_API106_GIT": binding["path"],
+            "PENNILOGIC_API106_GIT_SHA256": binding["sha256"], "FIXTURE_EXPECTED_GIT": binding["path"],
+            **overrides,
+        }
+        return self.run_powershell(fixture + command, environment)
+
+    def test_first_application_is_one_literal_path_and_digest_accepted_by_same_job_guard(self):
+        for order in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+            with self.subTest(order=order):
+                candidates = [str(self.images[index]) for index in order]
+                selected = self.images[order[0]]
+                digest = hashlib.sha256(selected.read_bytes()).hexdigest()
+                result = self.select(candidates)
+                self.assertEqual((0, b"", b""), (result.returncode, result.stdout, result.stderr))
+                self.assertEqual(f"path={selected}\nsha256={digest}\n".encode(), self.output.read_bytes())
+                self.assertEqual((str(selected.parent) + "\n").encode(), self.path_output.read_bytes())
+                binding = dict(line.split("=", 1) for line in self.output.read_text(encoding="utf-8").splitlines())
+                result = self.owning(binding)
+                self.assertEqual((0, b"", b""), (result.returncode, result.stdout, result.stderr))
+                prefix = [str(selected), "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false"]
+                self.assertEqual([
+                    prefix + ["rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir",
+                              "--git-common-dir", "HEAD", "HEAD^{tree}"],
+                    prefix + ["status", "--porcelain=v1", "--untracked-files=normal"],
+                    prefix + ["diff", "--no-ext-diff", "--no-textconv", "--quiet", "HEAD", "--"],
+                ], [json.loads(line) for line in self.git_calls.read_text(encoding="utf-8").splitlines()])
+                self.assertEqual([{
+                    "argv": [self.environment["PENNILOGIC_API106_PYTHON"], "-I", "-S", "-B",
+                             r"scripts\qualify_windows.py", "--require-prepared", "--api106-observer-pair"],
+                    "prepared": "verified", "tree": "b" * 40,
+                    **{name.lower(): hashlib.sha256((self.checkout / ".git" / name).read_bytes()).hexdigest()
+                       for name in ("HEAD", "index", "config")},
+                }], [json.loads(line) for line in self.qualifier_calls.read_text(encoding="utf-8").splitlines()])
+
+    def test_selection_refuses_missing_or_invalid_first_application_without_fallback(self):
+        valid = str(self.images[0])
+        for name, candidates in (
+            ("missing", []), ("empty-first", ["", valid]), ("relative-first", ["git.exe", valid]),
+            ("wrong-name", [str(self.images[0].with_name("not-git.exe")), valid]),
+            ("control-character", [str(self.root / "bad\npath" / "git.exe"), valid]),
+            ("missing-image", [str(self.root / "absent" / "git.exe"), valid]),
+        ):
+            with self.subTest(case=name):
+                result = self.select(candidates)
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(b"", result.stdout)
+                self.assertEqual([b"API106 checkout Git selection refused."], result.stderr.splitlines())
+                self.assertEqual(b"", self.output.read_bytes())
+                self.assertEqual(b"", self.path_output.read_bytes())
+                self.assertEqual(b"", self.git_calls.read_bytes())
+                self.assertEqual(b"", self.qualifier_calls.read_bytes())
+
+    def test_same_job_guard_refuses_missing_joined_mismatched_or_changed_binding(self):
+        selected = self.images[0]
+        binding = {"path": str(selected), "sha256": hashlib.sha256(selected.read_bytes()).hexdigest()}
+        cases = (
+            {"PENNILOGIC_API106_GIT": ""},
+            {"PENNILOGIC_API106_GIT": " ".join(map(str, self.images))},
+            {"PENNILOGIC_API106_GIT": str(self.root / "absent" / "git.exe")},
+            {"PENNILOGIC_API106_GIT_SHA256": ""},
+            {"PENNILOGIC_API106_GIT_SHA256": "malformed"},
+            {"PENNILOGIC_API106_GIT_SHA256": binding["sha256"] + " " + binding["sha256"]},
+            {"PENNILOGIC_API106_GIT_SHA256": "0" * 64},
+            {"PENNILOGIC_API106_GIT_SHA256": binding["sha256"].upper()},
+            {},
+        )
+        for index, overrides in enumerate(cases):
+            with self.subTest(case=index):
+                if not overrides:
+                    selected.write_bytes(b"changed synthetic image, never execute\n")
+                result = self.owning(binding, **overrides)
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(b"", result.stdout)
+                self.assertEqual([b"API106 same-job source and preparation binding refused."],
+                                 result.stderr.splitlines())
+                self.assertEqual(b"", self.git_calls.read_bytes())
+                self.assertEqual(b"", self.qualifier_calls.read_bytes())
+
+    def test_false_route_ignores_observer_binding_and_keeps_ordinary_qualifier_call(self):
+        result = self.owning(
+            {"path": "invalid observer image", "sha256": "invalid digest"},
+            PENNILOGIC_API106_OBSERVER_PAIR="false", GIT_DIR="invalid observer-only selector",
+        )
+        self.assertEqual((0, b"", b""), (result.returncode, result.stdout, result.stderr))
+        self.assertEqual(b"", self.git_calls.read_bytes())
+        self.assertEqual([[r"scripts\qualify_windows.py", "--require-prepared"]],
+                         [json.loads(line) for line in self.qualifier_calls.read_text(encoding="utf-8").splitlines()])
 
 
 class WindowsShellBoundaryReaderTests(unittest.TestCase):

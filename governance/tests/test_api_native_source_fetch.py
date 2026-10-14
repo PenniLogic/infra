@@ -89,7 +89,7 @@ def remove_observer_runtime(case, value):
         "name": "Bind API106 checkout Git", "id": "api106_git",
         "if": "${{ " + OBSERVER_CONDITION + " }}", "shell": "pwsh",
     }, {key: item for key, item in selection.items() if key != "run"})
-    case.assertEqual("b086888144904494af86ae21311caa6aa71043f03dec71ad38159a219241c7ef",
+    case.assertEqual("a230a94c1e4a148d57612da193851de9980e7fb7e937d1fec884b9d7b2c7f089",
                      hashlib.sha256(selection["run"].encode("ascii")).hexdigest())
     for name, identity in (("Checkout", "checkout"), ("Python", "python"), ("JDK", "java"),
                            (PROVIDER_STEP, "money")):
