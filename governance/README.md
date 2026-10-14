@@ -369,6 +369,23 @@ Only the opt-in qualifier driver uses `-I -S -B` to exclude inherited Python
 startup injection; the full `quality.py test` child retains its ordinary
 interpreter startup and exact existing argument list.
 
+An opt-in Java-selection refusal retains `observer-java-selection` and emits
+one diagnostic-only `windows_observer_java_selection` record naming only the
+first failed check: `home-match`, `home-single-path`,
+`release-version-single-match`, `selected-version-match`, or
+`release-implementor`. Its `matched` value is always false; the fixed record is
+at most 192 bytes including the line ending. It contains no Java path, version,
+release contents, environment value or exception text. Valid selections emit
+no such record. The existing release grammar, single-match requirement, selected
+version comparison, Adoptium requirement and evaluation order are unchanged.
+Path/read/decode failures retain their existing static refusal rather than
+inventing a failed selection predicate. Diagnostic I/O cannot replace the
+primary refusal; the existing fixed secondary-failure path records unavailable
+reporting. Admission still stops before owner/custody creation, so absent
+collector state remains a refusal. This distinguishes a future observation; it
+does not establish which Java predicate failed in the earlier reported run or
+clear native, timing, parity or cleanup holds.
+
 The existing successful terminal `materialize_money_sources.py --verify`
 binds all eleven Money inputs and fourteen provider files. The immediately
 preceding no-fetch database `prepare`/`verify` and interop SOURCE

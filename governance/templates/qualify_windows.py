@@ -1039,6 +1039,18 @@ def observer_runtime_bytes(path, limit):
     return data
 
 
+def observer_java_require(condition, check):
+    if condition:
+        return
+    primary = Refused("observer-java-selection")
+    try:
+        print(json.dumps({"event": "windows_observer_java_selection", "diagnostic_only": True,
+                          "check": check, "matched": False}, sort_keys=True), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        observer_secondary_failure(primary, "java-selection-report-unavailable")
+    raise primary
+
+
 def observer_runtime_inputs(root, budget):
     observer_require(os.environ.get("GITHUB_ACTIONS") == "true"
                      and os.environ.get("PENNILOGIC_API106_MONEY") == "success"
@@ -1072,16 +1084,17 @@ def observer_runtime_inputs(root, budget):
                      and hashlib.sha256(observer_runtime_bytes(git, 32 * 1024 * 1024)).hexdigest() == expected,
                      "observer-git-selection")
     java = observer_runtime_path(os.environ.get("PENNILOGIC_API106_JAVA"), directory=True)
-    observer_require(java == observer_runtime_path(os.environ.get("JAVA_HOME"), directory=True)
-                     and "," not in str(java), "observer-java-selection")
+    observer_java_require(java == observer_runtime_path(os.environ.get("JAVA_HOME"), directory=True), "home-match")
+    observer_java_require("," not in str(java), "home-single-path")
     for name in ("java.exe", "javac.exe"):
         observer_runtime_path(str(java / "bin" / name), directory=False)
     release = "\n".join(observer_runtime_bytes(java / "release", 16384).decode("utf-8").splitlines())
     versions = re.findall(r'^JAVA_VERSION="(21(?:\.[0-9]+){1,3})(?:\+[0-9A-Za-z.-]+)?"$', release, re.MULTILINE)
     selected = os.environ.get("PENNILOGIC_API106_JAVA_VERSION", "").split("+", 1)[0]
-    observer_require(len(versions) == 1 and versions[0] == selected
-                     and re.findall(r'^IMPLEMENTOR="([^"\r\n]+)"$', release, re.MULTILINE) == ["Eclipse Adoptium"],
-                     "observer-java-selection")
+    observer_java_require(len(versions) == 1, "release-version-single-match")
+    observer_java_require(versions[0] == selected, "selected-version-match")
+    observer_java_require(re.findall(r'^IMPLEMENTOR="([^"\r\n]+)"$', release, re.MULTILINE) == ["Eclipse Adoptium"],
+                          "release-implementor")
     for relative in ("build/source-materialization", "build/contracts-money",
                      "build/money-client-interop/inputs", "build/database-admission"):
         observer_runtime_path(str(root / relative), directory=True)
