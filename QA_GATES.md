@@ -2,7 +2,9 @@
 
 Status: **proposed, not yet wired into CI and not yet blocking.** This guide belongs to
 [PenniLogic/infra#28](https://github.com/PenniLogic/infra/issues/28) (T-QA-04), first pull request: the vendored flake
-policy, the quarantine gate and the retry-limit configuration check. Nothing here claims an acceptance criterion
+policy, the quarantine gate and the retry-limit configuration check. The second slice of the same issue, SAST
+and DAST report ingestion ([PenniLogic/infra#91](https://github.com/PenniLogic/infra/pull/91), merged at `c9c9a37`),
+has its own guide, [QA_GATES_SCANNING.md](QA_GATES_SCANNING.md). Nothing here claims an acceptance criterion
 of that issue as met; the open items are listed under [Still unmet](#still-unmet).
 
 ## Entry point and exit codes
@@ -252,6 +254,9 @@ unmapped or mapped to other packages, or when the retry check of the committed w
 workflow change from `main` cannot leave the manifest silently stale (Fable review round 1, F1). Every rule's
 `reason` records the basis of its tags; after review round 3 (ADVSEC-R3-02)
 only `test_capability_paragraph` and `test_rule_table` stay untagged (text rendering and documentation order).
+The test modules of the merged SAST/DAST slice, `test_qa_gates_sast` (PT-044) and `test_qa_gates_dast` (PT-045),
+are `infra.tooling` rules tagged `privacy` and `security` (report redaction; input refusal and check-bypass
+prevention), so their tests cannot be quarantined.
 
 ## Observability
 
@@ -269,7 +274,7 @@ Every report is one JSON line, suitable for publishing as a CI artifact:
 - both: the policy provenance (`policy`) and manifest status and digest.
 
 Severity counts and exception counts with expiry dates (also listed under Observability in infra#28) belong to the
-SAST/DAST and infra#23 parts and are not produced here.
+SAST/DAST gates ([QA_GATES_SCANNING.md](QA_GATES_SCANNING.md)) and infra#23 and are not produced here.
 
 ## Rollout and rollback
 
@@ -339,7 +344,9 @@ Each item below stays open; none is claimed by this change.
   ledger pull request that copies `ledger_delta`; they are lost on a job re-run or when the delta is not copied.
   Persisting them needs CI wiring (generator owner) or an event store, owner to be decided with QA/Reliability.
   The blocking-flake and manual-ledger design is a proposal pending that decision.
-- Criterion 2 and SAST/DAST ingestion, severity policy and scan-report publication: the second pull request.
+- Criterion 2 and scan-report publication: the SAST/DAST ingestion and severity policy merged separately
+  (PenniLogic/infra#91, [QA_GATES_SCANNING.md](QA_GATES_SCANNING.md)); their CI wiring, the real scan and
+  publication to the release checklist are held there and are not claimed here.
 - A real authenticated dynamic scan against an ephemeral deployed build: not performed.
 - The infra#22 conformance hold is preserved; the warning week, the definition-of-done items and the Core, Security,
   QA and Reliability reviews are outstanding.
