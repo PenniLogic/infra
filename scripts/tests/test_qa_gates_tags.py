@@ -43,6 +43,7 @@ COMMITTED = {
         "test_qa_gates_ledger": {"security"}, "test_qa_gates_policy": {"security"},
         "test_qa_gates_quarantine": {"security"},
         "test_qa_gates_rate": {"security"}, "test_qa_gates_retry": {"security"},
+        "test_qa_gates_sast": {"privacy", "security"}, "test_qa_gates_dast": {"privacy", "security"},
         "test_qa_gates_tags": {"security"}, "test_security_controls": {"privacy", "security"},
         "test_smoke_infra": {"security"},
     },

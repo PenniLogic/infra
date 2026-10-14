@@ -495,6 +495,30 @@
         "security"
       ],
       "reason": "Secret, dependency and exception controls; security: asserts scanner credential removal, scanner-boundary and malformed-input refusal and non-bypassable mandatory secret rules; privacy: asserts redacted rotation payloads and secret reports and the Android privacy-inventory consumer shape"
+    },
+    {
+      "id": "PT-044",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_sast",
+      "package": "infra.tooling",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "SAST report gate of infra#28 slice 2 (PenniLogic/infra#91); security: a planted injection fails, path traversal, duplicate keys and bad grammar are refused, inline suppression markers and ignore files fail as incomplete (check-bypass prevention); privacy: the report carries no Semgrep message, snippet or metadata (redaction)"
+    },
+    {
+      "id": "PT-045",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_dast",
+      "package": "infra.tooling",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "DAST report gate of infra#28 slice 2 (PenniLogic/infra#91); security: target allowlist preflight, report-to-manifest binding, credential values refused in the scan manifest; privacy: the report carries no URI, parameter, evidence or user name, the credential never reaches report or log (redaction), and a manifest without synthetic data is refused"
     }
   ],
   "jobs": [
