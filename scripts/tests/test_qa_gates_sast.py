@@ -453,7 +453,8 @@ class SastRuleDirectoryEntryTests(unittest.TestCase):
     def test_entries_semgrep_would_read_differently_are_refused(self):
         report, provenance = CANNED.read_bytes(), PROVENANCE.read_bytes()
         rule = b'{"rules": [{"id": "pennilogic-extra-rule", "metadata": {"status": "proposed, not agreed"}}]}'
-        for name in ("extra.yaml", "python.test.yml", "python.fixed.yml", "notes.txt", "nested/extra.yml"):
+        for name in ("extra.yaml", "python.test.yml", "python.fixed.yml", "notes.txt", "nested/extra.yml",
+                     "directory.yml/extra.yml"):
             with self.subTest(name=name), copied_root() as root:
                 rules = root / "scripts/qa-gates/rules"
                 self.assertEqual(len(sast.load_rule_ids(rules)), 8)
