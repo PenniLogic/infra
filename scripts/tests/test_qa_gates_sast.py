@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import tracemalloc
 import unittest
 import unittest.mock
 
@@ -797,6 +798,38 @@ class TiedFindingOrder(unittest.TestCase):
         self.assertEqual(gate(document)["findings"], gate(document)["findings"])
         forward, backward = dict(document, results=[first, second]), dict(document, results=[second, first])
         self.assertEqual(gate(forward)["findings"], gate(backward)["findings"])
+
+
+class SastSourceMemoryTests(unittest.TestCase):
+    def test_many_scanned_paths_hold_one_source_at_a_time(self):
+        """Reliability: peak memory stays near one source, not the sum of every scanned path (Fable review F1).
+
+        A bounded read transiently allocates SOURCE_LIMIT + 1 bytes, so the bound is two source limits; the 48
+        scanned files total three times that.
+        """
+        count, size, bound = 48, 512 * 1024, 2 * sast.SOURCE_LIMIT
+        self.assertGreaterEqual(count * size, 3 * bound)
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "src").mkdir()
+            names = ["src/f%02d.py" % index for index in range(count)]
+            for name in names:
+                Path(root, name).write_bytes(b"x = 1\n" * (size // 6))
+            result = {"check_id": EVAL_RULE, "path": names[0], "start": {"line": 1, "offset": 0},
+                      "end": {"line": 1, "offset": 5}, "extra": {"severity": "ERROR"}}
+            document = clean()
+            document["paths"]["scanned"] = names
+            self.assertEqual(gate(document, root=Path(root))["decision"], "pass")
+            document["results"] = [result]
+            data = dump(document)
+            tracemalloc.start()
+            try:
+                report = sast.evaluate(data, Path(root), BLOCK_ALL, TODAY, RULE_IDS)
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+        self.assertEqual((report["reason"], report["scanned_path_count"]), ("SAST-BLOCKING-FINDINGS", count))
+        self.assertLess(peak, bound)
+
 
 if __name__ == "__main__":
     unittest.main()

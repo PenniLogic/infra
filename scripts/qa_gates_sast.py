@@ -238,7 +238,8 @@ def _source(root, path):
     return source
 
 
-def _finding(result, rule_ids, scanned, root, sources, modes, today):
+def _result(result, rule_ids, scanned):
+    """Shape-check one Semgrep result without reading its source: (path, rule ID, severity, line, start, end)."""
     if not isinstance(result, dict) or not isinstance(result.get("extra"), dict):
         raise Refused("SAST-RESULT-SHAPE")
     rule_id = _rule_id(result.get("check_id"), rule_ids)
@@ -249,14 +250,26 @@ def _finding(result, rule_ids, scanned, root, sources, modes, today):
     if severity not in SCANNER_SEVERITIES:
         raise Refused("SAST-RESULT-SEVERITY")
     (line, start), (end_line, end) = _position(result.get("start")), _position(result.get("end"))
-    if path not in sources:
-        sources[path] = _source(root, path)
-    if not (start < end <= len(sources[path]) and line <= end_line):
+    if not (start < end and line <= end_line):
+        raise Refused("SAST-RESULT-SPAN")
+    return path, rule_id, severity, line, start, end
+
+
+def _finding(checked, source, modes, today):
+    """One finding from a shape-checked result and the bytes of its source; the span must lie inside the source."""
+    path, rule_id, severity, line, start, end = checked
+    if end > len(source):
         raise Refused("SAST-RESULT-SPAN")
     return {
         "rule_id": rule_id, "scanner_severity": severity, "path": path, "line": line,
-        "fingerprint": fingerprint(rule_id, path, sources[path][start:end]), "mode": rule_mode(rule_id, modes, today),
+        "fingerprint": fingerprint(rule_id, path, source[start:end]), "mode": rule_mode(rule_id, modes, today),
     }
+
+
+def _marked(source):
+    """True when the source, decoded as UTF-8 with errors replaced, carries a Semgrep inline suppression marker."""
+    decoded = source.decode("utf-8", "replace")
+    return any(marker.search(decoded) is not None for marker in INLINE_MARKERS)
 
 
 def ignore_files(root):
@@ -272,33 +285,38 @@ def ignore_files(root):
     return sorted(found)
 
 
-def suppression(root, scanned, sources):
-    """Semgrep's own suppression channels in the checkout: inline markers in scanned sources and ignore files.
+def scan_sources(root, scanned, results, modes, today):
+    """Read each scanned source once, in path order, and drop its bytes before the next one is read.
 
-    Either one is an unrecorded exception (Semgrep drops the match or the file without an error), and exceptions
-    are refused until infra#23 integrates, so the gate treats either as an incomplete scan.
+    Returns (findings, inline_marker_paths). Peak memory holds one source (at most SOURCE_LIMIT bytes) and the
+    shape-checked results, however many paths were scanned. An inline marker in any scanned source is one of
+    Semgrep's own suppression channels: an unrecorded exception, refused until infra#23 integrates.
     """
-    marked = []
+    by_path = {}
+    for checked in results:
+        by_path.setdefault(checked[0], []).append(checked)
+    findings, marked = [], []
     for path in scanned:
-        if path not in sources:
-            sources[path] = _source(root, path)
-        decoded = sources[path].decode("utf-8", "replace")
-        if any(marker.search(decoded) is not None for marker in INLINE_MARKERS):
+        source = _source(root, path)
+        findings.extend(_finding(checked, source, modes, today) for checked in by_path.get(path, ()))
+        if _marked(source):
             marked.append(path)
-    return {"inline_marker_paths": marked, "ignore_files": ignore_files(root)}
+        del source
+    return findings, marked
 
 
 def evaluate(data, root, modes, today, rule_ids=None):
     """Gate one Semgrep report: incomplete fails first, then any `block`-mode finding fails."""
     rule_ids = tuple(sorted(modes)) if rule_ids is None else tuple(rule_ids)
     version, results, error_count, skipped_count, scanned, timed = parse_report(data)
-    scanned_set, sources = set(scanned), {}
+    scanned_set = set(scanned)
     missing_rules = None if timed is None else sorted(set(rule_ids) - {_rule_id(item, rule_ids) for item in timed})
-    findings = sorted(
-        (_finding(result, rule_ids, scanned_set, root, sources, modes, today) for result in results),
+    checked = [_result(result, rule_ids, scanned_set) for result in results]
+    findings, marked = scan_sources(root, scanned, checked, modes, today)
+    findings.sort(
         key=lambda item: (item["path"], item["line"], item["rule_id"], item["fingerprint"], item["scanner_severity"]),
     )
-    suppressed = suppression(root, scanned, sources)
+    suppressed = {"inline_marker_paths": marked, "ignore_files": ignore_files(root)}
     blocking = sum(item["mode"] == "block" for item in findings)
     by_severity = {}
     for item in findings:
