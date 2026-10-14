@@ -108,13 +108,13 @@ mode is a reviewed edit of this file; the one-week warning-only rollout itself h
 ### Exceptions
 
 None. The exception mechanism belongs to infra#23. Infra PR #88 (infra#23 work) merged into infra `main` on
-2026-10-14 (merge commit `a1d53f4`); this branch is still based on `0f5f7b7` and does not integrate it, and
-infra#23 itself is still open. On merged `main`, `security_exceptions.Exceptions.suppression` (the planned binding,
-named only, never copied or re-implemented) accepts only the `secret` and `advisory` kinds, so no SAST or DAST
-finding can be excepted, and every report says `exceptions: {"status": "unavailable: infra#23 not integrated",
-"count": 0}`. The post-merge wording of that status and the base update of this branch (an ordinary merge of
-infra `main`) are coordinator decisions that are not recorded yet. Semgrep's inline and path suppression are
-exception channels too and are refused until infra#23 offers SAST and DAST kinds (decision step 3).
+2026-10-14 (merge commit `a1d53f4`), and this branch now contains it through an ordinary merge of infra `main`
+(merge base `a1d53f4`); infra#23 itself is still open. The merge integrates PR #88 as code only: these gates do
+not call it. On that base, `security_exceptions.Exceptions.suppression` (the planned binding, named only, never
+copied or re-implemented) accepts only the `secret` and `advisory` kinds, so no SAST or DAST finding can be
+excepted, and every report says `exceptions: {"status": "unavailable: infra#23 not integrated", "count": 0}`
+(the status string means no SAST or DAST exception kind exists yet; any rewording is a coordinator decision).
+Semgrep's inline and path suppression are exception channels too and are refused until infra#23 offers SAST and DAST kinds (decision step 3).
 
 ### Observability fields
 
