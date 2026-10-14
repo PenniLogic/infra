@@ -16,7 +16,9 @@ import stat
 
 CANONICALIZATION = "sorted-keys-compact-ascii-json-sha256"
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-SEGMENT = re.compile(r"[A-Za-z0-9._@+-]{1,128}")
+# Parentheses and brackets admit Next.js route groups and dynamic or catch-all segments (`(customer)`,
+# `[[...path]]`) of the web and admin repositories; `.` and `..` stay refused as whole segments.
+SEGMENT = re.compile(r"[A-Za-z0-9._@+()\[\]-]{1,128}")
 PATH_LIMIT = 512
 TEXT_LIMIT = 400
 

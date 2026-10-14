@@ -219,6 +219,24 @@ class SastReportGateTests(unittest.TestCase):
             document["paths"]["scanned"].append(bad)
             self.assertRefused("SAST-REPORT-PATH", gate, document)
 
+    def test_next_js_route_segments_accepted(self):
+        # Review round 2 SS2-R1-02: PenniLogic web and admin track `src/app/(customer)/page.tsx` and
+        # `app/[[...path]]/route.ts`; a clean report scanning them must pass, while dot segments stay refused.
+        routes = ("src/app/(customer)/page.tsx", "app/[[...path]]/route.ts")
+        with copied_root() as root:
+            self.assertEqual(gate(clean(), root=root)["decision"], "pass")
+            for relative in routes:
+                (root / relative).parent.mkdir(parents=True)
+                (root / relative).write_bytes(b"export const x = 1;\n")
+            document = clean()
+            document["paths"]["scanned"].extend(routes)
+            report = gate(document, root=root)
+        self.assertEqual((report["decision"], report["scanned_path_count"]), ("pass", 8))
+        for bad in ("src/app/(customer)/../page.tsx", "app/[[...path]]/./route.ts", "app/[x]\x00/r.ts"):
+            document = clean()
+            document["paths"]["scanned"].append(bad)
+            self.assertRefused("SAST-REPORT-PATH", gate, document)
+
     def test_scanned_path_missing_from_the_root_refused(self):
         # Review round 1 SS-R1-02: every scanned source is read for suppression markers.
         self.assertEqual(gate(clean())["decision"], "pass")

@@ -58,7 +58,7 @@ short span would reveal bytes of the outside file.
 | --- | --- |
 | `rule_id` | The rule ID (the Semgrep config-path prefix is removed only for this repository's rule IDs). |
 | `scanner_severity` | Semgrep's own level, unmapped. No severity threshold is defined: every level blocks. |
-| `path`, `line` | Normalized repository-relative POSIX path (a Windows separator becomes `/`) and start line. |
+| `path`, `line` | Normalized repository-relative POSIX path (a Windows separator becomes `/`; segments of letters, digits and `._@+-()[]`, so Next.js segments such as `(customer)` and `[[...path]]` are accepted; no root, drive, empty, `.` or `..` segment) and start line. |
 | `fingerprint` | `sha256:` over the canonical JSON of `[rule_id, path, sha256(matched byte span)]`. |
 | `mode` | `block` or `warn`, judged against the evaluation date. |
 
