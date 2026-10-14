@@ -1039,13 +1039,25 @@ def observer_runtime_bytes(path, limit):
     return data
 
 
-def observer_java_require(condition, check):
+def observer_java_version_operand(value):
+    if type(value) is str and len(value) <= 20 \
+            and re.fullmatch(r"21(?:\.(?:0|[1-9][0-9]{0,4})){1,3}", value) is not None:
+        return value
+    return "unavailable"
+
+
+def observer_java_require(condition, check, *, versions=None):
     if condition:
         return
     primary = Refused("observer-java-selection")
     try:
         print(json.dumps({"event": "windows_observer_java_selection", "diagnostic_only": True,
                           "check": check, "matched": False}, sort_keys=True), file=sys.stderr, flush=True)
+        if versions is not None:
+            print(json.dumps({"event": "windows_observer_java_versions", "diagnostic_only": True,
+                              "release_version": observer_java_version_operand(versions[0]),
+                              "selected_version": observer_java_version_operand(versions[1])},
+                             sort_keys=True), file=sys.stderr, flush=True)
     except (OSError, ValueError):
         observer_secondary_failure(primary, "java-selection-report-unavailable")
     raise primary
@@ -1092,7 +1104,7 @@ def observer_runtime_inputs(root, budget):
     versions = re.findall(r'^JAVA_VERSION="(21(?:\.[0-9]+){1,3})(?:\+[0-9A-Za-z.-]+)?"$', release, re.MULTILINE)
     selected = os.environ.get("PENNILOGIC_API106_JAVA_VERSION", "").split("+", 1)[0]
     observer_java_require(len(versions) == 1, "release-version-single-match")
-    observer_java_require(versions[0] == selected, "selected-version-match")
+    observer_java_require(versions[0] == selected, "selected-version-match", versions=(versions[0], selected))
     observer_java_require(re.findall(r'^IMPLEMENTOR="([^"\r\n]+)"$', release, re.MULTILINE) == ["Eclipse Adoptium"],
                           "release-implementor")
     for relative in ("build/source-materialization", "build/contracts-money",

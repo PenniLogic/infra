@@ -1633,10 +1633,14 @@ class WindowsObserverPairDiagnosticTests(unittest.TestCase):
                     self.runtime_inputs(root, budget)
                 self.assertEqual("observer-java-selection", str(caught.exception))
                 self.assertEqual("", output.getvalue())
-                self.assertEqual([{"event": "windows_observer_java_selection", "diagnostic_only": True,
-                                   "check": check, "matched": False}],
-                                 [json.loads(line) for line in errors.getvalue().splitlines()])
-                self.assertLessEqual(len(errors.getvalue().encode("ascii")) + len(os.linesep) - 1, 192)
+                expected = [{"event": "windows_observer_java_selection", "diagnostic_only": True,
+                             "check": check, "matched": False}]
+                if check == "selected-version-match":
+                    expected.append({"event": "windows_observer_java_versions", "diagnostic_only": True,
+                                     "release_version": "21.0.9", "selected_version": "unavailable"})
+                self.assertEqual(expected, [json.loads(line) for line in errors.getvalue().splitlines()])
+                for line in errors.getvalue().splitlines():
+                    self.assertLessEqual(len(line.encode("ascii")) + 2, 192)
                 for private in (MARKER, str(java), str(root), "JAVA_HOME", "JAVA_VERSION", "Eclipse Adoptium"):
                     self.assertNotIn(private, errors.getvalue())
                 self.assertEqual([], list(Path(environment["RUNNER_TEMP"]).iterdir()))
@@ -1647,6 +1651,8 @@ class WindowsObserverPairDiagnosticTests(unittest.TestCase):
         for release, selected in (
             ("21.0", "21.0"), ("21.0.9", "21.0.9+10"), ("21.0.9+10-LTS", "21.0.9+10"),
             ("21.0.9.1", "21.0.9.1+2"), ("21.0.9+10.1", "21.0.9+10.1"),
+            ("21.0.12", "21.0.12+101.0"), ("21.0.12.1", "21.0.12.1+1-LTS"),
+            ("21.00.12", "21.00.12"), ("21.100000", "21.100000"),
         ):
             with self.subTest(release=release, selected=selected), \
                     self.runtime_fixture() as (root, budget, environment):
@@ -1664,6 +1670,78 @@ class WindowsObserverPairDiagnosticTests(unittest.TestCase):
                 self.assertEqual(str(java), supplied["JAVA_HOME"])
                 self.assertEqual([Path(environment["PENNILOGIC_API106_GIT"]).parent], directories)
                 self.assertEqual("", output.getvalue() + errors.getvalue())
+
+    def test_runtime_java_version_mismatch_reports_only_bounded_exact_operands(self):
+        cases = (
+            ("four-component-release", "21.0.12.1", "21.0.12+101.0", "21.0.12.1", "21.0.12"),
+            ("four-component-selected", "21.0.12", "21.0.12.1+1-LTS", "21.0.12", "21.0.12.1"),
+            ("patch-mismatch", "21.0.13", "21.0.12+101.0", "21.0.13", "21.0.12"),
+            ("bounded-maxima", "21.99999.99999.99999", "21.88888.88888.88888",
+             "21.99999.99999.99999", "21.88888.88888.88888"),
+            ("oversized-release", "21." + "9" * 4096, "21.0.12", "unavailable", "21.0.12"),
+            ("large-release-component", "21.100000", "21.0.12", "unavailable", "21.0.12"),
+            ("padded-release", "21.00.12", "21.0.12", "unavailable", "21.0.12"),
+            ("oversized-selected", "21.0.12", "21." + "9" * 4096, "21.0.12", "unavailable"),
+            ("large-selected-component", "21.0.12", "21.100000", "21.0.12", "unavailable"),
+            ("private-selected", "21.0.12", MARKER, "21.0.12", "unavailable"),
+            ("control-selected", "21.0.12", "21.0.12\n" + MARKER, "21.0.12", "unavailable"),
+            ("unicode-selected", "21.0.12", "21.0.\u0661", "21.0.12", "unavailable"),
+            ("other-major", "21.0.12", "17.0.12", "21.0.12", "unavailable"),
+            ("private-build-suffix", "21.0.13+1-LTS", "21.0.12+" + MARKER, "21.0.13", "21.0.12"),
+        )
+        for label, release, selected, left, right in cases:
+            with self.subTest(case=label), self.runtime_fixture() as (root, budget, environment):
+                java = Path(environment["PENNILOGIC_API106_JAVA"])
+                (java / "release").write_text(
+                    f'JAVA_VERSION="{release}"\nIMPLEMENTOR="Eclipse Adoptium"\nPRIVATE="{MARKER}"\n',
+                    encoding="utf-8")
+                qualification.os.environ["PENNILOGIC_API106_JAVA_VERSION"] = selected
+                output, errors = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
+                        self.assertRaises(qualification.Refused) as caught:
+                    self.runtime_inputs(root, budget)
+                self.assertEqual("observer-java-selection", str(caught.exception))
+                self.assertEqual("", output.getvalue())
+                self.assertEqual([
+                    {"event": "windows_observer_java_selection", "diagnostic_only": True,
+                     "check": "selected-version-match", "matched": False},
+                    {"event": "windows_observer_java_versions", "diagnostic_only": True,
+                     "release_version": left, "selected_version": right},
+                ], [json.loads(line) for line in errors.getvalue().splitlines()])
+                for line in errors.getvalue().splitlines():
+                    self.assertLessEqual(len(line.encode("ascii")) + 2, 192)
+                for private in (MARKER, str(root), str(java), "JAVA_HOME", "JAVA_VERSION", "Eclipse Adoptium"):
+                    self.assertNotIn(private, errors.getvalue())
+                self.assertEqual([], list(Path(environment["RUNNER_TEMP"]).iterdir()))
+                self.assertFalse((root / qualification.OBSERVER_STATE).exists())
+                budget.environment.assert_not_called()
+
+    def test_runtime_java_version_operand_projection_does_not_coerce_or_truncate(self):
+        cases = (
+            None, True, 21, b"21.0.12", mock.Mock(), "", MARKER, r"C:\private\21.0.12",
+            "17.0.12", "210.0.12", "21", "21.0.12.1.1", "21.00.12", "21.0.012", "21.100000",
+            "21.0.12+1-LTS", "21.0.12\n", "21.0.12\r\n", "21.0.\u0661", "21.0.12 " + MARKER,
+            "21.12345.12345.123456", "21." + "9" * 4096,
+        )
+        for position, value in enumerate(cases):
+            with self.subTest(case=position):
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), self.assertRaises(qualification.Refused) as caught:
+                    qualification.observer_java_require(False, "selected-version-match", versions=(value, value))
+                self.assertEqual("observer-java-selection", str(caught.exception))
+                records = [json.loads(line) for line in errors.getvalue().splitlines()]
+                self.assertEqual([
+                    {"event": "windows_observer_java_selection", "diagnostic_only": True,
+                     "check": "selected-version-match", "matched": False},
+                    {"event": "windows_observer_java_versions", "diagnostic_only": True,
+                     "release_version": "unavailable", "selected_version": "unavailable"},
+                ], records)
+                for line in errors.getvalue().splitlines():
+                    self.assertLessEqual(len(line.encode("ascii")) + 2, 192)
+                self.assertNotIn(MARKER, errors.getvalue())
+                self.assertEqual("unavailable", qualification.observer_java_version_operand(value))
+                if isinstance(value, mock.Mock):
+                    self.assertEqual([], value.mock_calls)
 
     def test_runtime_java_diagnostic_reporting_failure_preserves_the_primary_refusal(self):
         for error_type, fail_secondary in itertools.product((OSError, ValueError), (False, True)):
@@ -1690,6 +1768,35 @@ class WindowsObserverPairDiagnosticTests(unittest.TestCase):
                 self.assertFalse((root / qualification.OBSERVER_STATE).exists())
                 budget.environment.assert_not_called()
 
+    def test_runtime_java_operand_reporting_failure_preserves_the_primary_refusal(self):
+        for error_type, fail_secondary in itertools.product((OSError, ValueError), (False, True)):
+            with self.subTest(error=error_type.__name__, fail_secondary=fail_secondary), \
+                    self.runtime_fixture() as (root, budget, environment):
+                qualification.os.environ["PENNILOGIC_API106_JAVA_VERSION"] = "21.0.12+101.0"
+                errors, attempted, native_print = io.StringIO(), [], print
+
+                def report(value, *args, **kwargs):
+                    record = json.loads(value)
+                    attempted.append(record["event"])
+                    if record["event"] == "windows_observer_java_versions" or (
+                            fail_secondary and record["event"] == "windows_observer_secondary_failure"):
+                        raise error_type(MARKER)
+                    return native_print(value, *args, **kwargs)
+
+                with contextlib.redirect_stderr(errors), mock.patch("builtins.print", side_effect=report), \
+                        self.assertRaises(qualification.Refused) as caught:
+                    self.runtime_inputs(root, budget)
+                self.assertEqual("observer-java-selection", str(caught.exception))
+                self.assertEqual(["windows_observer_java_selection", "windows_observer_java_versions",
+                                  "windows_observer_secondary_failure"], attempted)
+                self.assertIn("java-selection-report-unavailable", "\n".join(caught.exception.__notes__))
+                if fail_secondary:
+                    self.assertIn("Observer secondary failure reporting also failed", caught.exception.__notes__)
+                self.assertNotIn(MARKER, errors.getvalue() + "\n".join(caught.exception.__notes__))
+                self.assertEqual([], list(Path(environment["RUNNER_TEMP"]).iterdir()))
+                self.assertFalse((root / qualification.OBSERVER_STATE).exists())
+                budget.environment.assert_not_called()
+
     def test_runtime_java_refusal_keeps_main_nonzero_and_collection_closed(self):
         with self.runtime_fixture() as (root, budget, environment):
             qualification.os.environ["PENNILOGIC_API106_JAVA_VERSION"] = MARKER
@@ -1703,6 +1810,8 @@ class WindowsObserverPairDiagnosticTests(unittest.TestCase):
             self.assertEqual([
                 {"event": "windows_observer_java_selection", "diagnostic_only": True,
                  "check": "selected-version-match", "matched": False},
+                {"event": "windows_observer_java_versions", "diagnostic_only": True,
+                 "release_version": "21.0.9", "selected_version": "unavailable"},
                 {"event": "windows_qualification_refused", "code": "observer-java-selection"},
             ], [json.loads(line) for line in errors.getvalue().splitlines()])
             self.assertNotIn("windows_observer_owning_interval", output.getvalue())

@@ -376,15 +376,27 @@ first failed check: `home-match`, `home-single-path`,
 `release-implementor`. Its `matched` value is always false; the fixed record is
 at most 192 bytes including the line ending. It contains no Java path, version,
 release contents, environment value or exception text. Valid selections emit
-no such record. The existing release grammar, single-match requirement, selected
-version comparison, Adoptium requirement and evaluation order are unchanged.
+no such record. Only `selected-version-match` also emits a separate
+`windows_observer_java_versions` diagnostic-only record with `release_version`
+and `selected_version`: the exact comparison operands after the existing
+release capture and selected `+build` removal. Each operand is either an
+unchanged numeric Java 21 version or the fixed string `unavailable`. The export
+grammar is `21(?:\.(?:0|[1-9][0-9]{0,4})){1,3}`, at most 20 ASCII characters:
+one to three components after 21, each zero or one to five digits without
+leading zeros. Malformed, oversized and non-string operands are unavailable,
+never truncated, coerced or normalized. The version-only record also fits
+192 bytes including its line ending. This stricter export grammar is not an
+admission rule; accepted selections remain silent, including versions outside
+the export grammar. The existing release grammar, single-match requirement,
+exact version comparison, Adoptium requirement and evaluation order are unchanged.
 Path/read/decode failures retain their existing static refusal rather than
 inventing a failed selection predicate. Diagnostic I/O cannot replace the
 primary refusal; the existing fixed secondary-failure path records unavailable
 reporting. Admission still stops before owner/custody creation, so absent
-collector state remains a refusal. This distinguishes a future observation; it
-does not establish which Java predicate failed in the earlier reported run or
-clear native, timing, parity or cleanup holds.
+collector state remains a refusal. The current native evidence identifies
+`selected-version-match`, but does not contain its release-side operand.
+This diagnostic does not establish that operand, repair Java selection, or
+clear native, timing, parity or cleanup holds before a new actual observation.
 
 The existing successful terminal `materialize_money_sources.py --verify`
 binds all eleven Money inputs and fourteen provider files. The immediately
