@@ -10,6 +10,9 @@ Compose bootstrap into a deployment or migration executor; the API runner
 remains the only SQL apply path, and provider/consumer activation is pending.
 
 Owner-only credential procedures: [Account security baseline](ACCOUNT_SECURITY.md).
+Source-only scanning, dependency inventory, expiring exceptions and rotation-request
+commands: [Secret and dependency controls](security/README.md). Hosted activation and
+push-protection violation evidence remain separate acceptance gates.
 
 ## Prerequisites
 
@@ -17,6 +20,26 @@ Owner-only credential procedures: [Account security baseline](ACCOUNT_SECURITY.m
   on Windows/macOS, or the `docker` service with `docker-compose-plugin` on Linux). Verify with
   `docker compose version`.
 - Python 3.14 (the scripts use only the standard library).
+
+The security-control tests in `scripts/tests` additionally require trusted absolute
+Git/Gitleaks paths and a verified Gitleaks `8.30.1` executable digest, supplied through
+the documented process-local test bindings; see the
+[pinned archives and focused command](security/README.md#run-locally).
+Ambient `PATH` is not a tool binding. A missing scanner is an explicit failure, not a
+skip. These tests use disposable local Git histories and nonfunctional synthetic
+patterns, never a remote planted secret.
+
+The QA-I1 canonical Infra CI source now prepares those tools from the pinned
+archives outside the checkout, with fixed hosted Git locations and an additional
+Git digest binding for `governance/qualify.py`. It does not install anything for a
+local developer or activate a production history scan. Registry follow-up B binds
+both Infra references to reviewed actual Source A
+`1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1`. The original `889c5c3` bindings and
+two historical failures remain retained. This source binding alone does not establish
+publication, protected acceptance, a maintenance transition or native qualification.
+Actual hosted provisioning, both complete OS runs, timing and the protected
+maintenance transition remain pending; see
+[hosted qualification preparation](security/README.md#hosted-qualification-preparation-qa-i1-source-a).
 
 The separate **governance** test suite also needs Node `24.14.0` (generated `.nvmrc`, bundled npm
 `11.9.0`) and uv `0.11.33`, plus a network to prepare its temporary Vitest/pytest consumers.
@@ -359,8 +382,13 @@ or removed. Safe receipts contain only project labels, resource counts and confi
 temporary removal, never credentials or command/fixture payloads. Synthetic cleanup
 regressions do not prove actual Docker resource absence.
 
-The proposed native Infra route runs **full** governance discovery, then **full**
-scripts discovery, serially within each parallel Linux/Windows job. A thin
+The proposed native Infra route keeps **full** governance then **full** scripts
+discovery serial on Linux. Independent `windows-2025` jobs run the complete
+governance and scripts directories in separate checkouts, each retaining the same
+preparation, repository and generation checks. Neither Windows job depends on the
+other. The native `CI` result requires explicit success from Linux and both Windows
+jobs; their ten-minute caps and the strict each-job **and** whole-workflow
+under-600-second acceptance requirement are unchanged. A thin
 `governance/qualify.py` wrapper adds verbose per-test collection without selectors or
 changed assertions. On Windows it permits only the nine existing real-stack skips
 and the existing POSIX-flock skip; on Linux all nine real-stack tests must pass at

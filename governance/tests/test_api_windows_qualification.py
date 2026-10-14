@@ -31,6 +31,7 @@ qualification = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(qualification)
 MARKER = "PRIVATE-FIXTURE-PAYLOAD-DO-NOT-PRINT"
 INPUT_PREPARATION = "python -I -S -B scripts\\money_client_interop.py prepare"
+INFRA_SECURITY_SOURCE = "1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1"
 
 
 def api_checker():
@@ -274,7 +275,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="native-ci-result-") as temporary:
             root = Path(temporary)
             path = root / "result.sh"
-            for repo in ("api", "infra"):
+            for repo in ("api",):
                 script = generator.ci_result_job(repo)["steps"][0]["run"]
                 path.write_text(script + "\n", encoding="utf-8", newline="\n")
                 for linux, windows in itertools.product(("success", "failure", "cancelled", "skipped", "", None), repeat=2):
@@ -288,6 +289,35 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
                     with self.subTest(repo=repo, linux=linux, windows=windows):
                         self.assertEqual(0 if linux == windows == "success" else 1, result.returncode)
                         self.assertNotIn(MARKER.encode(), result.stdout + result.stderr)
+
+    def test_infra_native_aggregator_accepts_only_three_explicit_successes(self):
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "Bash is required for the actual native CI result script")
+        fields = ("LINUX_RESULT", "WINDOWS_GOVERNANCE_RESULT", "WINDOWS_SCRIPTS_RESULT")
+        successful = dict.fromkeys(fields, "success")
+        cases = [successful]
+        for field in fields:
+            cases.extend({**successful, field: value}
+                         for value in ("failure", "cancelled", "skipped", "", None, "SUCCESS", "unknown", "success\n"))
+        with tempfile.TemporaryDirectory(prefix="infra-native-ci-result-") as temporary:
+            root = Path(temporary)
+            path = root / "result.sh"
+            path.write_text(generator.ci_result_job("infra")["steps"][0]["run"] + "\n",
+                            encoding="utf-8", newline="\n")
+            for values in cases:
+                environment = support.defects.probe_environment()
+                for field, value in values.items():
+                    environment.pop(field, None)
+                    if value is not None:
+                        environment[field] = value
+                result = subprocess.run([bash, "--noprofile", "--norc", "-e", str(path)], cwd=root,
+                                        env=environment, capture_output=True, check=False, timeout=10)
+                with self.subTest(values=values):
+                    self.assertEqual(0 if values == successful else 1, result.returncode)
+                    self.assertEqual(b"", result.stdout)
+                    self.assertEqual(b"" if values == successful else
+                                     b"::error::Infra CI requires successful Linux and Windows qualification.\n",
+                                     result.stderr)
 
     def test_windows_powershell_stops_at_each_failed_native_command(self):
         source = native_owning_script(generator.workflow("api"), windows=True)
@@ -355,6 +385,56 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
                         step["run"] = step["run"].replace(
                             qualifier, generator.powershell_commands([INPUT_PREPARATION]) + "\n" + qualifier,
                         )
+                        expected = previous.encoded(document)
+                    elif name == "infra" and not setup:
+                        document = json.loads(expected)
+                        reviewed = json.loads(support.git(
+                            support.GOVERNANCE.parent, "show", f"{INFRA_SECURITY_SOURCE}:{CI}",
+                        ))
+                        self.assertEqual({"ci", "windows", "ci-result"}, set(reviewed["jobs"]))
+                        for job_name in ("ci", "windows"):
+                            steps = document["jobs"][job_name]["steps"]
+                            self.assertEqual(["Checkout", "Python", "Node"],
+                                             [step["name"] for step in steps[:3]])
+                            self.assertEqual("Install uv", steps[3]["name"])
+                            preparation = reviewed["jobs"][job_name]["steps"][3]
+                            self.assertEqual({"name", "run"}, set(preparation))
+                            self.assertEqual("Prepare security tools", preparation["name"])
+                            steps.insert(3, preparation)
+                        windows = document["jobs"].pop("windows")
+                        old_commands = windows["steps"][-1]["run"].splitlines()
+                        self.assertEqual([
+                            "python scripts\\check_repository.py",
+                            "python governance\\generate.py --repository infra --check",
+                            "python governance\\qualify.py -- python -m unittest discover -s governance\\tests",
+                            "python governance\\qualify.py -- python -m unittest discover -s scripts\\tests",
+                        ], old_commands[::2])
+                        self.assertEqual(["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"] * 4,
+                                         old_commands[1::2])
+                        for suite, position in (("governance", 4), ("scripts", 6)):
+                            split = copy.deepcopy(windows)
+                            split["name"] = "Windows " + suite + " qualification"
+                            split["steps"][-1] = {
+                                "name": "Run Windows " + suite + " suite",
+                                "run": "\n".join(old_commands[:4] + old_commands[position:position + 2]),
+                            }
+                            document["jobs"]["windows-" + suite] = split
+                        aggregate = document["jobs"]["ci-result"]
+                        aggregate["needs"] = ["ci", "windows-governance", "windows-scripts"]
+                        aggregate["steps"][0] = {
+                            "name": "Require all qualification results",
+                            "env": {
+                                "LINUX_RESULT": "${{ needs.ci.result }}",
+                                "WINDOWS_GOVERNANCE_RESULT": "${{ needs.windows-governance.result }}",
+                                "WINDOWS_SCRIPTS_RESULT": "${{ needs.windows-scripts.result }}",
+                            },
+                            "run": 'if [ "${LINUX_RESULT-}" != success ] || '
+                                   '[ "${WINDOWS_GOVERNANCE_RESULT-}" != success ] || '
+                                   '[ "${WINDOWS_SCRIPTS_RESULT-}" != success ]; then\n'
+                                   '  echo "::error::Infra CI requires successful Linux and Windows qualification." >&2\n'
+                                   '  exit 1\nfi',
+                        }
+                        document["jobs"]["ci-result"] = document["jobs"].pop("ci-result")
                         expected = previous.encoded(document)
                     with self.subTest(repository=name, setup=setup):
                         actual = generator.workflow(name, setup=setup)
