@@ -109,6 +109,40 @@ class SastReportGateTests(unittest.TestCase):
         report = gate(document)
         self.assertEqual((report["decision"], report["reason"]), ("fail", "SAST-INCOMPLETE-SKIPPED-RULES"))
 
+    def test_rule_missing_from_the_time_section_is_incomplete(self):
+        # Review round 2 SS2-R1-05: with `--time`, Semgrep lists every rule it ran in `time.rules`; a rule filtered
+        # out (`--exclude-rule`) leaves no other trace, so a rule file's ID missing there is an incomplete scan.
+        document = clean()
+        document["time"] = {"rules": ["rules." + rule_id for rule_id in RULE_IDS], "total_bytes": 1}
+        report = gate(document)
+        self.assertEqual((report["decision"], report["rule_binding"]),
+                         ("pass", {"status": "bound: time.rules", "missing_rules": []}))
+        document["time"]["rules"].remove("rules." + EVAL_RULE)
+        report = gate(document)
+        self.assertEqual((report["decision"], report["reason"], report["complete"]),
+                         ("fail", "SAST-INCOMPLETE-RULES", False))
+        self.assertEqual(report["rule_binding"]["missing_rules"], [EVAL_RULE])
+
+    def test_report_run_without_time_is_marked_unbound(self):
+        # The canned run had no `--time`: Semgrep still wrote `time` with an empty `rules` list.
+        self.assertEqual(canned()["time"]["rules"], [])
+        for change in (lambda document: None, lambda document: document.pop("time")):
+            with self.subTest(change=change):
+                document = clean()
+                change(document)
+                report = gate(document)
+                self.assertEqual((report["decision"], report["rule_binding"]),
+                                 ("pass", {"status": "unbound: time.rules empty or absent", "missing_rules": []}))
+
+    def test_malformed_time_section_refused(self):
+        for bad in ([], {"rules": "all"}, {"rules": [1]}, {"rules": ["../x"]}, {}):
+            with self.subTest(time=bad):
+                document = clean()
+                document["time"] = {"rules": ["rules." + EVAL_RULE]}
+                self.assertEqual(gate(document)["reason"], "SAST-INCOMPLETE-RULES")
+                document["time"] = bad
+                self.assertRefused("SAST-REPORT-TIME", gate, document)
+
     def test_incomplete_outranks_blocking_findings(self):
         self.assertEqual(gate(only(EVAL_RULE))["reason"], "SAST-BLOCKING-FINDINGS")
         document = only(EVAL_RULE)
@@ -565,6 +599,24 @@ class SastCannedReportBindingTests(unittest.TestCase):
     def test_second_inline_config_refused(self):
         sast.verify_canned(self.report, self.provenance, ROOT)
         mutated = self.provenance_with(lambda document: document["command"].insert(2, "--config=p/default"))
+        self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report, mutated, ROOT)
+
+    def test_short_config_rule_filter_and_unknown_flags_refused(self):
+        # Review round 2 SS2-R1-08 (short `-c` registry config) and SS2-R1-05 (rule-set filters): the command is an
+        # allowlist; each subtest inserts exactly one token group after `semgrep scan`.
+        sast.verify_canned(self.report, self.provenance, ROOT)
+        timed = self.provenance_with(lambda document: document["command"].insert(2, "--time"))
+        sast.verify_canned(self.report, timed, ROOT)
+        for tokens in (["-c", "p/default"], ["-cp/default"], ["--exclude-rule", "rules." + EVAL_RULE],
+                       ["--severity", "ERROR"], ["--include", "*.py"], ["--time", "--time"],
+                       ["--output", "<tmp>/second.json"], ["--metrics=off"]):
+            with self.subTest(tokens=tokens):
+                mutated = self.provenance_with(lambda document: document["command"].__setitem__(slice(2, 2), tokens))
+                self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report, mutated, ROOT)
+
+    def test_command_must_start_with_semgrep_scan(self):
+        sast.verify_canned(self.report, self.provenance, ROOT)
+        mutated = self.provenance_with(lambda document: document["command"].__setitem__(1, "ci"))
         self.assertRefused("SAST-CANNED-COMMAND", sast.verify_canned, self.report, mutated, ROOT)
 
     def test_config_as_the_last_command_element_refused_without_index_error(self):

@@ -30,8 +30,11 @@ including a missing report. stdout carries one ASCII JSON report (`pennilogic.qa
 1. The report must be one strict JSON document (UTF-8, no BOM, no duplicate key) with `version`, `results`,
    `errors`, `paths.scanned` and `skipped_rules`. A malformed report is refused (exit 2).
 2. **Incomplete fails.** A non-empty `errors` list (`SAST-INCOMPLETE-ERRORS`), a skipped rule
-   (`SAST-INCOMPLETE-SKIPPED-RULES`) or zero scanned paths (`SAST-INCOMPLETE-NO-PATHS`) fails the gate, even when
-   no finding is reported.
+   (`SAST-INCOMPLETE-SKIPPED-RULES`), a rule file's ID missing from a non-empty `time.rules` (`--time` lists every
+   rule Semgrep ran, so a rule dropped by `--exclude-rule` shows there; `SAST-INCOMPLETE-RULES`, listed under
+   `rule_binding.missing_rules`) or zero scanned paths (`SAST-INCOMPLETE-NO-PATHS`) fails the gate, even when no
+   finding is reported. Without `--time` Semgrep 1.178.0 writes an empty `time.rules`; the report then says
+   `rule_binding.status: "unbound: time.rules empty or absent"` (see Held).
 3. **Semgrep's own suppression is an incomplete scan.** Semgrep drops a match on a line carrying its inline
    suppression comment and skips files named in a `.semgrepignore`, without any error entry, unless it runs with
    `--disable-nosem` and `--x-ignore-semgrepignore-files`. Semgrep 1.178.0 recognizes the comment (`nosem`,
@@ -112,7 +115,7 @@ interface decision at integration.
 ### Observability fields
 
 `counts.blocking`, `counts.warning`, `counts.by_scanner_severity`, `expired_warnings`, `exceptions.count`,
-`suppression.{inline_marker_paths, ignore_files}`,
+`suppression.{inline_marker_paths, ignore_files}`, `rule_binding.{status, missing_rules}`,
 `scanned_path_count`, `error_count`, `skipped_rule_count`, `complete` and `evaluated_on`.
 Publishing them from CI is held with the CI wiring.
 
@@ -123,8 +126,9 @@ are never imported, compiled or run, and they sit outside every `tests/` path be
 default. The tests use `scripts/tests/fixtures/qa_gates_sast/semgrep-planted.json`, a report from a **local**
 Semgrep 1.178.0 run (user-local install, not pinned by infra), with
 `semgrep-planted.provenance.json`. The provenance records the command (`--metrics=off --disable-version-check
---disable-nosem --x-ignore-semgrepignore-files`, local rules only, never a registry config; the binding check
-refuses a command without any of these flags), the Semgrep version, the SHA-256 of the rule files, of the planted
+--disable-nosem --x-ignore-semgrepignore-files`, local rules only, never a registry config; the binding check is
+an allowlist: `semgrep scan`, each of these flags once, optionally `--time`, one `--output` and a final `--config
+<rules> <planted dir>`, so a short `-c`, a second config or a rule, severity or path filter is refused), the Semgrep version, the SHA-256 of the rule files, of the planted
 tree and of the committed report, and the scanned path list. A unit test recomputes the bindings: editing a rule
 file or a planted source without regenerating the report fails it. The canned report is a `local-fixture` input
 and **never acceptance evidence** (`acceptance_evidence: false`).
@@ -242,8 +246,10 @@ policies are all-blocking, and the warning week itself has not run.
 ## Held and not claimed
 
 - **CI wiring.** Criterion 1 ("fails the pull request") needs a Semgrep CI step with a pinned, trusted Semgrep
-  binary run with `--metrics=off --disable-version-check --disable-nosem --x-ignore-semgrepignore-files` and only
-  this repository's rule directory as `--config`, and criterion 2 needs a deploy-pipeline DAST step; both are wired through the generator owner (the
+  binary run with `--metrics=off --disable-version-check --disable-nosem --x-ignore-semgrepignore-files --time`,
+  only this repository's rule directory as `--config` and no rule or severity filter (`--exclude-rule`,
+  `--severity`, a second `--config` or `-c`); the step must also fail unless `rule_binding.status` is
+  `bound: time.rules`, because the gate accepts an unbound report (the committed canned report has none), and criterion 2 needs a deploy-pipeline DAST step; both are wired through the generator owner (the
   workflows are generated files). Scanner execution, timeouts and process cleanup wait for infra#23's process
   controls. Publishing the counts to the release checklist is held with the wiring.
 - **Scanned-target binding.** A live report is not yet bound to the target list expected from the trusted

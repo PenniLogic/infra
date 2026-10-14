@@ -182,7 +182,12 @@ def _position(value):
 
 
 def parse_report(data):
-    """Shape-check a Semgrep JSON report; returns (version, results, error_count, skipped_rule_count, scanned)."""
+    """Shape-check a Semgrep JSON report.
+
+    Returns (version, results, error_count, skipped_rule_count, scanned, timed_rules); `timed_rules` is the check ID
+    list of `time.rules` (with `--time`, every rule Semgrep ran) or None when it is empty or absent: Semgrep 1.178.0
+    emits a `time` section with an empty `rules` list when run without `--time`.
+    """
     document = json_document(data, REPORT_LIMIT, "SAST-REPORT")
     if not isinstance(document, dict) or not {"version", "results", "errors", "paths", "skipped_rules"} <= set(document):
         raise Refused("SAST-REPORT-SHAPE")
@@ -197,7 +202,14 @@ def parse_report(data):
     scanned = [relative_path(path, "SAST-REPORT-PATH") for path in paths["scanned"]]
     if len(set(scanned)) != len(scanned):
         raise Refused("SAST-REPORT-PATH")
-    return version, results, len(errors), len(skipped), tuple(sorted(scanned))
+    timed = None
+    if "time" in document:
+        timing = document["time"]
+        if (not isinstance(timing, dict) or not isinstance(timing.get("rules"), list)
+                or not all(isinstance(item, str) and CHECK_ID.fullmatch(item) for item in timing["rules"])):
+            raise Refused("SAST-REPORT-TIME")
+        timed = timing["rules"] or None
+    return version, results, len(errors), len(skipped), tuple(sorted(scanned)), timed
 
 
 def fingerprint(rule_id, path, span):
@@ -278,8 +290,9 @@ def suppression(root, scanned, sources):
 def evaluate(data, root, modes, today, rule_ids=None):
     """Gate one Semgrep report: incomplete fails first, then any `block`-mode finding fails."""
     rule_ids = tuple(sorted(modes)) if rule_ids is None else tuple(rule_ids)
-    version, results, error_count, skipped_count, scanned = parse_report(data)
+    version, results, error_count, skipped_count, scanned, timed = parse_report(data)
     scanned_set, sources = set(scanned), {}
+    missing_rules = None if timed is None else sorted(set(rule_ids) - {_rule_id(item, rule_ids) for item in timed})
     findings = sorted(
         (_finding(result, rule_ids, scanned_set, root, sources, modes, today) for result in results),
         key=lambda item: (item["path"], item["line"], item["rule_id"], item["fingerprint"], item["scanner_severity"]),
@@ -293,6 +306,8 @@ def evaluate(data, root, modes, today, rule_ids=None):
         reason = "SAST-INCOMPLETE-ERRORS"
     elif skipped_count:
         reason = "SAST-INCOMPLETE-SKIPPED-RULES"
+    elif missing_rules:
+        reason = "SAST-INCOMPLETE-RULES"
     elif not scanned:
         reason = "SAST-INCOMPLETE-NO-PATHS"
     elif suppressed["inline_marker_paths"]:
@@ -309,6 +324,8 @@ def evaluate(data, root, modes, today, rule_ids=None):
         "complete": reason in (None, "SAST-BLOCKING-FINDINGS"),
         "scanner": {"name": "semgrep", "version": version, "kind": "sast"},
         "evaluated_on": today.isoformat(),
+        "rule_binding": {"status": "unbound: time.rules empty or absent" if timed is None else "bound: time.rules",
+                         "missing_rules": [] if missing_rules is None else missing_rules},
         "suppression": suppressed, "scanned_path_count": len(scanned), "error_count": error_count, "skipped_rule_count": skipped_count,
         "counts": {"blocking": blocking, "warning": len(findings) - blocking, "by_scanner_severity": by_severity},
         "expired_warnings": expired_warnings(modes, today),
@@ -326,6 +343,7 @@ PROVENANCE_KEYS = (
 REQUIRED_FLAGS = (
     "--metrics=off", "--disable-version-check", "--json", "--disable-nosem", "--x-ignore-semgrepignore-files",
 )
+OPTIONAL_FLAGS = ("--time",)
 
 
 def tree_files(root, relative_dir, suffix=None):
@@ -361,6 +379,25 @@ def tree_sha256(root, relative_dir, suffix=None):
     return canonical_sha256(entries)
 
 
+def canned_command_allowed(command, rules_dir, fixture_dir):
+    """An allowlist: `semgrep scan`, each required flag exactly once, optionally `--time`, one `--output <file>`, then
+    `--config <rules_dir> <fixture_dir>`. Anything else (a short `-c`, a registry or second config, a rule or
+    severity filter such as `--exclude-rule` or `--severity`, a path filter) is refused."""
+    if (not isinstance(command, list) or not all(isinstance(item, str) for item in command) or len(command) < 7
+            or command[:2] != ["semgrep", "scan"] or command[-3:] != ["--config", rules_dir, fixture_dir]):
+        return False
+    middle, flags, outputs, index = command[2:-3], [], 0, 0
+    while index < len(middle):
+        if middle[index] == "--output" and index + 1 < len(middle) and not middle[index + 1].startswith("-"):
+            outputs += 1
+            index += 2
+            continue
+        flags.append(middle[index])
+        index += 1
+    return (outputs == 1 and len(set(flags)) == len(flags)
+            and set(REQUIRED_FLAGS) <= set(flags) <= set(REQUIRED_FLAGS) | set(OPTIONAL_FLAGS))
+
+
 def verify_canned(report_data, provenance_data, root):
     """Bind a committed local Semgrep report to its provenance and to the current rule and fixture bytes.
 
@@ -374,11 +411,7 @@ def verify_canned(report_data, provenance_data, root):
         raise Refused("SAST-CANNED-KIND")
     rules_dir = relative_path(provenance["rules_dir"], "SAST-CANNED-COMMAND")
     fixture_dir = relative_path(provenance["fixture_dir"], "SAST-CANNED-COMMAND")
-    command = provenance["command"]
-    if (not isinstance(command, list) or not all(isinstance(item, str) for item in command)
-            or not all(flag in command for flag in REQUIRED_FLAGS) or "auto" in command
-            or any(item.startswith("--config=") for item in command)
-            or command.count("--config") != 1 or command[-3:] != ["--config", rules_dir, fixture_dir]):
+    if not canned_command_allowed(provenance["command"], rules_dir, fixture_dir):
         raise Refused("SAST-CANNED-COMMAND")
     if provenance["report_sha256"] != sha256_bytes(report_data):
         raise Refused("SAST-CANNED-REPORT-DIGEST")
@@ -387,7 +420,7 @@ def verify_canned(report_data, provenance_data, root):
         raise Refused("SAST-CANNED-RULES-STALE")
     if provenance["fixture_sha256"] != tree_sha256(root, fixture_dir):
         raise Refused("SAST-CANNED-FIXTURE-STALE")
-    version, _results, _errors, _skipped, scanned = parse_report(report_data)
+    version, _results, _errors, _skipped, scanned, _timed = parse_report(report_data)
     if version != provenance["semgrep_version"]:
         raise Refused("SAST-CANNED-VERSION")
     if not list(scanned) == provenance["scanned_paths"] == tree_files(root, fixture_dir):
