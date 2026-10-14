@@ -107,12 +107,14 @@ mode is a reviewed edit of this file; the one-week warning-only rollout itself h
 
 ### Exceptions
 
-None. The exception mechanism belongs to infra#23 (draft infra PR #88), which is not integrated, so every report
-says `exceptions: {"status": "unavailable: infra#23 not integrated", "count": 0}`. Semgrep's inline and path
-suppression are exception channels too and are refused until then (decision step 3). The planned binding is
-`security_exceptions.Exceptions.suppression`; it is named only, never copied or re-implemented. In draft infra PR
-#88 that binding accepts only the `secret` and `advisory` kinds, so SAST and DAST exceptions need an infra#23
-interface decision at integration.
+None. The exception mechanism belongs to infra#23. Infra PR #88 (infra#23 work) merged into infra `main` on
+2026-10-14 (merge commit `a1d53f4`); this branch is still based on `0f5f7b7` and does not integrate it, and
+infra#23 itself is still open. On merged `main`, `security_exceptions.Exceptions.suppression` (the planned binding,
+named only, never copied or re-implemented) accepts only the `secret` and `advisory` kinds, so no SAST or DAST
+finding can be excepted, and every report says `exceptions: {"status": "unavailable: infra#23 not integrated",
+"count": 0}`. The post-merge wording of that status and the base update of this branch (an ordinary merge of
+infra `main`) are coordinator decisions that are not recorded yet. Semgrep's inline and path suppression are
+exception channels too and are refused until infra#23 offers SAST and DAST kinds (decision step 3).
 
 ### Observability fields
 
@@ -260,12 +262,17 @@ policies are all-blocking, and the warning week itself has not run.
   omits a target. Infra's own repository scan must exclude `scripts/qa-gates/fixtures/planted` only through an
   explicit, recorded `--exclude` (never an inline marker or `.semgrepignore`, which this gate fails), and must scan
   that directory separately as a positive control that is expected to fail with the 13 planted findings.
-- **Policy and surface from the protected base.** `--policy` (both gates) and `--surface` (DAST) default to or are
+- **Policy, surface, rules and gate from the protected base.** `--policy` (both gates) and `--surface` (DAST) default to or are
   read from the checkout under test, so a change that introduces a finding could add its own warn window, widen
   the DAST target allowlist or shrink the expected surface in the same change. The gates do not compare these
-  inputs with a base revision. The held CI steps must read the policies and the expected surface from the
-  protected base revision, never from the head under test; a code-level base comparison (as the quarantine gate
-  does for its manifest) is not implemented.
+  inputs with a base revision. The same holds for the rule directory and the gate scripts: a head could add a
+  path exclusion to a rule (Semgrep then reports nothing for it) while keeping the base policy valid. The held CI
+  steps must take the policies, the expected surface, the rule directory (`scripts/qa-gates/rules`) and the gate
+  scripts from the protected base revision, never from the head under test, and run the base rules over the head
+  sources. A rule added or removed by a pull request therefore takes effect only after it merges; the pull
+  request's own gate runs the base rules with the base policy (a head policy that names the new rule would be
+  refused as `SAST-POLICY-RULES` against base rules, and is not used). A code-level base comparison (as the
+  quarantine gate does for its manifest) is not implemented.
 - **Merge dependency on the first slice.** The quarantine and retry slice of infra#28 (branch
   `claude-infra-28-quarantine-retry-gates`) copies every entry of `scripts/qa-gates` as a file in its CLI tests and
   classifies test modules through its protected-tests manifest. Combined with this slice, its tests fail with
@@ -280,6 +287,7 @@ policies are all-blocking, and the warning week itself has not run.
 - The rule sets, the manifest and surface schemas and the report vocabulary are
   proposals; no owner decision is recorded (`decision_ref` stays `null`).
 - The one-week warning window has not run.
-- infra#23 (exceptions, process controls; draft infra PR #88) and the infra#22 conformance hold are unresolved.
+- infra#23 (exceptions, process controls; its PR #88 merged at `a1d53f4`, no SAST or DAST exception kind) and the
+  infra#22 conformance hold are unresolved.
 - The Windows test leg was not run locally; the tests are written to pass on Linux and Windows without skips.
 - Independent Core, Security, QA, Privacy and Reliability reviews are required and not done.
