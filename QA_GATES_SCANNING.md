@@ -102,7 +102,9 @@ mode is a reviewed edit of this file; the one-week warning-only rollout itself h
 None. The exception mechanism belongs to infra#23 (draft infra PR #88), which is not integrated, so every report
 says `exceptions: {"status": "unavailable: infra#23 not integrated", "count": 0}`. Semgrep's inline and path
 suppression are exception channels too and are refused until then (decision step 3). The planned binding is
-`security_exceptions.Exceptions.suppression`; it is named only, never copied or re-implemented.
+`security_exceptions.Exceptions.suppression`; it is named only, never copied or re-implemented. In draft infra PR
+#88 that binding accepts only the `secret` and `advisory` kinds, so SAST and DAST exceptions need an infra#23
+interface decision at integration.
 
 ### Observability fields
 
@@ -213,6 +215,17 @@ context counts, `scanned_url_count`, `surface.{expected, covered, missing}` (val
 seven-day rule as SAST. Inside the window an alert of that plugin is `warn`; outside it blocks again
 and an ended window is listed in `expired_warnings`. The committed policy has no warn entry.
 
+## Finding vocabulary alignment (infra#31)
+
+The supply-chain gates of infra#31 are to align their finding vocabulary by value with this one. As committed here,
+there is **no shared severity field**: SAST findings carry `scanner_severity`, Semgrep's own level unmapped
+(`ERROR`, `WARNING`, `INFO`, `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`), and DAST findings carry `risk`, ZAP's
+`high`/`medium`/`low`/`info` (ZAP has no `critical`). The common parts are the `fingerprint` form
+(`sha256:<64 hex>` over canonical JSON), `mode` (`block`/`warn`), `counts`, `expired_warnings` and the `exceptions`
+block. No Semgrep-to-severity mapping and no `critical`..`info` enum is defined here; agreeing a common severity
+field is an infra#23/owner decision that is not recorded, so a statement that infra#31 copies such an enum from
+infra#28 does not match this slice.
+
 ## Rollout and rollback (both gates)
 
 The ticket introduces the gates as **warning-only for one week** to measure noise, then blocking. Once the CI
@@ -236,6 +249,18 @@ policies are all-blocking, and the warning week itself has not run.
   omits a target. Infra's own repository scan must exclude `scripts/qa-gates/fixtures/planted` only through an
   explicit, recorded `--exclude` (never an inline marker or `.semgrepignore`, which this gate fails), and must scan
   that directory separately as a positive control that is expected to fail with the 13 planted findings.
+- **Policy and surface from the protected base.** `--policy` (both gates) and `--surface` (DAST) default to or are
+  read from the checkout under test, so a change that introduces a finding could add its own warn window, widen
+  the DAST target allowlist or shrink the expected surface in the same change. The gates do not compare these
+  inputs with a base revision. The held CI steps must read the policies and the expected surface from the
+  protected base revision, never from the head under test; a code-level base comparison (as the quarantine gate
+  does for its manifest) is not implemented.
+- **Merge dependency on the first slice.** The quarantine and retry slice of infra#28 (branch
+  `claude-infra-28-quarantine-retry-gates`) copies every entry of `scripts/qa-gates` as a file in its CLI tests and
+  classifies test modules through its protected-tests manifest. Combined with this slice, its tests fail with
+  `IsADirectoryError` on `scripts/qa-gates/rules`, and `test_qa_gates_sast` and `test_qa_gates_dast` classify as
+  unknown. The fix belongs to the first slice (copy regular files only; add protected-tests rules for both
+  modules); this slice does not edit those files. Merge order: the first slice, with that fix, before this one.
 - **Real authenticated scan.** Criterion 2 ("a dynamic scan of the running build reports and fails on a high
   severity finding") needs an ephemeral deployed build with synthetic data, a ZAP executor that calls
   `preflight_target` before the first request, short-lived credentials scoped to that environment, a committed
