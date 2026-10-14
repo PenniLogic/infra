@@ -143,7 +143,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
-        self.assertEqual("865ae9089cc8873f7762bb4febd2aca2ed500a9c", entry["workflow_ref"])
+        self.assertEqual("14af2187b8c493910228e4a7da606d2b49bf9ebc", entry["workflow_ref"])
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")
         self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
         self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
@@ -264,6 +264,8 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(scalar_qualifier, (root / "templates/qualify_windows.py").read_bytes())
 
     def test_previous_api_refs_cannot_bind_java_selection_diagnostics(self):
+        categorical_qualifier = self.api_qualifier_at("865ae9089cc8873f7762bb4febd2aca2ed500a9c")
+        self.assertNotEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), categorical_qualifier)
         qualifiers = []
         for ref in ("f714f1dfb491944b447e699d8e4e9f7c84d6ed72", "f3dc0a9bfcd8fae8e59c10f67919b176c3dd719a"):
             with self.subTest(ref=ref):
@@ -271,9 +273,39 @@ class RegistryTests(unittest.TestCase):
                 self.assertIsNotNone(previous, "the scalar-Git source must exist in real history")
                 self.assertEqual(support.generator.workflow("api").encode("utf-8"), previous)
                 qualifier = self.api_qualifier_at(ref)
-                self.assertNotEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), qualifier)
+                self.assertNotEqual(categorical_qualifier, qualifier)
                 qualifiers.append(qualifier)
         self.assertEqual(qualifiers[0], qualifiers[1])
+
+    def test_previous_api_refs_cannot_bind_java_version_operands(self):
+        current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        categorical = current
+        for added, previous in (
+            (b'def observer_java_version_operand(value):\n'
+             b'    if type(value) is str and len(value) <= 20 \\\n'
+             b'            and re.fullmatch(r"21(?:\\.(?:0|[1-9][0-9]{0,4})){1,3}", value) is not None:\n'
+             b'        return value\n'
+             b'    return "unavailable"\n\n\n', b""),
+            (b"def observer_java_require(condition, check, *, versions=None):",
+             b"def observer_java_require(condition, check):"),
+            (b'        if versions is not None:\n'
+             b'            print(json.dumps({"event": "windows_observer_java_versions", "diagnostic_only": True,\n'
+             b'                              "release_version": observer_java_version_operand(versions[0]),\n'
+             b'                              "selected_version": observer_java_version_operand(versions[1])},\n'
+             b'                             sort_keys=True), file=sys.stderr, flush=True)\n', b""),
+            (b'observer_java_require(versions[0] == selected, "selected-version-match", versions=(versions[0], selected))',
+             b'observer_java_require(versions[0] == selected, "selected-version-match")'),
+        ):
+            self.assertEqual(1, categorical.count(added))
+            categorical = categorical.replace(added, previous, 1)
+        for ref in ("865ae9089cc8873f7762bb4febd2aca2ed500a9c", "cc779064bb696beb33ecf9c424dea30d500d704a"):
+            with self.subTest(ref=ref):
+                workflow = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
+                self.assertIsNotNone(workflow, "the categorical-Java source must exist in real Git history")
+                self.assertEqual(support.generator.workflow("api").encode("utf-8"), workflow)
+                qualifier = self.api_qualifier_at(ref)
+                self.assertNotEqual(current, qualifier)
+                self.assertEqual(categorical, qualifier)
 
     def test_android_workflow_ref_exists_and_renders_the_exact_combined_caller(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")

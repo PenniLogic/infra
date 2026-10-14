@@ -579,11 +579,16 @@ the prior `d31994d6` binding cannot represent this reader. Full-history validati
 remains required, and a prebinding mismatch remains an honest failure, not a
 placeholder reference or an acceptance waiver.
 The observer-pair increment additionally changed the workflow and checker, so
-that old reader reference cannot bind it. The current Java-selection diagnostic
-is bound separately to actual source `865ae9089cc8873f7762bb4febd2aca2ed500a9c`.
+that old reader reference cannot bind it. The current Java-version operand diagnostic
+is bound separately to actual source `14af2187b8c493910228e4a7da606d2b49bf9ebc`.
 Its historical workflow, checker and qualifier must exactly match current output.
+Prior `865ae908` and `cc779064` render the same workflow but retain the same
+categorical qualifier without version operands. Removing only the bounded operand
+projection, optional version record and its argument reproduces that qualifier
+byte for byte; other differences are refused.
 Prior `f714f1df` and `f3dc0a9b` render the same workflow but retain the same older
-qualifier without the diagnostic. Prior `e94792d8` and `f719c9d0` share that older
+qualifier without categorical diagnostics, compared to actual `865ae908`.
+Prior `e94792d8` and `f719c9d0` share that older
 qualifier and also lack scalar selection; the regression permits only the exact
 selection-line and derived checker-digest distinction. Older `cf96bdb7` and
 `eaf93a88` retain a different qualifier, which remains a separate failing binding
