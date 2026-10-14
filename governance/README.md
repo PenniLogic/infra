@@ -549,10 +549,15 @@ Its historical generator must reproduce the current API workflow and checker;
 the prior `d31994d6` binding cannot represent this reader. Full-history validation
 remains required, and a prebinding mismatch remains an honest failure, not a
 placeholder reference or an acceptance waiver.
-The uncommitted observer-pair increment additionally changes the workflow and
-checker, so that old reference is not its binding. Official generation, an actual
-new source commit and a separate real-history registry update are still required;
-no future SHA is invented and the full-history equality controls are not skipped.
+The observer-pair increment additionally changed the workflow and checker, so
+that old reader reference cannot bind it. The current scalar-Git selection is
+bound separately to actual source `f714f1dfb491944b447e699d8e4e9f7c84d6ed72`.
+Its historical workflow, checker and qualifier must exactly match current output.
+Prior `e94792d8` and `f719c9d0` retain the same qualifier but lack scalar selection;
+the regression permits only that exact selection-line and derived checker-digest
+distinction. Older `cf96bdb7` and `eaf93a88` additionally retain a different
+qualifier, which remains a separate failing binding predicate. This local source
+binding is not publication, consumer adoption or native acceptance.
 The accepted `a40b9018` and `0f5f7b7c` workflow/checker/qualifier pins remain
 historical controls, and removing only the explicit observer additions must
 recover the entire accepted `0f5f7b7c` workflow byte for byte.
