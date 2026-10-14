@@ -1,0 +1,32 @@
+{
+  "schema": "pennilogic.qa-gates.sast-policy/1",
+  "status": "proposed, not agreed",
+  "basis": "PenniLogic/docs governance/test-strategy.json @ 1722fc79 (strategy 1.1.1) category static_dependency_secret_gates: all blocking; per-rule warn only with a recorded expiry (infra#28 rollout and rollback); its 7-day cap is proposed, not ticket text",
+  "decision_ref": null,
+  "rules": {
+    "pennilogic-kotlin-runtime-exec": {
+      "mode": "block"
+    },
+    "pennilogic-kotlin-sql-built-string": {
+      "mode": "block"
+    },
+    "pennilogic-python-dynamic-eval": {
+      "mode": "block"
+    },
+    "pennilogic-python-shell-command": {
+      "mode": "block"
+    },
+    "pennilogic-python-sql-built-string": {
+      "mode": "block"
+    },
+    "pennilogic-typescript-dynamic-eval": {
+      "mode": "block"
+    },
+    "pennilogic-typescript-shell-command": {
+      "mode": "block"
+    },
+    "pennilogic-typescript-sql-built-string": {
+      "mode": "block"
+    }
+  }
+}

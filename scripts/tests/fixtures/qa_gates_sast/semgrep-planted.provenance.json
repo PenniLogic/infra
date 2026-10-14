@@ -1,0 +1,39 @@
+{
+  "schema": "pennilogic.qa-gates.sast-canned-provenance/1",
+  "kind": "local-fixture",
+  "acceptance_evidence": false,
+  "semgrep_version": "1.178.0",
+  "semgrep_executable": "user-local uv tool install at ~/.local/bin/semgrep (not pinned by infra)",
+  "command": [
+    "semgrep",
+    "scan",
+    "--metrics=off",
+    "--disable-version-check",
+    "--disable-nosem",
+    "--x-ignore-semgrepignore-files",
+    "--json",
+    "--output",
+    "<tmp>/semgrep-planted.raw.json",
+    "--config",
+    "scripts/qa-gates/rules",
+    "scripts/qa-gates/fixtures/planted"
+  ],
+  "working_directory": "repository root",
+  "rules_dir": "scripts/qa-gates/rules",
+  "rules_sha256": "908a23c0e3e3df7a519d4db4fe19e88ca090cb77f92c5bad12e6632d5bd7eacd",
+  "fixture_dir": "scripts/qa-gates/fixtures/planted",
+  "fixture_sha256": "e3672e72bf458e808e7b3b7a728444049e794b7c97d294d3340b831650c73083",
+  "scanned_paths": [
+    "scripts/qa-gates/fixtures/planted/kotlin/CleanControl.kt",
+    "scripts/qa-gates/fixtures/planted/kotlin/PlantedInjection.kt",
+    "scripts/qa-gates/fixtures/planted/python/clean_control.py",
+    "scripts/qa-gates/fixtures/planted/python/planted_injection.py",
+    "scripts/qa-gates/fixtures/planted/typescript/clean-control.ts",
+    "scripts/qa-gates/fixtures/planted/typescript/planted-injection.ts"
+  ],
+  "raw_output_sha256": "94d0d84f5374cfe3097736d738b3adcccd40aa3905200d737f714214563f4c8f",
+  "committed_form": "the raw Semgrep JSON output re-serialized with json.dumps(indent=2, ensure_ascii=True) plus LF; content unchanged",
+  "report_sha256": "31427a9f6ed7472df06899e992e6e32637b894ae56c57317d0541e2321d57cbc",
+  "generated_on": "2026-10-13",
+  "generated_by": "the implementing session (Claude Code, Claude Opus 5.5) on a local Linux workstation; not CI, not acceptance evidence"
+}

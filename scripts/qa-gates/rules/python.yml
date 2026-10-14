@@ -1,0 +1,107 @@
+{
+  "rules": [
+    {
+      "id": "pennilogic-python-sql-built-string",
+      "languages": [
+        "python"
+      ],
+      "severity": "ERROR",
+      "message": "SQL text built from a formatted or concatenated string is passed to execute(); use bound parameters.",
+      "metadata": {
+        "status": "proposed, not agreed",
+        "cwe": "CWE-89",
+        "ticket": "PenniLogic/infra#28"
+      },
+      "pattern-either": [
+        {
+          "pattern": "$CURSOR.execute(f\"...\", ...)"
+        },
+        {
+          "pattern": "$CURSOR.execute(\"...\" % $ARGS, ...)"
+        },
+        {
+          "pattern": "$CURSOR.execute(\"...\".format(...), ...)"
+        },
+        {
+          "pattern": "$CURSOR.execute(\"...\" + $VALUE, ...)"
+        },
+        {
+          "pattern": "$CURSOR.executemany(f\"...\", ...)"
+        }
+      ]
+    },
+    {
+      "id": "pennilogic-python-shell-command",
+      "languages": [
+        "python"
+      ],
+      "severity": "ERROR",
+      "message": "A shell command line is run through the shell; pass an argument list without shell=True.",
+      "metadata": {
+        "status": "proposed, not agreed",
+        "cwe": "CWE-78",
+        "ticket": "PenniLogic/infra#28"
+      },
+      "pattern-either": [
+        {
+          "pattern": "subprocess.$FUNC(..., shell=True, ...)"
+        },
+        {
+          "patterns": [
+            {
+              "pattern": "os.system($COMMAND)"
+            },
+            {
+              "pattern-not": "os.system(\"...\")"
+            }
+          ]
+        },
+        {
+          "patterns": [
+            {
+              "pattern": "os.popen($COMMAND, ...)"
+            },
+            {
+              "pattern-not": "os.popen(\"...\", ...)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pennilogic-python-dynamic-eval",
+      "languages": [
+        "python"
+      ],
+      "severity": "ERROR",
+      "message": "Non-literal text is evaluated as code.",
+      "metadata": {
+        "status": "proposed, not agreed",
+        "cwe": "CWE-95",
+        "ticket": "PenniLogic/infra#28"
+      },
+      "pattern-either": [
+        {
+          "patterns": [
+            {
+              "pattern": "eval($CODE, ...)"
+            },
+            {
+              "pattern-not": "eval(\"...\", ...)"
+            }
+          ]
+        },
+        {
+          "patterns": [
+            {
+              "pattern": "exec($CODE, ...)"
+            },
+            {
+              "pattern-not": "exec(\"...\", ...)"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

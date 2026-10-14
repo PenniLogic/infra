@@ -1,0 +1,136 @@
+{
+  "rules": [
+    {
+      "id": "pennilogic-typescript-sql-built-string",
+      "languages": [
+        "typescript"
+      ],
+      "severity": "ERROR",
+      "message": "SQL text built from a template literal or concatenation is passed to a query call; use bound parameters.",
+      "metadata": {
+        "status": "proposed, not agreed",
+        "cwe": "CWE-89",
+        "ticket": "PenniLogic/infra#28"
+      },
+      "patterns": [
+        {
+          "pattern": "$DB.$METHOD($SQL, ...)"
+        },
+        {
+          "metavariable-regex": {
+            "metavariable": "$METHOD",
+            "regex": "^(query|execute|raw|queryRaw|executeRaw)$"
+          }
+        },
+        {
+          "metavariable-pattern": {
+            "metavariable": "$SQL",
+            "pattern-either": [
+              {
+                "pattern": "`...${$VALUE}...`"
+              },
+              {
+                "pattern": "\"...\" + $VALUE"
+              },
+              {
+                "pattern": "$VALUE + \"...\""
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "pennilogic-typescript-shell-command",
+      "languages": [
+        "typescript"
+      ],
+      "severity": "ERROR",
+      "message": "A non-literal command line is run through a shell; use execFile or spawn with an argument list.",
+      "metadata": {
+        "status": "proposed, not agreed",
+        "cwe": "CWE-78",
+        "ticket": "PenniLogic/infra#28"
+      },
+      "patterns": [
+        {
+          "pattern-either": [
+            {
+              "patterns": [
+                {
+                  "pattern": "$FUNC($COMMAND, ...)"
+                },
+                {
+                  "metavariable-regex": {
+                    "metavariable": "$FUNC",
+                    "regex": "^(exec|execSync)$"
+                  }
+                }
+              ]
+            },
+            {
+              "patterns": [
+                {
+                  "pattern": "$CHILD.$FUNC($COMMAND, ...)"
+                },
+                {
+                  "metavariable-regex": {
+                    "metavariable": "$FUNC",
+                    "regex": "^(exec|execSync)$"
+                  }
+                },
+                {
+                  "metavariable-regex": {
+                    "metavariable": "$CHILD",
+                    "regex": "^(child_process|childProcess|cp)$"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "metavariable-pattern": {
+            "metavariable": "$COMMAND",
+            "patterns": [
+              {
+                "pattern-not": "\"...\""
+              },
+              {
+                "pattern": "$ANY"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "pennilogic-typescript-dynamic-eval",
+      "languages": [
+        "typescript"
+      ],
+      "severity": "ERROR",
+      "message": "Non-literal text is evaluated as code.",
+      "metadata": {
+        "status": "proposed, not agreed",
+        "cwe": "CWE-95",
+        "ticket": "PenniLogic/infra#28"
+      },
+      "pattern-either": [
+        {
+          "patterns": [
+            {
+              "pattern": "eval($CODE)"
+            },
+            {
+              "pattern-not": "eval(\"...\")"
+            }
+          ]
+        },
+        {
+          "pattern": "new Function(...)"
+        }
+      ]
+    }
+  ]
+}
