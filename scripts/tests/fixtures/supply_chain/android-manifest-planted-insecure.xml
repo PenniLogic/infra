@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Synthetic planted-insecure release manifest for the infra#31 tests; not a real application. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.example.synthetic">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+    <application
+        android:debuggable="true"
+        android:allowBackup="true"
+        android:usesCleartextTraffic="true"
+        android:label="Synthetic">
+        <activity android:name="org.example.synthetic.MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name="org.example.synthetic.DeepLinkActivity" android:exported="true" />
+    </application>
+</manifest>

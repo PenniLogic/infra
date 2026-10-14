@@ -1,0 +1,5 @@
+{
+  "schema": "pennilogic.supply-chain.policy/1",
+  "status": "proposed, not agreed",
+  "blocking_threshold": "high"
+}

@@ -1,0 +1,35 @@
+[
+  {
+    "check_type": "dockerfile",
+    "results": {
+      "passed_checks": [
+        {
+          "check_id": "CKV_SYNTH_2",
+          "check_name": "Synthetic passing check",
+          "file_path": "/Dockerfile",
+          "resource": "/Dockerfile.",
+          "severity": null
+        }
+      ],
+      "failed_checks": [
+        {
+          "check_id": "CKV_SYNTH_1",
+          "check_name": "Synthetic planted check",
+          "file_path": "/Dockerfile",
+          "resource": "/Dockerfile.USER",
+          "severity": "HIGH"
+        }
+      ],
+      "skipped_checks": [],
+      "parsing_errors": []
+    },
+    "summary": {
+      "passed": 1,
+      "failed": 1,
+      "skipped": 0,
+      "parsing_errors": 0,
+      "resource_count": 1,
+      "checkov_version": "0.0.0-synthetic"
+    }
+  }
+]
