@@ -4,8 +4,14 @@ Each negative has a passing control and exactly one mutation, and asserts the ex
 """
 
 import copy
+import json
+from pathlib import Path
+import re
 import unittest
 
+import support  # noqa: F401  (puts scripts/ on sys.path)
+import qa_gates_policy as policies
+import qa_gates_retry as retry
 import qa_gates_support as qs
 import qa_gates_tags as tags
 from qa_gates_common import Refused
@@ -37,9 +43,31 @@ COMMITTED = {
         "test_qa_gates_ledger": {"security"}, "test_qa_gates_policy": {"security"},
         "test_qa_gates_quarantine": {"security"},
         "test_qa_gates_rate": {"security"}, "test_qa_gates_retry": {"security"},
-        "test_qa_gates_tags": {"security"}, "test_smoke_infra": {"security"},
+        "test_qa_gates_tags": {"security"}, "test_security_controls": {"privacy", "security"},
+        "test_smoke_infra": {"security"},
     },
 }
+
+REPOSITORY_ROOT = Path(tags.__file__).resolve().parents[1]
+# The package whose tests each committed unittest discovery directory holds.
+SUITES = {"governance/tests": "infra.governance", "scripts/tests": "infra.tooling"}
+DISCOVER = re.compile(r"unittest discover -s ([A-Za-z0-9_./\\-]+)")
+
+
+def committed_workflows():
+    return {f".github/workflows/{path.name}": json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml"))}
+
+
+def strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from strings(value)
 
 
 def parse(document):
@@ -55,7 +83,9 @@ class CommittedManifestTests(unittest.TestCase):
                          {"infra.governance": (False, "@basiltt"), "infra.tooling": (False, "@basiltt")})
         self.assertEqual({(job.id, job.workflow, job.job, job.packages, job.money_path) for job in manifest.jobs.values()}, {
             ("infra-ci-linux", ".github/workflows/ci.yml", "ci", ("infra.governance", "infra.tooling"), False),
-            ("infra-ci-windows", ".github/workflows/ci.yml", "windows", ("infra.governance", "infra.tooling"), False),
+            ("infra-ci-windows-governance", ".github/workflows/ci.yml", "windows-governance", ("infra.governance",),
+             False),
+            ("infra-ci-windows-scripts", ".github/workflows/ci.yml", "windows-scripts", ("infra.tooling",), False),
         })
         covered = {rule.value for rule in manifest.rules}
         self.assertEqual(covered, {module for modules in COMMITTED.values() for module in modules})
@@ -84,6 +114,39 @@ class CommittedManifestTests(unittest.TestCase):
                 classification = manifest.classify(test)
                 self.assertEqual((classification.state, classification.protected, set(classification.tags)),
                                  ("known", True, {"privacy", "security"}))
+
+    def test_committed_manifest_maps_exactly_the_committed_test_jobs(self):
+        # Fable review round 1, F1: a merge of main renamed the Windows job, and the manifest kept mapping a job no
+        # workflow runs. Every job that discovers a committed suite must be mapped to exactly that suite's packages,
+        # and every mapped job must exist, so a later workflow change fails here instead of going stale.
+        discovered = {}
+        for path, document in committed_workflows().items():
+            for key, job in document["jobs"].items():
+                suites = {match.replace("\\", "/") for text in strings(job) for match in DISCOVER.findall(text)}
+                if suites:
+                    self.assertLessEqual(suites, set(SUITES), (path, key))
+                    discovered[(path, key)] = tuple(sorted(SUITES[suite] for suite in suites))
+        mapped = {(job.workflow, job.job): job.packages for job in tags.load_manifest().jobs.values()}
+        self.assertEqual(mapped, discovered)
+
+    def test_retry_check_of_the_committed_workflows_has_no_finding(self):
+        report = retry.evaluate(policy=policies.load_policy(), manifest=tags.load_manifest(),
+                                workflows=sorted(committed_workflows().items()))
+        self.assertEqual((report["decision"], report["findings"], report["counts"]["failing"]), ("pass", [], 0))
+
+    def test_every_committed_test_module_has_exactly_one_rule(self):
+        # Fable review round 1, F1: a module added by a merge of main had no rule, so its tests failed closed as
+        # unclassified in the quarantine gate. Each module of a committed suite needs one rule of its suite's package.
+        rules = tags.load_manifest().rules
+        modules = set()
+        for suite, package in SUITES.items():
+            for path in sorted((REPOSITORY_ROOT / suite).glob("test_*.py")):
+                modules.add(path.stem)
+                with self.subTest(module=path.stem):
+                    matching = [rule for rule in rules if rule.value == path.stem]
+                    self.assertEqual([(rule.kind, rule.field, rule.package) for rule in matching],
+                                     [("package", "classname", package)])
+        self.assertEqual({rule.value for rule in rules}, modules)
 
 
 class ClassificationTests(unittest.TestCase):

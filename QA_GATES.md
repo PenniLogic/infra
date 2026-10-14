@@ -244,7 +244,13 @@ offline.
 `privacy` = redaction or privacy inventories; `money` = money-path sources or arithmetic, or any test of a
 money-path package. Each committed test module of `scripts/tests` and `governance/tests` has one rule; a new test
 module needs a new rule, or its tests fail closed as unclassified. Rules are per module, so a module takes the
-union of its tests' tags. Every rule's `reason` records the basis of its tags; after review round 3 (ADVSEC-R3-02)
+union of its tests' tags. The manifest maps the jobs of `.github/workflows/ci.yml` that run the suites: `ci`
+(`infra-ci-linux`, both packages), `windows-governance` (`infra-ci-windows-governance`, `infra.governance`) and
+`windows-scripts` (`infra-ci-windows-scripts`, `infra.tooling`). `test_qa_gates_tags` fails when a committed test
+module has no rule, when a mapped job is missing from the committed workflows, when a job that runs a suite is
+unmapped or mapped to other packages, or when the retry check of the committed workflows reports any finding, so a
+workflow change from `main` cannot leave the manifest silently stale (Fable review round 1, F1). Every rule's
+`reason` records the basis of its tags; after review round 3 (ADVSEC-R3-02)
 only `test_capability_paragraph` and `test_rule_table` stay untagged (text rendering and documentation order).
 
 ## Observability

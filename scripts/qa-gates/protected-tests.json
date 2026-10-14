@@ -483,6 +483,18 @@
         "security"
       ],
       "reason": "Repository quarantine-rate ceiling of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-043",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_security_controls",
+      "package": "infra.tooling",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Secret, dependency and exception controls; security: asserts scanner credential removal, scanner-boundary and malformed-input refusal and non-bypassable mandatory secret rules; privacy: asserts redacted rotation payloads and secret reports and the Android privacy-inventory consumer shape"
     }
   ],
   "jobs": [
@@ -496,11 +508,18 @@
       ]
     },
     {
-      "id": "infra-ci-windows",
+      "id": "infra-ci-windows-governance",
       "workflow": ".github/workflows/ci.yml",
-      "job": "windows",
+      "job": "windows-governance",
       "packages": [
-        "infra.governance",
+        "infra.governance"
+      ]
+    },
+    {
+      "id": "infra-ci-windows-scripts",
+      "workflow": ".github/workflows/ci.yml",
+      "job": "windows-scripts",
+      "packages": [
         "infra.tooling"
       ]
     }
