@@ -15,7 +15,10 @@ class NativeRuntimeTests(unittest.TestCase):
             job = workflow["jobs"]["copilot-setup-steps" if setup else "ci"]
             steps = job["steps"]
             with self.subTest(setup=setup):
-                self.assertEqual(["Checkout", "Python", "Node", "Install uv"], [step["name"] for step in steps[:4]])
+                preparation_names = ["Checkout", "Python", "Node", "Install uv"]
+                if not setup:
+                    preparation_names.insert(3, "Prepare security tools")
+                self.assertEqual(preparation_names, [step["name"] for step in steps[:len(preparation_names)]])
                 self.assertEqual({
                     "name": "Node",
                     "uses": "actions/setup-node@" + support.generator.PROFILES["actions"]["setup-node"],
@@ -23,8 +26,8 @@ class NativeRuntimeTests(unittest.TestCase):
                 }, steps[2])
                 self.assertEqual({
                     "name": "Install uv", "run": support.generator.profile_for("ai-service")["install"][0],
-                }, steps[3])
-                self.assertEqual("Verify repository" if setup else "Run checks", steps[4]["name"])
+                }, steps[len(preparation_names) - 1])
+                self.assertEqual("Verify repository" if setup else "Run checks", steps[len(preparation_names)]["name"])
                 self.assertEqual({"contents": "read"}, workflow["permissions"])
                 self.assertNotIn("env", job)
                 self.assertNotIn("GH_TOKEN", json.dumps(workflow))

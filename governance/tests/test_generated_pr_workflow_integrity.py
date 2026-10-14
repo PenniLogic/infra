@@ -19,14 +19,21 @@ from test_baseline import CONTRACTS_STATE, contracts_command_delta
 
 GATE = ".github/workflows/pr-workflow-integrity.yml"
 SOURCE = "f3331d5bc24556d11b9f3ad0b517db37e9caac9d"
+SECURITY_PREPARATION_BASE = "0f5f7b7ce4baa8206add295ce0adee03292a5b20"
+WINDOWS_SPLIT_BASE = "7298eaf4fa145b0000835395b90bdfd4c33be337"
 generator = support.generator
 
 
-def historical_generator(root):
-    for relative in ("governance/generate.py", "governance/repository-profiles.json",
-                     "governance/templates/check_repository.py", "governance/templates/setup.py"):
+def historical_generator(root, source=SOURCE):
+    paths = ["governance/generate.py", "governance/repository-profiles.json",
+             "governance/templates/check_repository.py", "governance/templates/setup.py"]
+    if source in (SECURITY_PREPARATION_BASE, WINDOWS_SPLIT_BASE):
+        paths.extend(("governance/api-money-sources.json", "governance/api-database-admission-installation.json"))
+        paths.extend(support.git(support.GOVERNANCE.parent, "ls-tree", "-r", "--name-only",
+                                 source, "--", "governance/templates").splitlines())
+    for relative in sorted(set(paths)):
         result = subprocess.run(
-            ["git", "show", f"{SOURCE}:{relative}"], cwd=support.GOVERNANCE.parent,
+            ["git", "show", f"{source}:{relative}"], cwd=support.GOVERNANCE.parent,
             capture_output=True, check=False, timeout=30, env=support.defects.probe_environment(),
         )
         if result.returncode:
@@ -198,7 +205,11 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                         checks = next(step for step in linux["steps"] if step["name"] == "Run checks")
                         checks["run"] = "\n".join(generator.infra_ci_command(command)
                                                   for command in checks["run"].split("\n"))
-                        value["jobs"]["windows"] = generator.infra_windows_job(generator.profile_for("infra"))
+                        linux["steps"].insert(3, generator.infra_security_step())
+                        for suite in ("governance", "scripts"):
+                            value["jobs"]["windows-" + suite] = generator.infra_windows_job(
+                                generator.profile_for("infra"), suite,
+                            )
                         value["jobs"]["ci-result"] = generator.ci_result_job("infra")
                         expected = generator.encoded(value)
                     self.assertEqual(expected, actual, (name, relative))
@@ -231,6 +242,80 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
                     self.assertEqual(old[".github/workflows/conformance.yml"],
                                      new[".github/workflows/conformance.yml"])
             self.assertEqual(142, unchanged)
+
+    def test_security_preparation_changes_only_three_infra_outputs_from_accepted_main(self):
+        with tempfile.TemporaryDirectory(prefix="infra-security-generated-scope-") as temporary:
+            accepted = historical_generator(Path(temporary), SECURITY_PREPARATION_BASE)
+            self.assertEqual(accepted.PROFILES, generator.PROFILES)
+            for name in generator.PROFILES["repositories"]:
+                old, new = accepted.artifacts(name), generator.artifacts(name)
+                changed = {path for path in set(old) | set(new) if old.get(path) != new.get(path)}
+                with self.subTest(repository=name):
+                    self.assertEqual({GATE, "scripts/check_repository.py", ".github/workflows/ci.yml"}
+                                     if name == "infra" else set(), changed)
+
+    def test_windows_suite_split_preserves_linux_and_every_other_repository_artifact(self):
+        with tempfile.TemporaryDirectory(prefix="infra-windows-split-scope-") as temporary:
+            accepted = historical_generator(Path(temporary), WINDOWS_SPLIT_BASE)
+            self.assertEqual(accepted.PROFILES, generator.PROFILES)
+            for name in generator.PROFILES["repositories"]:
+                old, new = accepted.artifacts(name), generator.artifacts(name)
+                changed = {path for path in set(old) | set(new) if old.get(path) != new.get(path)}
+                with self.subTest(repository=name):
+                    self.assertEqual({GATE, "scripts/check_repository.py", ".github/workflows/ci.yml"}
+                                     if name == "infra" else set(), changed)
+                    if name == "infra":
+                        previous = json.loads(old[".github/workflows/ci.yml"])
+                        current = json.loads(new[".github/workflows/ci.yml"])
+                        self.assertEqual(previous["jobs"]["ci"], current["jobs"]["ci"])
+                        self.assertEqual({key: value for key, value in previous.items() if key != "jobs"},
+                                         {key: value for key, value in current.items() if key != "jobs"})
+                        self.assertEqual(previous["jobs"]["windows"]["steps"][:-1],
+                                         current["jobs"]["windows-governance"]["steps"][:-1])
+                        self.assertEqual(previous["jobs"]["windows"]["steps"][:-1],
+                                         current["jobs"]["windows-scripts"]["steps"][:-1])
+
+    def test_accepted_protected_base_explicitly_refuses_the_security_preparation_transition(self):
+        with tempfile.TemporaryDirectory(prefix="infra-security-protected-base-") as temporary:
+            accepted = historical_generator(Path(temporary), SECURITY_PREPARATION_BASE)
+            candidate = generator.artifacts("infra")
+            changes = {path: candidate[path] for path in (GATE, ".github/workflows/ci.yml",
+                                                         "scripts/check_repository.py")}
+            for activated in (False, True):
+                with self.subTest(activated=activated), mock.patch.object(support, "generator", accepted):
+                    fixture = support.PRMetadata("infra", changes, activated=activated)
+                report = fixture.evaluate()
+                self.assertEqual("fail", report["result"])
+                self.assertEqual(activated, report["required_checks"]["gate_required"])
+                self.assertIn("required-generated-binding", report["violations"])
+                self.assertEqual(2, report["violations"].count("protected-base-binding"))
+                for path in changes:
+                    self.assertIn({"path": path, "matches": False}, report["bindings"])
+
+    def test_generated_security_preparation_cannot_be_removed_stubbed_or_rebound(self):
+        for job_name in ("ci", "windows-governance", "windows-scripts"):
+            for mutation in ("remove", "stub", "digest", "condition", "mask"):
+                document = json.loads(generator.workflow("infra"))
+                job = document["jobs"][job_name]
+                preparation = next(step for step in job["steps"] if step["name"] == "Prepare security tools")
+                if mutation == "remove":
+                    job["steps"].remove(preparation)
+                elif mutation == "stub":
+                    preparation["run"] = "echo prepared"
+                elif mutation == "digest":
+                    preparation["run"] = preparation["run"].replace("551f6fc8", "00000000").replace(
+                        "d29144de", "00000000",
+                    )
+                elif mutation == "condition":
+                    preparation["if"] = "false"
+                else:
+                    preparation["continue-on-error"] = True
+                with self.subTest(job=job_name, mutation=mutation):
+                    report = support.PRMetadata(
+                        "infra", {".github/workflows/ci.yml": generator.encoded(document)},
+                    ).evaluate()
+                    self.assertEqual("fail", report["result"])
+                    self.assertIn("required-generated-binding", report["violations"])
 
     def test_exact_opt_in_checker_extension_never_widens_the_common_template(self):
         original = (support.GOVERNANCE / "templates" / "check_repository.py").read_bytes()

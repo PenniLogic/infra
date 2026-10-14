@@ -1,0 +1,22 @@
+title = "PenniLogic credential rules"
+
+[[rules]]
+id = "pennilogic-github-token"
+description = "GitHub credential"
+regex = '''\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b'''
+
+[[rules]]
+id = "pennilogic-provider-key"
+description = "Provider API credential"
+regex = '''\bsk-[A-Za-z0-9_-]{16,}\b'''
+
+[[rules]]
+id = "pennilogic-private-key"
+description = "Private key material"
+regex = '''-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----'''
+
+[[rules]]
+id = "pennilogic-database-password"
+description = "Hardcoded database credential"
+regex = '''(?i)(?:database_password|db_password|postgres_password)\s*[:=]\s*["']([A-Za-z0-9!@#$%^&*()_+=.,:/-]{8,})["']'''
+secretGroup = 1
