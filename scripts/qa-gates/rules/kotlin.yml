@@ -1,0 +1,62 @@
+{
+  "rules": [
+    {
+      "id": "pennilogic-kotlin-sql-built-string",
+      "languages": [
+        "kotlin"
+      ],
+      "severity": "ERROR",
+      "message": "SQL text built from a string template or concatenation is passed to a statement; use a prepared statement with bound parameters.",
+      "metadata": {
+        "status": "proposed, not agreed",
+        "cwe": "CWE-89",
+        "ticket": "PenniLogic/infra#28"
+      },
+      "patterns": [
+        {
+          "pattern-either": [
+            {
+              "pattern": "$RECEIVER.$METHOD($SQL)"
+            },
+            {
+              "pattern": "$RECEIVER.$METHOD($SQL, ...)"
+            }
+          ]
+        },
+        {
+          "metavariable-regex": {
+            "metavariable": "$METHOD",
+            "regex": "^(executeQuery|executeUpdate|execute|executeLargeUpdate|addBatch|prepareStatement|rawQuery|execSQL)$"
+          }
+        },
+        {
+          "metavariable-regex": {
+            "metavariable": "$SQL",
+            "regex": "^(?:\"(?:[^\"\\\\]|\\\\.)*\\$[A-Za-z_{]|.*\"\\s*\\+|.*\\+\\s*\")"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pennilogic-kotlin-runtime-exec",
+      "languages": [
+        "kotlin"
+      ],
+      "severity": "ERROR",
+      "message": "A non-literal command line is passed to Runtime.exec; use ProcessBuilder with an argument list.",
+      "metadata": {
+        "status": "proposed, not agreed",
+        "cwe": "CWE-78",
+        "ticket": "PenniLogic/infra#28"
+      },
+      "patterns": [
+        {
+          "pattern": "Runtime.getRuntime().exec($COMMAND, ...)"
+        },
+        {
+          "pattern-not": "Runtime.getRuntime().exec(\"...\", ...)"
+        }
+      ]
+    }
+  ]
+}
