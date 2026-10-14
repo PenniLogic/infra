@@ -1,0 +1,8 @@
+{
+  "schema": "pennilogic.qa-gates.quarantine-ledger/1",
+  "repository": "PenniLogic/infra",
+  "flake_events": [],
+  "quarantines": [],
+  "releases": [],
+  "deletions": []
+}

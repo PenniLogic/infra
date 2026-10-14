@@ -1,0 +1,551 @@
+{
+  "schema": "pennilogic.qa-gates.protected-tests/1",
+  "repository": "PenniLogic/infra",
+  "status": "proposed",
+  "confirmation_ref": null,
+  "packages": [
+    {
+      "id": "infra.governance",
+      "money_path": false,
+      "owner": "@basiltt",
+      "basis": "docs test-strategy 1.1.1 package infra.governance (money_path false): generator, profiles and templates, tested by governance/tests; owner from .github/CODEOWNERS (* @basiltt)"
+    },
+    {
+      "id": "infra.tooling",
+      "money_path": false,
+      "owner": "@basiltt",
+      "basis": "docs test-strategy 1.1.1 package infra.tooling (money_path false): bootstrap, smoke and policy scripts, tested by scripts/tests; owner from .github/CODEOWNERS (* @basiltt)"
+    }
+  ],
+  "rules": [
+    {
+      "id": "PT-001",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_android_privacy_canonical",
+      "package": "infra.governance",
+      "tags": [
+        "privacy"
+      ],
+      "reason": "Android privacy-component canonical inventory plumbing"
+    },
+    {
+      "id": "PT-002",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_api_build_coverage",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "API build coverage hand-off; security: asserts persist-credentials false and refuses a missing or altered base hand-off (check-bypass prevention)"
+    },
+    {
+      "id": "PT-003",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_api_native_source_fetch",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Native source acquisition with credential and transport controls"
+    },
+    {
+      "id": "PT-004",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_api_node_runtime",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Pinned Node runtime hand-off to the API build; security: refuses an expression as the runtime version and an altered hand-off (untrusted-input refusal)"
+    },
+    {
+      "id": "PT-005",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_api_windows_qualification",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "API Windows outcome strictness that keeps a skipped or failed check from passing"
+    },
+    {
+      "id": "PT-006",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_baseline",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Generator baseline: secret detection, action pins and read-only tokens"
+    },
+    {
+      "id": "PT-007",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_capability_paragraph",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "Generated reviewer-capability instruction text; untagged: text rendering only, no security, privacy or money control"
+    },
+    {
+      "id": "PT-008",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_api",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Read-only GitHub access and token handling of the conformance client"
+    },
+    {
+      "id": "PT-009",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_capture_redaction",
+      "package": "infra.governance",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Conformance capture redaction"
+    },
+    {
+      "id": "PT-010",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_defects",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Planted-defect harness proving conformance catches defects"
+    },
+    {
+      "id": "PT-011",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_native_runtime",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Native fixture provisioning that is never skipped as green"
+    },
+    {
+      "id": "PT-012",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_processes",
+      "package": "infra.governance",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Finite process-lifetime behaviour of the conformance runner; privacy and security: asserts a credential marker is redacted from bounded output"
+    },
+    {
+      "id": "PT-013",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_registry",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Check-name registry schema; security: strict JSON refuses duplicate keys and a BOM, and stale refs cannot bind (untrusted-input refusal, check-bypass prevention)"
+    },
+    {
+      "id": "PT-014",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_report",
+      "package": "infra.governance",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Conformance report builder and orchestrator; privacy and security: redaction of local paths and credential-shaped strings"
+    },
+    {
+      "id": "PT-015",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_runtime",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Ephemeral token channel and child isolation"
+    },
+    {
+      "id": "PT-016",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_runtime_fixtures",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Unchanged consumer commands on minimal fake consumers; security: an executed failing test or a removed suite is refused (check-bypass prevention)"
+    },
+    {
+      "id": "PT-017",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_steps",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Step detection and check-name production; security: report drift refuses removed and stubbed tests (check-bypass prevention)"
+    },
+    {
+      "id": "PT-018",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_conformance_trends",
+      "package": "infra.governance",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Offline CI history and publication; privacy and security: the Actions summary redacts the token and refuses annotation command injection"
+    },
+    {
+      "id": "PT-019",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_database_admission_installation",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Admission installation mechanics including link refusal"
+    },
+    {
+      "id": "PT-020",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_generated_conformance_workflow",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Generated conformance workflow and its guarded token channel"
+    },
+    {
+      "id": "PT-021",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_generated_pr_workflow_integrity",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Base-trusted generated PR workflow integrity"
+    },
+    {
+      "id": "PT-022",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_infra_qualification",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Infra outcome strictness that keeps a skipped or failed test from passing"
+    },
+    {
+      "id": "PT-023",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_instruction_provenance",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Instruction-provenance rule against untrusted instructions"
+    },
+    {
+      "id": "PT-024",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_money_source_fetch_reliability",
+      "package": "infra.governance",
+      "tags": [
+        "money",
+        "security"
+      ],
+      "reason": "Immutable fetch boundaries for the API money-path sources"
+    },
+    {
+      "id": "PT-025",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_money_source_materialization",
+      "package": "infra.governance",
+      "tags": [
+        "money",
+        "security"
+      ],
+      "reason": "Pinned materialization of the API money-path sources"
+    },
+    {
+      "id": "PT-026",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_money_source_materialization_failures",
+      "package": "infra.governance",
+      "tags": [
+        "money",
+        "security"
+      ],
+      "reason": "Failure handling of the API money-path source materialization"
+    },
+    {
+      "id": "PT-027",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_pr_workflow_integrity",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "PR workflow integrity validator"
+    },
+    {
+      "id": "PT-028",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_rule_table",
+      "package": "infra.governance",
+      "tags": [],
+      "reason": "README rule table stays true to the documented code; untagged: documentation order only, no security, privacy or money control"
+    },
+    {
+      "id": "PT-029",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_workflow_shape",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Workflow key allowlists that keep tokens and secrets out of public jobs"
+    },
+    {
+      "id": "PT-030",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_workflow_validation",
+      "package": "infra.governance",
+      "tags": [
+        "security"
+      ],
+      "reason": "Secret tripwire, condition refusal and action allowlist"
+    },
+    {
+      "id": "PT-031",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_bootstrap",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Generated local credentials, env-file validation and process ownership of bootstrap.py"
+    },
+    {
+      "id": "PT-032",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_database_admission",
+      "package": "infra.tooling",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Database extension admission gate and its embedding-policy data classes"
+    },
+    {
+      "id": "PT-033",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_integration_stack",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Compose stack lifecycle in self-owned projects; security: credentials absent from bootstrap and container output, linked temporary root refused"
+    },
+    {
+      "id": "PT-034",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_cli",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Single QA-gate entry point: subcommand dispatch and exit codes (E25-F01)"
+    },
+    {
+      "id": "PT-035",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_junit",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Bounded JUnit ingestion of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-036",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_ledger",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Quarantine ledger rules of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-037",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_policy",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Pinned flake policy of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-038",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_quarantine",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Quarantine gate decisions (E25-F01)"
+    },
+    {
+      "id": "PT-039",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_retry",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Retry-limit configuration check that refuses retries beyond the flake policy"
+    },
+    {
+      "id": "PT-040",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_tags",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Protected-tag classification of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-041",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_smoke_infra",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Smoke protocol handling including credential redaction"
+    },
+    {
+      "id": "PT-042",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_rate",
+      "package": "infra.tooling",
+      "tags": [
+        "security"
+      ],
+      "reason": "Repository quarantine-rate ceiling of the E25-F01 quarantine gate"
+    },
+    {
+      "id": "PT-043",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_security_controls",
+      "package": "infra.tooling",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "Secret, dependency and exception controls; security: asserts scanner credential removal, scanner-boundary and malformed-input refusal and non-bypassable mandatory secret rules; privacy: asserts redacted rotation payloads and secret reports and the Android privacy-inventory consumer shape"
+    },
+    {
+      "id": "PT-044",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_sast",
+      "package": "infra.tooling",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "SAST report gate of infra#28 slice 2 (PenniLogic/infra#91); security: a planted injection fails, path traversal, duplicate keys and bad grammar are refused, inline suppression markers and ignore files fail as incomplete (check-bypass prevention); privacy: the report carries no Semgrep message, snippet or metadata (redaction)"
+    },
+    {
+      "id": "PT-045",
+      "field": "classname",
+      "kind": "package",
+      "value": "test_qa_gates_dast",
+      "package": "infra.tooling",
+      "tags": [
+        "privacy",
+        "security"
+      ],
+      "reason": "DAST report gate of infra#28 slice 2 (PenniLogic/infra#91); security: target allowlist preflight, report-to-manifest binding, credential values refused in the scan manifest; privacy: the report carries no URI, parameter, evidence or user name, the credential never reaches report or log (redaction), and a manifest without synthetic data is refused"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "infra-ci-linux",
+      "workflow": ".github/workflows/ci.yml",
+      "job": "ci",
+      "packages": [
+        "infra.governance",
+        "infra.tooling"
+      ]
+    },
+    {
+      "id": "infra-ci-windows-governance",
+      "workflow": ".github/workflows/ci.yml",
+      "job": "windows-governance",
+      "packages": [
+        "infra.governance"
+      ]
+    },
+    {
+      "id": "infra-ci-windows-scripts",
+      "workflow": ".github/workflows/ci.yml",
+      "job": "windows-scripts",
+      "packages": [
+        "infra.tooling"
+      ]
+    }
+  ]
+}

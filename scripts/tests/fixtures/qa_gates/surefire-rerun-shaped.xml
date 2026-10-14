@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report.xsd" version="3.0.2" name="com.example.synthetic.SampleTest" time="0.05" tests="2" errors="0" skipped="0" failures="0">
+  <properties>
+    <property name="java.version" value="21"/>
+  </properties>
+  <testcase name="passes" classname="com.example.synthetic.SampleTest" time="0.001"/>
+  <testcase name="flaky" classname="com.example.synthetic.SampleTest" time="0.002">
+    <flakyFailure message="synthetic first failure" type="java.lang.AssertionError">
+      <stackTrace>java.lang.AssertionError: synthetic first failure</stackTrace>
+    </flakyFailure>
+  </testcase>
+</testsuite>
