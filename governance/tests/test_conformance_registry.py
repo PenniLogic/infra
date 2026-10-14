@@ -143,7 +143,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
-        self.assertEqual("f714f1dfb491944b447e699d8e4e9f7c84d6ed72", entry["workflow_ref"])
+        self.assertEqual("865ae9089cc8873f7762bb4febd2aca2ed500a9c", entry["workflow_ref"])
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")
         self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
         self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
@@ -232,7 +232,18 @@ class RegistryTests(unittest.TestCase):
                 self.assertNotEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(),
                                     (root / "templates/qualify_windows.py").read_bytes())
 
+    def api_qualifier_at(self, ref):
+        committed = subprocess.run(
+            ["git", "--no-pager", "show", ref + ":governance/templates/qualify_windows.py"],
+            cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
+            capture_output=True, check=False, timeout=30,
+        )
+        self.assertEqual(0, committed.returncode, "the API qualifier control must exist in real Git history")
+        return committed.stdout
+
     def test_previous_api_refs_cannot_bind_scalar_git_selection(self):
+        scalar_qualifier = self.api_qualifier_at("f714f1dfb491944b447e699d8e4e9f7c84d6ed72")
+        self.assertNotEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), scalar_qualifier)
         for ref in ("e94792d8605c42c8b9d8dd5ee398b757b27486eb", "f719c9d0242a0c80ea401cc18cc2e96da61cabce"):
             with self.subTest(ref=ref), tempfile.TemporaryDirectory(prefix="api-registry-scalar-") as temporary:
                 root = Path(temporary)
@@ -250,8 +261,19 @@ class RegistryTests(unittest.TestCase):
                     path.write_bytes(committed.stdout)
                 historical = generator_module.load(root / "generate.py", name="api_registry_scalar_source_" + ref)
                 self.assert_only_scalar_git_selection_changed(historical)
-                self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(),
-                                 (root / "templates/qualify_windows.py").read_bytes())
+                self.assertEqual(scalar_qualifier, (root / "templates/qualify_windows.py").read_bytes())
+
+    def test_previous_api_refs_cannot_bind_java_selection_diagnostics(self):
+        qualifiers = []
+        for ref in ("f714f1dfb491944b447e699d8e4e9f7c84d6ed72", "f3dc0a9bfcd8fae8e59c10f67919b176c3dd719a"):
+            with self.subTest(ref=ref):
+                previous = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
+                self.assertIsNotNone(previous, "the scalar-Git source must exist in real history")
+                self.assertEqual(support.generator.workflow("api").encode("utf-8"), previous)
+                qualifier = self.api_qualifier_at(ref)
+                self.assertNotEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), qualifier)
+                qualifiers.append(qualifier)
+        self.assertEqual(qualifiers[0], qualifiers[1])
 
     def test_android_workflow_ref_exists_and_renders_the_exact_combined_caller(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")

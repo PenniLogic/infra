@@ -567,14 +567,16 @@ the prior `d31994d6` binding cannot represent this reader. Full-history validati
 remains required, and a prebinding mismatch remains an honest failure, not a
 placeholder reference or an acceptance waiver.
 The observer-pair increment additionally changed the workflow and checker, so
-that old reader reference cannot bind it. The current scalar-Git selection is
-bound separately to actual source `f714f1dfb491944b447e699d8e4e9f7c84d6ed72`.
+that old reader reference cannot bind it. The current Java-selection diagnostic
+is bound separately to actual source `865ae9089cc8873f7762bb4febd2aca2ed500a9c`.
 Its historical workflow, checker and qualifier must exactly match current output.
-Prior `e94792d8` and `f719c9d0` retain the same qualifier but lack scalar selection;
-the regression permits only that exact selection-line and derived checker-digest
-distinction. Older `cf96bdb7` and `eaf93a88` additionally retain a different
-qualifier, which remains a separate failing binding predicate. This local source
-binding is not publication, consumer adoption or native acceptance.
+Prior `f714f1df` and `f3dc0a9b` render the same workflow but retain the same older
+qualifier without the diagnostic. Prior `e94792d8` and `f719c9d0` share that older
+qualifier and also lack scalar selection; the regression permits only the exact
+selection-line and derived checker-digest distinction. Older `cf96bdb7` and
+`eaf93a88` retain a different qualifier, which remains a separate failing binding
+predicate. This local source binding is not publication, consumer adoption,
+diagnosis of the native Java operand or native acceptance.
 The accepted `a40b9018` and `0f5f7b7c` workflow/checker/qualifier pins remain
 historical controls, and removing only the explicit observer additions must
 recover the entire accepted `0f5f7b7c` workflow byte for byte.
