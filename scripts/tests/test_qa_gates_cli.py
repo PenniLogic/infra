@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -117,9 +118,9 @@ class HeadInputTests(unittest.TestCase):
         self.base.mkdir(parents=True)
         for path in SCRIPT.parent.glob("qa_gates*.py"):
             (self.base / path.name).write_bytes(path.read_bytes())
-        (self.base / "qa-gates").mkdir()
-        for path in (SCRIPT.parent / "qa-gates").iterdir():
-            (self.base / "qa-gates" / path.name).write_bytes(path.read_bytes())
+        # Copy the configuration tree as it is: the merged SAST and DAST slice of infra#28 added the directory
+        # scripts/qa-gates/rules, and a per-entry file copy raised IsADirectoryError on it.
+        shutil.copytree(SCRIPT.parent / "qa-gates", self.base / "qa-gates")
         self.head = self.root / "head"
         self.head.mkdir()
         self.base_manifest = self.head / "base-manifest.json"
