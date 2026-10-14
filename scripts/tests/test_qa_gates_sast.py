@@ -569,6 +569,7 @@ class SastCannedReportBindingTests(unittest.TestCase):
 # Semgrep's inline suppression marker, spelled in parts so this file never carries it (review round 1 SS-R1-02).
 MARKER = b" no" b"semgrep"
 CLEAN_PY = "scripts/qa-gates/fixtures/planted/python/clean_control.py"
+CLEAN_TS = "scripts/qa-gates/fixtures/planted/typescript/clean-control.ts"
 
 
 class SastSuppressionTests(unittest.TestCase):
@@ -597,6 +598,26 @@ class SastSuppressionTests(unittest.TestCase):
             source = root / CLEAN_PY
             source.write_bytes(source.read_bytes() + b'FLAG = "--disable-' + MARKER.strip()[:5] + b'"\n')
             self.assertEqual(gate(clean(), root=root)["reason"], None)
+
+    def test_every_semgrep_marker_spelling_is_incomplete(self):
+        # Review round 2 SS2-R1-01: Semgrep 1.178.0 also honours the marker without a space on the line above, after
+        # a tab, and with U+017F long s (Unicode case folding); the marker is built at runtime from MARKER.
+        word = MARKER.strip().decode("ascii")
+        spellings = {
+            "previous-line-no-space": (CLEAN_PY, "    #" + word + "\n"),
+            "previous-line-tab": (CLEAN_PY, "#\t" + word + "\n"),
+            "long-s": (CLEAN_PY, "# " + word[:5].replace("s", "\u017f") + "\n"),
+            "typescript-previous-line": (CLEAN_TS, "  //" + word + "\n"),
+            "inline-upper-long-s": (CLEAN_PY, "x = 1  # " + word.upper().replace("S", "\u017f") + "\n"),
+        }
+        for name, (relative, line) in spellings.items():
+            with self.subTest(spelling=name), copied_root() as root:
+                self.assertEqual(gate(clean(), root=root)["decision"], "pass")
+                source = root / relative
+                source.write_bytes(source.read_bytes() + line.encode("utf-8"))
+                report = gate(clean(), root=root)
+                self.assertEqual((report["reason"], report["suppression"]["inline_marker_paths"]),
+                                 ("SAST-INCOMPLETE-INLINE-SUPPRESSION", [relative]))
 
     def test_ignore_file_anywhere_in_the_checkout_is_incomplete(self):
         for relative in (".semgrepignore", "scripts/qa-gates/.semgrepignore"):

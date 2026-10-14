@@ -33,10 +33,13 @@ including a missing report. stdout carries one ASCII JSON report (`pennilogic.qa
    (`SAST-INCOMPLETE-SKIPPED-RULES`) or zero scanned paths (`SAST-INCOMPLETE-NO-PATHS`) fails the gate, even when
    no finding is reported.
 3. **Semgrep's own suppression is an incomplete scan.** Semgrep drops a match on a line carrying its inline
-   suppression comment (`nosemgrep`, any case, after a space) and skips files named in a `.semgrepignore`, without
-   any error entry, unless it runs with `--disable-nosem` and `--x-ignore-semgrepignore-files`. Either channel would
-   be an unrecorded exception without expiry, so the gate reads every scanned source and fails when one carries the
-   marker (`SAST-INCOMPLETE-INLINE-SUPPRESSION`, listing the paths) or when the checkout holds any `.semgrepignore`
+   suppression comment and skips files named in a `.semgrepignore`, without any error entry, unless it runs with
+   `--disable-nosem` and `--x-ignore-semgrepignore-files`. Semgrep 1.178.0 recognizes the comment (`nosem`,
+   optionally followed by `grep`) inline after a space, or on the line above after only non-alphanumeric characters
+   and spaces (so `#nosemgrep` and a tab before it count), case-insensitively with Unicode case folding (U+017F
+   long s counts as `s`). Either channel would be an unrecorded exception without expiry, so the gate decodes every
+   scanned source as UTF-8 (invalid bytes replaced), mirrors both patterns anywhere in it, comment or not, and fails
+   when one matches (`SAST-INCOMPLETE-INLINE-SUPPRESSION`, listing the paths) or when the checkout holds any `.semgrepignore`
    outside `.git` (`SAST-INCOMPLETE-IGNORE-FILE`). It does this whatever flags the run used, because a report does
    not record them. A scanned path missing from `--root` is refused (`SAST-SOURCE-UNREADABLE`).
 4. **Everything blocks** (`SAST-BLOCKING-FINDINGS`), as the accepted test strategy states for

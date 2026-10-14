@@ -52,11 +52,16 @@ POLICY_LIMIT = 65536
 REPORT_LIMIT = 32 * 1024 * 1024
 SOURCE_LIMIT = 4 * 1024 * 1024
 RESULT_LIMIT = 100000
-# Semgrep honours an inline suppression comment (a space, then the marker below, optionally followed by "grep",
-# any case) unless run with --disable-nosem, and drops the suppressed match from its JSON output. The marker is
-# spelled in parts so this file never carries it. Any occurrence in a scanned source counts, comment or not (a
-# superset of Semgrep's own condition).
-INLINE_MARKER = re.compile(b" no" b"sem", re.IGNORECASE)
+# Semgrep honours a suppression comment unless run with --disable-nosem and drops the suppressed match from its JSON
+# output. Semgrep 1.178.0 matches two patterns case-insensitively with Unicode case folding (so U+017F long s counts
+# as "s"): inline, a space then the marker; on the line above, only non-alphanumerics and spaces before the marker.
+# The gate mirrors both over the source decoded as UTF-8 (errors replaced), comment or not; the marker is spelled in
+# parts so this file never carries it.
+_MARKER = "no" "sem"
+INLINE_MARKERS = (
+    re.compile(" " + _MARKER, re.IGNORECASE),
+    re.compile("^[^a-zA-Z0-9]* *" + _MARKER, re.IGNORECASE | re.MULTILINE),
+)
 IGNORE_FILE = ".semgrepignore"
 
 
@@ -264,7 +269,8 @@ def suppression(root, scanned, sources):
     for path in scanned:
         if path not in sources:
             sources[path] = _source(root, path)
-        if INLINE_MARKER.search(sources[path]) is not None:
+        decoded = sources[path].decode("utf-8", "replace")
+        if any(marker.search(decoded) is not None for marker in INLINE_MARKERS):
             marked.append(path)
     return {"inline_marker_paths": marked, "ignore_files": ignore_files(root)}
 
