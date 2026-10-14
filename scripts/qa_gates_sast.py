@@ -2,8 +2,8 @@
 
     python scripts/qa_gates_sast.py --report SEMGREP.json --root SOURCE_ROOT [--policy POLICY.json]
 
-Reads one Semgrep JSON report. A report with a non-empty `errors` list, a skipped rule or zero scanned paths is
-incomplete, and incomplete fails; so is a checkout that uses Semgrep's own suppression (an inline marker in a
+Reads one Semgrep JSON report. A report with a non-empty `errors` list, a skipped rule, a rule file missing from a
+non-empty `time.rules` (a `--time` run) or zero scanned paths is incomplete, and incomplete fails; so is a checkout that uses Semgrep's own suppression (an inline marker in a
 scanned source or any ignore file), because that would be an unrecorded exception. Every finding blocks unless its rule is in `warn` mode inside a recorded window of
 at most seven days (`warn_from`..`warn_until`, judged against an injected clock); an expired or unknown rule blocks.
 Exceptions are unavailable until infra#23 integrates, so no finding is ever excepted here. The rule set and this
@@ -46,7 +46,7 @@ REPORT_SCHEMA = "pennilogic.qa-gates.sast-report/1"
 VOCABULARY_STATUS = "proposed, pending infra#23 owner alignment"
 EXCEPTIONS_STATUS = "unavailable: infra#23 not integrated"
 PLANNED_EXCEPTIONS_BINDING = "security_exceptions.Exceptions.suppression"
-WARN_WINDOW_DAYS = 7
+WARN_WINDOW_DAYS = 7  # proposed cap, not infra#28 text: the ticket gives no duration for a rollback window
 RULE_FILE_LIMIT = 262144
 POLICY_LIMIT = 65536
 REPORT_LIMIT = 32 * 1024 * 1024
@@ -114,9 +114,10 @@ POLICY_KEYS = ("schema", "status", "basis", "decision_ref", "rules")
 def parse_policy(data, rule_ids):
     """Validate the per-rule mode policy; its rule set must equal the rule files' IDs exactly.
 
-    `block` needs no other key. `warn` needs `warn_from` < `warn_until` at most seven days apart (the ticket's
-    one-week warning window and per-rule rollback with a recorded expiry). `decision_ref` stays null: no owner
-    decision on the rule set is recorded.
+    `block` needs no other key. `warn` needs `warn_from` < `warn_until` (the ticket's one-week warning window and
+    per-rule rollback with a recorded expiry), at most seven days apart: that cap is this slice's proposal, not
+    ticket text, pending owner confirmation. `decision_ref` stays null: no owner decision on the rule set is
+    recorded.
     """
     document = exact(json_document(data, POLICY_LIMIT, "SAST-POLICY"), POLICY_KEYS, "SAST-POLICY-KEYS")
     if document["schema"] != POLICY_SCHEMA or document["status"] != PROPOSED:

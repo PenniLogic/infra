@@ -386,6 +386,15 @@ class SastPolicyTests(unittest.TestCase):
         document["rules"][EVAL_RULE]["warn_until"] = "2026-10-21"
         self.assertRefused("SAST-POLICY-WARN-WINDOW", sast.parse_policy, policy_bytes(document), RULE_IDS)
 
+    def test_committed_policies_label_the_seven_day_cap_as_a_proposal(self):
+        # Review round 2 SS2-R1-07: the ticket gives no duration for a rollback window, so neither policy may
+        # attribute the cap to infra#28.
+        for name in ("sast-policy.json", "dast-policy.json"):
+            with self.subTest(policy=name):
+                basis = json.loads((sast.RULES_DIR / name).read_text(encoding="utf-8"))["basis"]
+                self.assertIn("7-day cap is proposed, not ticket text", basis)
+                self.assertNotIn("7 days (infra#28)", basis)
+
     def test_warn_without_expiry_refused(self):
         document = policy_document()
         document["rules"][EVAL_RULE] = {"mode": "warn", "warn_from": "2026-10-13", "warn_until": "2026-10-14"}

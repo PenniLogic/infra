@@ -1,7 +1,7 @@
 {
   "schema": "pennilogic.qa-gates.sast-policy/1",
   "status": "proposed, not agreed",
-  "basis": "PenniLogic/docs governance/test-strategy.json @ 1722fc79 (strategy 1.1.1) category static_dependency_secret_gates: all blocking; per-rule warn only with a recorded expiry (infra#28 rollout and rollback)",
+  "basis": "PenniLogic/docs governance/test-strategy.json @ 1722fc79 (strategy 1.1.1) category static_dependency_secret_gates: all blocking; per-rule warn only with a recorded expiry (infra#28 rollout and rollback); its 7-day cap is proposed, not ticket text",
   "decision_ref": null,
   "rules": {
     "pennilogic-kotlin-runtime-exec": {

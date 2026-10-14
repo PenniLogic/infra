@@ -1,7 +1,7 @@
 {
   "schema": "pennilogic.qa-gates.dast-policy/1",
   "status": "proposed, not agreed",
-  "basis": "PenniLogic/docs governance/test-strategy.json @ 1722fc79 (strategy 1.1.1) security_regression_smoke, verbatim: \"a high-severity finding or an unsigned or tampered artifact fails the deploy gate\". No accepted source or recorded decision makes another risk report-only, so every risk blocks; per-plugin warn only with a recorded expiry of at most 7 days (infra#28)",
+  "basis": "PenniLogic/docs governance/test-strategy.json @ 1722fc79 (strategy 1.1.1) security_regression_smoke, verbatim: \"a high-severity finding or an unsigned or tampered artifact fails the deploy gate\". No accepted source or recorded decision makes another risk report-only, so every risk blocks; per-plugin warn only with a recorded expiry (infra#28); its 7-day cap is proposed, not ticket text",
   "decision_ref": null,
   "blocking_risks": [
     "high",

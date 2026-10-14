@@ -98,8 +98,10 @@ the per-language rule set is an owner decision that is not recorded (`decision_r
 
 `sast-policy.json` names every rule exactly once (a missing or extra rule is refused). The committed policy sets
 every rule to `block`. A rule may instead be `{"mode": "warn", "warn_from": "YYYY-MM-DD", "warn_until":
-"YYYY-MM-DD"}` with `warn_from` < `warn_until` at most seven days apart: the ticket's one-week warning window, and
-its rollback ("return a specific rule to warning with a recorded expiry"). The rule warns only on dates inside the
+"YYYY-MM-DD"}` with `warn_from` < `warn_until`: the ticket's one-week warning window, and its rollback ("return a
+specific rule to warning with a recorded expiry"). The gate also caps every window at seven days; the ticket
+gives no duration for a rollback window, so that cap is this slice's proposal pending owner confirmation, not
+ticket text. The rule warns only on dates inside the
 window; before it and after it the rule blocks, and an ended window is listed under `expired_warnings`. Changing a
 mode is a reviewed edit of this file; the one-week warning-only rollout itself has not happened.
 
@@ -219,7 +221,7 @@ context counts, `scanned_url_count`, `surface.{expected, covered, missing}` (val
 ### Per-plugin warn mode, rollout and rollback
 
 `dast-policy.json` `rules` maps a ZAP plugin ID to `{"mode": "warn", "warn_from", "warn_until"}` with the same
-seven-day rule as SAST. Inside the window an alert of that plugin is `warn`; outside it blocks again
+seven-day cap as SAST (proposed, not ticket text). Inside the window an alert of that plugin is `warn`; outside it blocks again
 and an ended window is listed in `expired_warnings`. The committed policy has no warn entry.
 
 ## Finding vocabulary alignment (infra#31)
@@ -237,7 +239,7 @@ infra#28 does not match this slice.
 
 The ticket introduces the gates as **warning-only for one week** to measure noise, then blocking. Once the CI
 steps exist, the warning week is recorded the same way as a per-rule rollback: each rule (SAST) or plugin (DAST)
-gets a `warn` entry whose `warn_from`..`warn_until` covers at most seven days, in a reviewed policy edit. Findings
+gets a `warn` entry whose `warn_from`..`warn_until` covers at most seven days (the proposed cap), in a reviewed policy edit. Findings
 in that window are counted under `counts.warning`; when the window ends they block again without another change,
 and `expired_warnings` lists the rules so the entries can be removed. Rolling back one noisy rule later uses the
 same entry with a new recorded window; there is no open-ended warning and no global switch. The committed
