@@ -610,13 +610,18 @@ the prior `d31994d6` binding cannot represent this reader. Full-history validati
 remains required, and a prebinding mismatch remains an honest failure, not a
 placeholder reference or an acceptance waiver.
 The observer-pair increment additionally changed the workflow and checker, so
-that old reader reference cannot bind it. The current Java-version operand diagnostic
-is bound separately to actual source `14af2187b8c493910228e4a7da606d2b49bf9ebc`.
+that old reader reference cannot bind it. The current Java/SemVer contract
+is bound separately to actual source `1ddc3434d8826605fc9dce7adb843d185dc92aaa`.
 Its historical workflow, checker and qualifier must exactly match current output.
+Prior `14af2187` and `02fdb18b` render the same workflow but retain the same
+operand-only qualifier. Reversing only the version-contract helper and exact
+release/selected comparison block reproduces both historical qualifiers byte
+for byte; other differences are refused.
 Prior `865ae908` and `cc779064` render the same workflow but retain the same
 categorical qualifier without version operands. Removing only the bounded operand
-projection, optional version record and its argument reproduces that qualifier
-byte for byte; other differences are refused.
+projection, optional version record and its argument from actual `14af2187`
+reproduces that qualifier byte for byte, rather than applying the old reversal
+to the current version-contract source.
 Prior `f714f1df` and `f3dc0a9b` render the same workflow but retain the same older
 qualifier without categorical diagnostics, compared to actual `865ae908`.
 Prior `e94792d8` and `f719c9d0` share that older
@@ -624,7 +629,7 @@ qualifier and also lack scalar selection; the regression permits only the exact
 selection-line and derived checker-digest distinction. Older `cf96bdb7` and
 `eaf93a88` retain a different qualifier, which remains a separate failing binding
 predicate. This local source binding is not publication, consumer adoption,
-diagnosis of the native Java operand or native acceptance.
+proof of the native runtime build/vendor or native qualification.
 The accepted `a40b9018` and `0f5f7b7c` workflow/checker/qualifier pins remain
 historical controls, and removing only the explicit observer additions must
 recover the entire accepted `0f5f7b7c` workflow byte for byte.

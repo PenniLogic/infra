@@ -143,7 +143,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
-        self.assertEqual("14af2187b8c493910228e4a7da606d2b49bf9ebc", entry["workflow_ref"])
+        self.assertEqual("1ddc3434d8826605fc9dce7adb843d185dc92aaa", entry["workflow_ref"])
         rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")
         self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
         self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
@@ -278,7 +278,8 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(qualifiers[0], qualifiers[1])
 
     def test_previous_api_refs_cannot_bind_java_version_operands(self):
-        current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        current = self.api_qualifier_at("14af2187b8c493910228e4a7da606d2b49bf9ebc")
+        self.assertNotEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), current)
         categorical = current
         for added, previous in (
             (b'def observer_java_version_operand(value):\n'
@@ -306,6 +307,61 @@ class RegistryTests(unittest.TestCase):
                 qualifier = self.api_qualifier_at(ref)
                 self.assertNotEqual(current, qualifier)
                 self.assertEqual(categorical, qualifier)
+
+    def test_previous_api_refs_cannot_bind_java_semver_contract(self):
+        current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        operands = current
+        for added, previous in (
+            (br'''def observer_java_version_matches(version, version_build, selected, release):
+    if observer_java_version_operand(version) == "unavailable" or type(selected) is not str or len(selected) > 32:
+        return False
+    parts = version.split(".")
+    if len(parts) not in (3, 4) or (len(parts) == 4 and parts[3] == "0"):
+        return False
+    setup = re.fullmatch(r"(21(?:\.(?:0|[1-9][0-9]{0,4})){2})\+([1-9][0-9]{0,6})(?:\.0)?", selected)
+    if setup is None or setup[1] != ".".join(parts[:3]):
+        return False
+    runtimes = re.findall(r"^[ \t]*JAVA_RUNTIME_VERSION\b[^\n]*$", release, re.MULTILINE)
+    if len(runtimes) != 1 or len(runtimes[0]) > 64:
+        return False
+    runtime = re.fullmatch(
+        r'JAVA_RUNTIME_VERSION="(21(?:\.(?:0|[1-9][0-9]{0,4})){2,3})\+([1-9][0-9]?)(?:-LTS)?"', runtimes[0])
+    if runtime is None or runtime[1] != version:
+        return False
+    if version_build is not None and version_build not in (runtime[2], runtime[2] + "-LTS"):
+        return False
+    # Adoptium adds patch * 100 to the build; builds 1..99 keep this mapping unambiguous.
+    patch = int(parts[3]) if len(parts) == 4 else 0
+    return int(setup[2]) == patch * 100 + int(runtime[2])
+
+
+''', b""),
+            (br'''    release = observer_runtime_bytes(java / "release", 16384).decode("utf-8").replace("\r\n", "\n")
+    version_lines = re.findall(r"^[ \t]*JAVA_VERSION\b[^\n]*$", release, re.MULTILINE)
+    versions = [match for line in version_lines if (
+        match := re.fullmatch(r'JAVA_VERSION="(21(?:\.[0-9]+){1,3})(?:\+([0-9A-Za-z.-]+))?"', line))]
+    selected_label = os.environ.get("PENNILOGIC_API106_JAVA_VERSION", "")
+    selected = selected_label.split("+", 1)[0]
+    observer_java_require(len(version_lines) == 1 and len(versions) == 1, "release-version-single-match")
+    observer_java_require(observer_java_version_matches(versions[0][1], versions[0][2], selected_label, release),
+                          "selected-version-match", versions=(versions[0][1], selected))
+''', br'''    release = "\n".join(observer_runtime_bytes(java / "release", 16384).decode("utf-8").splitlines())
+    versions = re.findall(r'^JAVA_VERSION="(21(?:\.[0-9]+){1,3})(?:\+[0-9A-Za-z.-]+)?"$', release, re.MULTILINE)
+    selected = os.environ.get("PENNILOGIC_API106_JAVA_VERSION", "").split("+", 1)[0]
+    observer_java_require(len(versions) == 1, "release-version-single-match")
+    observer_java_require(versions[0] == selected, "selected-version-match", versions=(versions[0], selected))
+'''),
+        ):
+            self.assertEqual(1, operands.count(added))
+            operands = operands.replace(added, previous, 1)
+        for ref in ("14af2187b8c493910228e4a7da606d2b49bf9ebc", "02fdb18b8fc022601fc49647b13ea9802403bfb3"):
+            with self.subTest(ref=ref):
+                workflow = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
+                self.assertIsNotNone(workflow, "the operand-only source must exist in real Git history")
+                self.assertEqual(support.generator.workflow("api").encode("utf-8"), workflow)
+                qualifier = self.api_qualifier_at(ref)
+                self.assertNotEqual(current, qualifier)
+                self.assertEqual(operands, qualifier)
 
     def test_android_workflow_ref_exists_and_renders_the_exact_combined_caller(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/android")
