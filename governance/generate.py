@@ -529,6 +529,34 @@ exit $exitCode
     }
 
 
+def api_shell_focus_job(profile):
+    job = api_windows_job(profile)
+    condition = "${{ github.event_name == 'workflow_dispatch' && inputs.api106_shell_focus == true }}"
+    job.update(name="API106 isolated shell diagnostic", **{"if": condition})
+    job["steps"] = job["steps"][:-2]
+    job["steps"][0]["if"] = condition
+    python = next(step for step in job["steps"] if step["name"] == "Python")
+    python["with"]["python-version"] = "3.14.8"
+    owning = job["steps"][-1]
+    owning["name"] = "Run isolated approved-shell diagnostic"
+    del owning["env"]["PENNILOGIC_API106_OBSERVER_PAIR"]
+    owning["env"]["PENNILOGIC_API106_SHELL_FOCUS"] = condition
+    command = api_observer_command()
+    ordinary = (
+        "} elseif ($env:PENNILOGIC_API106_OBSERVER_PAIR -ceq 'false') {\n"
+        "    python scripts\\qualify_windows.py --require-prepared\n"
+        "} else { throw 'API106 observer selection must be a Boolean' }"
+    )
+    if not command.endswith(ordinary) or owning["run"].count(command) != 1:
+        raise ValueError("API shell focus requires the exact existing runtime binding")
+    focused = command.removesuffix(ordinary).replace(
+        "PENNILOGIC_API106_OBSERVER_PAIR", "PENNILOGIC_API106_SHELL_FOCUS",
+    ).replace("--api106-observer-pair", "--api106-shell-focus")
+    focused += "} else { throw 'API106 shell focus requires an explicit Boolean true' }"
+    owning["run"] = owning["run"].replace(command, focused, 1)
+    return job
+
+
 def infra_windows_job(profile):
     commands = [infra_ci_command(command).replace("/", "\\") for command in profile["commands"]
                 if command != "docker compose -f docker-compose.yml config --quiet"]
@@ -592,6 +620,9 @@ def workflow(repo, setup=False):
         events["workflow_dispatch"] = {"inputs": {"api106_observer_pair": {
             "description": "Opt in to the diagnostic observer pair; owning failures still fail CI",
             "type": "boolean", "required": False, "default": False,
+        }, "api106_shell_focus": {
+            "description": "Run only the original approved-shell diagnostic in a separate job; never qualification",
+            "type": "boolean", "required": False, "default": False,
         }}}
     if not setup:
         events.update({"push": {"branches": ["main"]}, "pull_request": {"branches": ["main"]}})
@@ -608,6 +639,8 @@ def workflow(repo, setup=False):
         job["name"] = "Linux qualification"
         windows = api_windows_job(profile) if repo == "api" else infra_windows_job(profile)
         jobs.update({"windows": windows, "ci-result": ci_result_job(repo)})
+        if repo == "api":
+            jobs["api106-shell-focus"] = api_shell_focus_job(profile)
     return encoded({
         "name": "Copilot Setup Steps" if setup else "CI",
         "on": events,

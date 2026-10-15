@@ -1,5 +1,6 @@
 """Canonical Windows routing and synthetic outcome controls, not API target execution."""
 
+import ast
 import contextlib
 import copy
 import hashlib
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest import mock
 import xml.etree.ElementTree as ET
@@ -22,7 +24,7 @@ from conformance import generator as generator_module, registry as registry_modu
 import qualify as infra_qualification
 from test_api_native_source_fetch import (
     OBSERVER_COMMAND, OBSERVER_CONDITION, OBSERVER_RUNTIME_ENV, native_owning_script, remove_native_steps,
-    remove_observer_pair, remove_observer_runtime,
+    remove_observer_pair, remove_observer_runtime, remove_shell_focus, SHELL_FOCUS_CONDITION, SHELL_FOCUS_INPUT,
 )
 from test_baseline import CONTRACTS_PREVIOUS_SOURCE_TEST_COMMAND, CONTRACTS_SOURCE_TEST_COMMAND
 
@@ -211,7 +213,7 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         self.assertEqual(list(sources), reads)
 
     def test_parallel_owning_suites_and_always_running_required_native_result(self):
-        workflow = remove_observer_runtime(self, json.loads(generator.workflow("api")))
+        workflow = remove_observer_runtime(self, remove_shell_focus(self, json.loads(generator.workflow("api"))))
         jobs = workflow["jobs"]
         self.assertEqual({"ci", "windows", "ci-result"}, set(jobs))
         self.assertEqual("Linux qualification", jobs["ci"]["name"])
@@ -432,6 +434,725 @@ class ApiWindowsWorkflowTests(unittest.TestCase):
         current_template = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
         current_generated = generator.artifacts("api")["scripts/qualify_windows.py"].encode("utf-8")
         self.assertEqual(current_template, current_generated)
+
+
+class WindowsShellFocusTests(unittest.TestCase):
+    def setUp(self):
+        no_spawn = mock.patch.object(subprocess, "Popen", side_effect=AssertionError("No live target in source controls"))
+        no_spawn.start()
+        self.addCleanup(no_spawn.stop)
+        self.fixture = WindowsObserverPairDiagnosticTests()
+        self.addCleanup(self.fixture.doCleanups)
+
+    def record(self, **changes):
+        return {"v": 1, "event": "api106_shell_focus_target", "target": qualification.SHELL_FOCUS_TARGET,
+                "tests_run": 1, "elapsed_ns": 1, "failures": 0, "errors": 0, "skipped": 0,
+                "expectedFailures": 0, "unexpectedSuccesses": 0, "exception": None, **changes}
+
+    def result(self, code=0, **changes):
+        return subprocess.CompletedProcess([], code, json.dumps(
+            self.record(**changes), sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n", b"")
+
+    @contextlib.contextmanager
+    def parent(self, result=None, *, lookup_data=None):
+        with tempfile.TemporaryDirectory(prefix="focus-synthetic-owner-") as temporary:
+            root = Path(temporary)
+            (root / "build").mkdir()
+            budget = self.fixture.budget()
+            environment = {"PATH": "synthetic-approved", "CI": "true"}
+            command = [sys.executable, "-I", "-S", "-B", "-c", "synthetic-never-executed"]
+
+            def run(*args, **kwargs):
+                (root / qualification.OBSERVER_FILES["required-boundary"][0]).write_bytes(b"ES111CX")
+                if lookup_data is not None:
+                    WindowsShellLookupDiagnosticTests().write_capsule(root, lookup_data)
+                return result if result is not None else self.result()
+
+            budget.run.side_effect = run
+            with contextlib.ExitStack() as stack:
+                for name, value in (
+                    ("observer_context", "a" * 64), ("shell_focus_sources", {"synthetic": {"bytes": 1, "sha256": "b" * 64}}),
+                    ("observer_budget_module", budget), ("shell_focus_runtime", (environment, {"synthetic_only": True})),
+                    ("shell_focus_command", command),
+                ):
+                    stack.enter_context(mock.patch.object(qualification, name, return_value=value))
+                yield root, budget, command, environment
+
+    def invoke(self, root, **options):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = qualification.shell_focus(root, **options)
+        public = output.getvalue()
+        self.assertEqual(1, len(public.splitlines()))
+        self.assertLessEqual(len(public.encode("ascii")), 16384)
+        self.assertNotIn(MARKER, public)
+        self.assertNotIn(str(root), public)
+        self.assertNotIn("Traceback", public)
+        report = json.loads(public)
+        self.assertIs(report["diagnostic_only"], True)
+        self.assertIs(report["native_qualification"], False)
+        self.assertIs(report["physical_cleanup_attestation"], False)
+        return code, report
+
+    def test_focus_workflow_has_one_fixed_manual_typed_default_off_job_and_exact_required_jobs(self):
+        current = json.loads(generator.workflow("api"))
+        self.assertEqual(SHELL_FOCUS_INPUT, current["on"]["workflow_dispatch"]["inputs"]["api106_shell_focus"])
+        previous = remove_shell_focus(self, copy.deepcopy(current))
+        for name in ("ci", "windows", "ci-result"):
+            self.assertEqual(generator.encoded(previous["jobs"][name]), generator.encoded(current["jobs"][name]))
+        job = current["jobs"]["api106-shell-focus"]
+        self.assertEqual("${{ " + SHELL_FOCUS_CONDITION + " }}", job["if"])
+        self.assertNotIn("needs", job)
+        self.assertNotIn("continue-on-error", job)
+        self.assertEqual("windows-2025", job["runs-on"])
+        self.assertEqual(30, job["timeout-minutes"])
+        self.assertEqual("3.14.8", next(step for step in job["steps"] if step["name"] == "Python")["with"]["python-version"])
+        self.assertEqual(current["jobs"]["windows"]["steps"][1], job["steps"][1])
+        owner = job["steps"][-1]
+        self.assertEqual("Run isolated approved-shell diagnostic", owner["name"])
+        self.assertIn("-I -S -B scripts\\qualify_windows.py --require-prepared --api106-shell-focus", owner["run"])
+        self.assertNotIn("--api106-observer-pair", owner["run"])
+        self.assertNotIn("elseif", owner["run"])
+        self.assertNotIn("continue-on-error", json.dumps(job))
+        self.assertEqual({"PENNILOGIC_API106_SHELL_FOCUS": job["if"], **OBSERVER_RUNTIME_ENV}, owner["env"])
+        for repo in generator.PROFILES["repositories"]:
+            for setup in (False, True):
+                if repo != "api" or setup:
+                    self.assertNotIn("api106_shell_focus", generator.workflow(repo, setup=setup))
+        checker = api_checker()
+        for mutation in (
+            lambda v: v["on"]["workflow_dispatch"]["inputs"]["api106_shell_focus"].update(default=True),
+            lambda v: v["on"]["workflow_dispatch"]["inputs"]["api106_shell_focus"].update(type="string"),
+            lambda v: v["jobs"]["api106-shell-focus"].update({"if": "${{ inputs.api106_shell_focus }}"}),
+            lambda v: v["jobs"]["api106-shell-focus"].update({"continue-on-error": True}),
+            lambda v: v["jobs"]["api106-shell-focus"]["steps"][-1].update(run="echo bypass"),
+        ):
+            value = copy.deepcopy(current)
+            mutation(value)
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                checker(CI, generator.encoded(value).encode("ascii"))
+
+    def test_fixed_parent_invocation_keeps_default_ownership_and_reports_real_allowance(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        with self.parent(lookup_data=lookup.encode(lookup.v2_records())) as (root, budget, command, environment):
+            code, report = self.invoke(root, require_prepared=True)
+            budget.run.assert_called_once_with(command, root, 150, capture=True, separate=True, env=environment)
+            self.assertEqual(0, code)
+            self.assertEqual("passed", report["status"])
+            self.assertEqual("passed", report["target_status"])
+            self.assertEqual("complete-observed", report["lookup_evidence"])
+            self.assertEqual("helper-settled", report["owner_release"])
+            self.assertEqual(150, report["work_seconds"])
+            self.assertEqual(10, report["single_cleanup_seconds"])
+            self.assertIs(report["hard_end_to_end_deadline"], False)
+            self.assertIs(report["synchronous_calls_preempted"], False)
+            self.assertEqual("shipped-default-false", report["inherit_tree"])
+            self.assertIsInstance(report["owned_call_elapsed_ns"], int)
+            self.assertGreaterEqual(report["owned_call_elapsed_ns"], 0)
+            self.assertEqual("after-write-output", report["carriers"]["boundary"]["checkpoint"])
+            self.assertEqual("observed", report["carriers"]["lookup"]["status"])
+            self.assertIs(report["carriers"]["lookup"]["capsule_complete"], True)
+        tree = ast.parse((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes())
+        handler = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "shell_focus")
+        calls = [node for node in ast.walk(handler) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
+                 and (node.func.value.id, node.func.attr) == ("budget", "run")]
+        self.assertEqual(1, len(calls))
+        self.assertEqual(150, ast.literal_eval(calls[0].args[2]))
+        self.assertEqual(["capture", "separate", "env"], [item.arg for item in calls[0].keywords])
+        self.assertEqual((270, 300), (qualification.OBSERVER_COMMAND_SECONDS, qualification.OBSERVER_CLOSED_SECONDS))
+
+    def test_target_result_requires_exact_one_case_and_failures_errors_skips_fail_closed(self):
+        for field in ("failures", "errors", "skipped", "expectedFailures", "unexpectedSuccesses"):
+            budget = self.fixture.budget()
+            exception = qualification.shell_focus_exception(AssertionError(MARKER), budget)
+            result = self.result(1, **{field: 1, "exception": exception if field in ("failures", "errors") else None})
+            with self.subTest(outcome=field), self.parent(result) as (root, owner, _, _):
+                code, report = self.invoke(root, require_prepared=True)
+                self.assertEqual(1, code)
+                self.assertEqual("failed", report["status"])
+                self.assertEqual("failed", report["target_status"])
+                self.assertEqual("inconclusive", report["lookup_evidence"])
+                self.assertEqual(1, report["target"][field])
+                self.assertEqual("helper-settled", report["owner_release"])
+                owner.run.assert_called_once()
+        for changes in ({"tests_run": 0}, {"tests_run": 2}, {"tests_run": True},
+                        {"target": MARKER}, {"errors": 1}, {"skipped": -1}, {"elapsed_ns": True},
+                        {"skipped": 1, "errors": 1}, {"elapsed_ns": 150_000_000_001}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                qualification.shell_focus_result(self.result(**changes))
+
+    def test_missing_lookup_is_inconclusive_without_relabeling_passing_child(self):
+        with self.parent() as (root, budget, _, _):
+            code, report = self.invoke(root, require_prepared=True)
+            budget.run.assert_called_once()
+            self.assertEqual(self.record(), report["target"])
+            self.assertEqual("not-observed", report["carriers"]["lookup"]["code"])
+            self.assertEqual(1, code, json.dumps(report, sort_keys=True))
+            self.assertEqual("inconclusive", report["status"])
+            self.assertEqual("passed", report["target_status"])
+            self.assertEqual("inconclusive", report["lookup_evidence"])
+            self.assertEqual("helper-settled", report["owner_release"])
+            self.assertIsNone(report["error"])
+
+    def test_complete_available_lookup_preserves_observed_absence_and_optional_negative_edge(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        no_negative = lookup.v2_records()
+        no_negative.pop(3)
+        absent_roots = lookup.v2_records()
+        absent_roots[0].update(value="absent", roots=[])
+        no_command, no_module, zero_samples = (lookup.v2_records() for _ in range(3))
+        no_command[-1].update(command_type=None, module_kind="no-command", module_sha256=None)
+        no_module[-1].update(module_kind="none", module_sha256=None)
+        for record in zero_samples[2:]:
+            record["ms"] = 0
+        zero_samples[-1]["lookup_ms"] = 0
+        for name, records in (
+            ("v1-observed", lookup.records()), ("v2-observed", lookup.v2_records()),
+            ("no-negative-event", no_negative), ("observed-absent-roots", absent_roots),
+            ("observed-no-command", no_command), ("observed-no-module", no_module),
+            ("observed-zero-samples", zero_samples),
+        ):
+            with self.subTest(case=name), self.parent(lookup_data=lookup.encode(records)) as (root, _, _, _):
+                code, report = self.invoke(root, require_prepared=True)
+                self.assertEqual((0, "passed", "passed", "complete-observed"),
+                                 (code, report["status"], report["target_status"], report["lookup_evidence"]))
+                self.assertEqual(self.record(), report["target"])
+                self.assertEqual(json.loads(qualification.lookup_diagnostic_json(root, "absent")),
+                                 report["carriers"]["lookup"])
+
+    def test_empty_and_every_available_lookup_prefix_are_inconclusive(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        no_negative = lookup.v2_records()
+        no_negative.pop(3)
+        for name, records in (("v1", lookup.records()), ("v2", lookup.v2_records()), ("v2-no-negative", no_negative)):
+            for count in range(len(records)):
+                with self.subTest(case=f"{name}-prefix-{count}"), \
+                        self.parent(lookup_data=lookup.encode(records[:count])) as (root, _, _, _):
+                    code, report = self.invoke(root, require_prepared=True)
+                    projection = report["carriers"]["lookup"]
+                    self.assertEqual((1, "inconclusive", "passed", "inconclusive"),
+                                     (code, report["status"], report["target_status"], report["lookup_evidence"]))
+                    self.assertEqual(self.record(), report["target"])
+                    self.assertEqual("partial", projection["status"])
+                    self.assertIs(projection["capsule_complete"], False)
+                    self.assertEqual(count, len(projection["records"]))
+                    self.assertEqual("incomplete-prefix" if count else "empty-prefix", projection["code"])
+                    self.assertEqual(json.loads(qualification.lookup_diagnostic_json(root, "absent")), projection)
+
+    def test_unavailable_or_refused_lookup_phases_and_their_prefixes_never_turn_green(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        for version, original in ((1, lookup.records()), (2, lookup.v2_records())):
+            cases = []
+            for status, code in (("unavailable", "existing-hooks"), ("unavailable", "unsupported-api"),
+                                 ("refused", "install")):
+                observer = {"v": version, "phase": "observer", "status": status, "code": code}
+                if version == 2:
+                    observer["not_found"] = {"status": "unavailable", "code": "observer-unavailable"}
+                cases.append(("observer-" + code, [
+                    original[0], observer,
+                    {"v": version, "phase": "post", "status": "unavailable", "code": "observer-unavailable"},
+                ]))
+            for code in ("input-limit", "encoding", "snapshot"):
+                observer = {"v": version, "phase": "observer", "status": "unavailable", "code": "roots-refused"}
+                if version == 2:
+                    observer["not_found"] = {"status": "unavailable", "code": "observer-unavailable"}
+                cases.append(("roots-" + code, [
+                    {"v": version, "phase": "roots", "status": "refused", "code": code}, observer,
+                    {"v": version, "phase": "post", "status": "unavailable", "code": "observer-unavailable"},
+                ]))
+            for count, status, codes in (
+                (2, "unavailable", ("no-pre", "post-without-pre")), (2, "refused", ("callback",)),
+                (3, "unavailable", ("no-post", "nested-target")),
+                (3, "refused", ("command-type", "module-path-limit", "callback")),
+            ) + (() if version == 1 else (
+                (4, "unavailable", ("no-post", "nested-target")),
+                (4, "refused", ("command-type", "module-path-limit", "callback")),
+            )):
+                for code in codes:
+                    cases.append((f"post-{count}-{code}", original[:count] + [
+                        {"v": version, "phase": "post", "status": status, "code": code},
+                    ]))
+            if version == 2:
+                for status, code in (("unavailable", "existing-hook"), ("unavailable", "unsupported-api"),
+                                     ("refused", "install")):
+                    records = copy.deepcopy(original)
+                    records.pop(3)
+                    records[1]["not_found"] = {"status": status, "code": code}
+                    cases.append(("negative-hook-" + code, records))
+            for name, records in cases:
+                for count in range(1, len(records) + 1):
+                    prefix = records[:count]
+                    refused = any(record["status"] == "refused"
+                                  or record.get("not_found", {}).get("status") == "refused" for record in prefix)
+                    evidence = "refused" if refused else "inconclusive"
+                    with self.subTest(case=f"v{version}-{name}-prefix-{count}"), \
+                            self.parent(lookup_data=lookup.encode(prefix)) as (root, _, _, _):
+                        code, report = self.invoke(root, require_prepared=True)
+                        self.assertEqual((1, "failed" if refused else "inconclusive", "passed", evidence),
+                                         (code, report["status"], report["target_status"], report["lookup_evidence"]))
+                        self.assertEqual(self.record(), report["target"])
+                        projection = report["carriers"]["lookup"]
+                        self.assertNotEqual("refused", projection["status"])
+                        self.assertEqual(json.loads(qualification.lookup_diagnostic_json(root, "absent")), projection)
+                        self.assertEqual(prefix[1:], projection["records"][1:])
+                        self.assertIs(projection["capsule_complete"], prefix[-1]["phase"] == "post")
+
+    def test_terminal_observed_lookup_with_unavailable_timing_or_provenance_is_inconclusive(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        cases = []
+        for name, start, negative, end, elapsed in (
+            ("missing-pre-time", None, 15, 20, None),
+            ("missing-negative-time", 10, None, 20, 10),
+            ("missing-post-time", 10, 15, None, None),
+            ("all-times-unavailable", None, None, None, None),
+        ):
+            records = lookup.v2_records()
+            records[2]["ms"], records[3]["ms"] = start, negative
+            records[-1].update(ms=end, lookup_ms=elapsed)
+            cases.append((name, records))
+        unknown_module = lookup.v2_records()
+        unknown_module[-1].update(module_kind="unknown", module_sha256=None)
+        cases.append(("module-path-unavailable", unknown_module))
+        for name, records in cases:
+            with self.subTest(case=name), self.parent(lookup_data=lookup.encode(records)) as (root, _, _, _):
+                code, report = self.invoke(root, require_prepared=True)
+                projection = report["carriers"]["lookup"]
+                self.assertEqual((1, "inconclusive", "passed", "inconclusive"),
+                                 (code, report["status"], report["target_status"], report["lookup_evidence"]))
+                self.assertEqual(self.record(), report["target"])
+                self.assertEqual("observed", projection["status"])
+                self.assertIs(projection["capsule_complete"], True)
+                self.assertEqual(records[1:], projection["records"][1:])
+
+    def test_lookup_parse_refusal_and_read_error_preserve_child_pass_without_success(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        valid = lookup.encode(lookup.v2_records())
+        for name, data, error in (
+            ("malformed", b"{bad\n", "invalid-json"),
+            ("duplicate-version-in-five-record-header", valid.replace(b'"v":2', b'"v":2,"v":2', 1), "record-count"),
+            ("duplicate-nested", valid.replace(b'"not_found":{"status":"armed"}',
+                                              b'"not_found":{"status":"armed","status":"armed"}'), "duplicate-json-key"),
+            ("partial-line", valid[:-1], "partial-line"),
+            ("record-shape", valid.replace(b'"ms":15', b'"ms":15,"private":"' + MARKER.encode() + b'"'), "record-shape"),
+            ("file-limit", b"x" * 8193, "file-limit"),
+        ):
+            with self.subTest(case=name), self.parent(lookup_data=data) as (root, _, _, _):
+                code, report = self.invoke(root, require_prepared=True)
+                self.assertEqual((1, "failed", "passed", "refused"),
+                                 (code, report["status"], report["target_status"], report["lookup_evidence"]))
+                self.assertEqual(self.record(), report["target"])
+                self.assertEqual(error, report["carriers"]["lookup"]["code"])
+                self.assertNotIn("records", report["carriers"]["lookup"])
+        with self.parent(lookup_data=valid) as (root, _, _, _):
+            original = qualification.diagnostic_bytes
+
+            def read(path, relative, limit):
+                if relative == qualification.LOOKUP:
+                    raise PermissionError(MARKER)
+                return original(path, relative, limit)
+
+            with mock.patch.object(qualification, "diagnostic_bytes", side_effect=read):
+                code, report = self.invoke(root, require_prepared=True)
+                projection = json.loads(qualification.lookup_diagnostic_json(root, "absent"))
+            self.assertEqual((1, "failed", "passed", "refused"),
+                             (code, report["status"], report["target_status"], report["lookup_evidence"]))
+            self.assertEqual(self.record(), report["target"])
+            self.assertEqual(projection, report["carriers"]["lookup"])
+            self.assertEqual(("unavailable", "read-error"), (projection["status"], projection["code"]))
+
+    def test_lookup_evidence_never_supersedes_real_child_or_owner_failures(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        for evidence, data in (("inconclusive", lookup.encode(lookup.v2_records()[:4])),
+                               ("complete-observed", lookup.encode(lookup.v2_records()))):
+            for outcome in ("failures", "errors", "skipped", "expectedFailures", "unexpectedSuccesses"):
+                exception = qualification.shell_focus_exception(AssertionError(MARKER), self.fixture.budget())
+                result = self.result(1, **{
+                    outcome: 1, "exception": exception if outcome in ("failures", "errors") else None,
+                })
+                with self.subTest(case=f"child-{outcome}-{evidence}"), \
+                        self.parent(result, lookup_data=data) as (root, _, _, _):
+                    code, report = self.invoke(root, require_prepared=True)
+                    self.assertEqual((1, "failed", "failed", evidence),
+                                     (code, report["status"], report["target_status"], report["lookup_evidence"]))
+                    self.assertEqual(json.loads(result.stdout), report["target"])
+            for fault in ("output", "timeout"):
+                with self.subTest(case=f"owner-{fault}-{evidence}"), \
+                        self.parent(lookup_data=data) as (root, budget, _, _):
+                    run = budget.run.side_effect
+                    error = budget.OutputExceeded() if fault == "output" else budget.BudgetExceeded()
+
+                    def fail(*args, **kwargs):
+                        run(*args, **kwargs)
+                        raise error
+
+                    budget.run.side_effect = fail
+                    code, report = self.invoke(root, require_prepared=True)
+                    self.assertEqual((1, "failed", "unavailable", evidence),
+                                     (code, report["status"], report["target_status"], report["lookup_evidence"]))
+                    self.assertIsNone(report["target"])
+                    self.assertEqual("output-budget-exceeded" if fault == "output" else "work-budget-exceeded",
+                                     report["error"]["kind"])
+
+    def test_output_projection_rejects_raw_oversized_duplicate_or_nonexact_child_output(self):
+        original = self.result()
+        outputs = (
+            MARKER.encode(), b"x" * 4097 + b"\n", original.stdout * 2,
+            original.stdout.replace(b'"tests_run":1', b'"tests_run":1,"tests_run":1'),
+            original.stdout[:-1], original.stdout + b"\x1b", b'{"v":true}\n',
+        )
+        for output in outputs:
+            result = subprocess.CompletedProcess([], 0, output, b"")
+            with self.subTest(size=len(output)), self.parent(result) as (root, _, _, _):
+                code, report = self.invoke(root, require_prepared=True)
+                self.assertEqual(1, code)
+                self.assertEqual("failed", report["status"])
+                self.assertEqual("unavailable", report["target_status"])
+                self.assertIsNone(report["target"])
+                self.assertEqual("helper-settled", report["owner_release"])
+        with self.parent(subprocess.CompletedProcess([], 0, original.stdout, MARKER.encode())) as (root, _, _, _):
+            code, report = self.invoke(root, require_prepared=True)
+            self.assertEqual(1, code)
+            self.assertEqual("failed", report["status"])
+            self.assertEqual("unavailable", report["target_status"])
+            self.assertIsNone(report["target"])
+
+    def test_output_then_work_exception_and_cleanup_supersession_keep_real_unknown_settlement(self):
+        for fault in ("output", "timeout", "assignment", "capture", "cleanup", "interrupt"):
+            with self.subTest(fault=fault), self.parent() as (root, budget, _, _):
+                error = budget.OutputExceeded() if fault == "output" else (
+                    budget.BudgetExceeded() if fault == "timeout" else
+                    KeyboardInterrupt(MARKER) if fault == "interrupt" else OSError(MARKER))
+                if fault == "cleanup":
+                    error.__cause__ = budget.OutputExceeded()
+                budget.run.side_effect = error
+                with mock.patch.object(qualification, "diagnostic_bytes", side_effect=FileNotFoundError) as reader:
+                    code, report = self.invoke(root, require_prepared=True)
+                self.assertEqual(1, code)
+                self.assertIsNone(report["target"])
+                self.assertEqual("unavailable", report["error"]["capture"]["status"])
+                self.assertIsNone(report["error"]["capture_from_chain_index"])
+                self.assertEqual("helper-settled" if fault in ("output", "timeout") else "unconfirmed",
+                                 report["owner_release"])
+                if fault not in ("output", "timeout"):
+                    reader.assert_not_called()
+                    self.assertIsNone(report["carriers"])
+                    self.assertEqual("unavailable", report["lookup_evidence"])
+                self.assertEqual("output-budget-exceeded" if fault == "output" else (
+                    "work-budget-exceeded" if fault == "timeout" else
+                    "unexpected-error" if fault == "interrupt" else "process-capture-or-cleanup-error"),
+                    report["error"]["kind"])
+                if fault == "cleanup":
+                    self.assertEqual(["process-capture-or-cleanup-error", "output-budget-exceeded"],
+                                     report["error"]["chain"])
+
+    def test_available_capture_cause_is_preserved_without_raw_messages_and_cycles_are_bounded(self):
+        budget = self.fixture.budget()
+        capture = {"schema": "pennilogic.process-budget-capture-state/1", "status": "observed", "scope": "snapshot",
+                   "complete": False, "mode": "separate",
+                   "stdout": {"bytes": 1, "sha256": hashlib.sha256(b"x").hexdigest()},
+                   "stderr": {"bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()}}
+        budget.capture_observation.return_value = "process_budget_capture_state=" + json.dumps(
+            capture, sort_keys=True, separators=(",", ":"))
+        primary = budget.BudgetExceeded()
+        error = OSError(MARKER)
+        error.__context__ = primary
+        projected = qualification.shell_focus_exception(error, budget)
+        qualification.shell_focus_exception_shape(projected)
+        self.assertEqual(capture, projected["capture"])
+        self.assertEqual(1, projected["capture_from_chain_index"])
+        primary.__cause__ = error
+        projected = qualification.shell_focus_exception(error, budget)
+        self.assertEqual(2, len(projected["chain"]))
+        self.assertIs(projected["chain_truncated"], True)
+        self.assertNotIn(MARKER, json.dumps(projected))
+        for mutate in (
+            lambda v: v.update(kind=MARKER),
+            lambda v: v.update(code=MARKER),
+            lambda v: v.update(chain=[MARKER]),
+            lambda v: v.update(capture={"raw": MARKER}),
+            lambda v: v.update(capture_from_chain_index=0),
+            lambda v: v.update(capture_from_chain_index=True),
+        ):
+            value = copy.deepcopy(projected)
+            mutate(value)
+            with self.subTest(mutation=mutate), self.assertRaises(ValueError):
+                qualification.shell_focus_exception_shape(value)
+
+    def test_fresh_output_area_refuses_all_existing_objects_without_deleting_anything(self):
+        for kind in ("directory", "file"):
+            with self.subTest(kind=kind), self.parent() as (root, budget, _, _):
+                path = root / "build" / "diagnostics"
+                if kind == "directory":
+                    path.mkdir()
+                    marker = path / "required-suite-evidence"
+                    marker.write_text(MARKER)
+                else:
+                    marker = path
+                    path.write_text(MARKER)
+                code, report = self.invoke(root, require_prepared=True)
+                self.assertEqual(1, code)
+                self.assertEqual("not-started", report["owner_release"])
+                self.assertIsNone(report["owned_call_elapsed_ns"])
+                self.assertEqual(MARKER, marker.read_text())
+                budget.run.assert_not_called()
+        with self.parent() as (root, budget, _, _):
+            real = Path.lstat
+
+            def reparse(path, *args, **options):
+                value = real(path, *args, **options)
+                return SimpleNamespace(st_mode=value.st_mode, st_file_attributes=0x400) if path == root / "build" else value
+
+            with mock.patch.object(Path, "lstat", autospec=True, side_effect=reparse):
+                code, _ = self.invoke(root, require_prepared=True)
+            self.assertEqual(1, code)
+            budget.run.assert_not_called()
+
+    def test_missing_preparation_and_wrong_helper_fail_before_any_owner_call(self):
+        with self.parent() as (root, budget, _, _):
+            code, report = self.invoke(root)
+            self.assertEqual(1, code)
+            self.assertEqual("not-started", report["owner_release"])
+            self.assertEqual("focus-requires-prepared", report["error"]["code"])
+            budget.run.assert_not_called()
+        with tempfile.TemporaryDirectory(prefix="focus-pinned-source-") as temporary:
+            root = Path(temporary)
+            (root / "scripts").mkdir()
+            (root / "scripts" / "process_budget.py").write_text("raise RuntimeError('must not import')")
+            with self.assertRaisesRegex(ValueError, "observer-budget-source"):
+                qualification.observer_budget_module(root)
+        self.assertEqual((30820, "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"),
+                         qualification.SHELL_FOCUS_SOURCES["scripts/process_budget.py"])
+        self.assertEqual(4, len(qualification.SHELL_FOCUS_SOURCES))
+        self.assertIsNone(qualification.shell_focus_exception(qualification.Refused(MARKER), None)["code"])
+
+    def test_source_closure_is_exact_and_fixed_child_binds_controller_without_execution(self):
+        with tempfile.TemporaryDirectory(prefix="focus-synthetic-source-") as temporary:
+            root = Path(temporary)
+            path = root / "scripts" / "qualify_windows.py"
+            path.parent.mkdir()
+            data = b"raise RuntimeError('synthetic controller, never execute')\n"
+            path.write_bytes(data)
+            temporary = root / "private-temp"
+            temporary.mkdir()
+            command = qualification.shell_focus_command(root, {"TEMP": str(temporary)})
+            self.assertEqual([sys.executable, "-I", "-S", "-B", "-X"], command[:5])
+            self.assertEqual(["pycache_prefix=" + str(temporary / "api106-python-cache"), "-c"], command[5:7])
+            self.assertEqual(8, len(command))
+            self.assertIn(hashlib.sha256(data).hexdigest(), command[-1])
+            self.assertIn("n['shell_focus_child'](p.parents[1])", command[-1])
+            self.assertNotIn("powershell.exe", command[-1])
+            self.assertEqual([], list((temporary / "api106-python-cache").iterdir()))
+            with self.assertRaises(FileExistsError):
+                qualification.shell_focus_command(root, {"TEMP": str(temporary)})
+            pins = {"scripts/qualify_windows.py": (len(data), hashlib.sha256(data).hexdigest())}
+            with mock.patch.object(qualification, "SHELL_FOCUS_SOURCES", pins):
+                self.assertEqual({"scripts/qualify_windows.py": {
+                    "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}}, qualification.shell_focus_sources(root))
+                path.write_bytes(data.replace(b"never", b"NEVER"))
+                with self.assertRaisesRegex(ValueError, "focus-source-binding"):
+                    qualification.shell_focus_sources(root)
+
+    def test_child_runs_one_synthetic_original_identity_first_and_keeps_seam_none(self):
+        calls = []
+
+        def only(case):
+            calls.append(case.id())
+
+        name = qualification.SHELL_FOCUS_TARGET.rsplit(".", 1)[1]
+        case = type("ProcessBudgetTest", (unittest.TestCase,), {"__module__": "test_money_mutation", name: only})
+        module = SimpleNamespace(ProcessBudgetTest=case, APPROVED_SHELL_PAIR_ENCLOSURE=None,
+                                 process_budget=self.fixture.budget())
+        raw = io.BytesIO()
+        output = io.TextIOWrapper(raw, encoding="ascii", newline="\r\n", write_through=True)
+        with mock.patch.object(qualification, "shell_focus_module", return_value=module), \
+                mock.patch.object(qualification, "shell_focus_sources"), contextlib.redirect_stdout(output):
+            self.assertEqual(0, qualification.shell_focus_child(Path("synthetic-only")))
+        self.assertEqual([qualification.SHELL_FOCUS_TARGET], calls)
+        self.assertNotIn(b"\r", raw.getvalue())
+        record, passed = qualification.shell_focus_result(subprocess.CompletedProcess(
+            [], 0, raw.getvalue(), b""))
+        output.close()
+        self.assertTrue(passed)
+        self.assertEqual(1, record["tests_run"])
+        for count in (0, 2):
+            with self.subTest(count=count), mock.patch.object(qualification, "shell_focus_module", return_value=module), \
+                    mock.patch.object(unittest.TestLoader, "loadTestsFromName",
+                                      return_value=unittest.TestSuite([case(name) for _ in range(count)])):
+                with self.assertRaisesRegex(ValueError, "focus-target-count"):
+                    qualification.shell_focus_child(Path("synthetic-only"))
+
+    def test_original_module_import_and_seam_are_verified_without_running_the_api_target(self):
+        with tempfile.TemporaryDirectory(prefix="focus-inert-import-") as temporary:
+            root = Path(temporary)
+
+            def module():
+                value = ModuleType("test_money_mutation")
+                value.__file__ = str(root / "scripts" / "tests" / "test_money_mutation.py")
+                value.SCRIPTS, value.APPROVED_SHELL_PAIR_ENCLOSURE = root / "scripts", None
+                for name, relative in (("mutation", "money_mutation.py"), ("quality", "quality.py"),
+                                       ("process_budget", "process_budget.py")):
+                    setattr(value, name, SimpleNamespace(__file__=str(root / "scripts" / relative)))
+                return value
+
+            for mutation in (None, "seam", "identity", "scripts", "import"):
+                value = module()
+                if mutation == "seam":
+                    value.APPROVED_SHELL_PAIR_ENCLOSURE = mock.Mock()
+                elif mutation == "identity":
+                    value.__name__ = "wrong_module"
+                elif mutation == "scripts":
+                    value.SCRIPTS = root
+                elif mutation == "import":
+                    value.quality.__file__ = str(root / "other.py")
+                spec = mock.Mock(name="inert_spec")
+                spec.name = "test_money_mutation"
+                with self.subTest(mutation=mutation), mock.patch.dict(sys.modules, {}, clear=False), \
+                        mock.patch.object(qualification, "shell_focus_sources"), \
+                        mock.patch.object(importlib.util, "spec_from_file_location", return_value=spec), \
+                        mock.patch.object(importlib.util, "module_from_spec", return_value=value):
+                    sys.modules.pop("test_money_mutation", None)
+                    if mutation is None:
+                        self.assertIs(value, qualification.shell_focus_module(root))
+                        with self.assertRaisesRegex(ValueError, "focus-preexisting-test-module"):
+                            qualification.shell_focus_module(root)
+                    else:
+                        with self.assertRaises(ValueError):
+                            qualification.shell_focus_module(root)
+
+    def test_focus_runtime_requires_observed_patch_and_its_own_manual_job_identity(self):
+        for fault in (None, "vs2026-image", "job", "event", "selection", "observed-version", "selected-version", "image"):
+            with self.subTest(fault=fault), self.fixture.runtime_fixture() as (root, budget, environment):
+                environment.update(GITHUB_JOB="api106-shell-focus", PENNILOGIC_API106_SHELL_FOCUS="true",
+                                   PENNILOGIC_API106_PYTHON_VERSION="3.14.8", ImageOS="win25", ImageVersion="20261012.1.0")
+                if fault == "vs2026-image":
+                    environment["ImageOS"] = "win25-vs2026"
+                if fault in ("job", "event", "selection", "selected-version", "image"):
+                    field, value = {
+                        "job": ("GITHUB_JOB", "windows"), "event": ("GITHUB_EVENT_NAME", "push"),
+                        "selection": ("PENNILOGIC_API106_SHELL_FOCUS", "True"),
+                        "selected-version": ("PENNILOGIC_API106_PYTHON_VERSION", "3.14.3"),
+                        "image": ("ImageVersion", MARKER),
+                    }[fault]
+                    environment[field] = value
+                selected = {"python": environment["PENNILOGIC_API106_PYTHON"],
+                            "git": environment["PENNILOGIC_API106_GIT"],
+                            "java": str(Path(environment["JAVA_HOME"]) / "bin" / "java.exe")}
+                budget.resolve_command.side_effect = lambda command, unused: [selected[command[0]]]
+                with mock.patch.dict(qualification.os.environ, environment, clear=True), \
+                        mock.patch.object(qualification.sys, "version_info", (3, 14, 3) if fault == "observed-version" else (3, 14, 8)):
+                    if fault not in (None, "vs2026-image"):
+                        with self.assertRaises(ValueError):
+                            qualification.shell_focus_runtime(root, budget)
+                        continue
+                    _, report = qualification.shell_focus_runtime(root, budget)
+                    self.assertEqual("3.14.8", report["python_version"])
+                    self.assertEqual("runner-metadata-only", report["image_evidence"])
+                    self.assertEqual({"python", "cmd", "powershell"}, set(report["images"]))
+                    self.assertEqual("unavailable", report["historical_image_equivalence"])
+                    self.assertEqual("not-claimed", report["whole_checkout_equivalence"])
+                    self.assertNotIn(str(root), json.dumps(report))
+                    self.assertNotIn(environment["PENNILOGIC_API106_PYTHON"], json.dumps(report))
+                    with self.assertRaisesRegex(ValueError, "observer-job-context"):
+                        qualification.observer_context(root)
+                    with self.assertRaises(FileExistsError):
+                        qualification.shell_focus_runtime(root, budget)
+                    self.assertEqual(1, len(list(Path(environment["RUNNER_TEMP"]).glob("api106-shell-focus-*"))))
+
+    def test_fixed_cli_is_mutually_exclusive_and_cannot_enter_required_or_pair_routes(self):
+        with mock.patch.object(qualification.sys, "platform", "win32"), \
+                mock.patch.object(qualification, "shell_focus", return_value=1) as focus, \
+                mock.patch.object(qualification, "qualify") as ordinary, \
+                mock.patch.object(qualification, "collect_observer_diagnostics") as pair, \
+                mock.patch.object(qualification.sys, "argv", ["qualify_windows.py", "--require-prepared", "--api106-shell-focus"]):
+            self.assertEqual(1, qualification.main())
+            focus.assert_called_once_with(qualification.ROOT, require_prepared=True)
+            ordinary.assert_not_called()
+            pair.assert_not_called()
+        for option in ("--api106-observer-pair", "--collect-api106-observer-pair", "--tests", "--budget"):
+            with self.subTest(option=option), mock.patch.object(qualification.sys, "argv", [
+                "qualify_windows.py", "--api106-shell-focus", option,
+            ]), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                qualification.main()
+            self.assertEqual(2, error.exception.code)
+
+    def test_full_focus_projection_preserves_bounded_lookup_without_admitting_bad_carriers(self):
+        lookup = WindowsShellLookupDiagnosticTests()
+        records = lookup.v2_records()
+        records[0]["roots"] = [
+            {"i": index, "kind": "unknown", "sha256": hashlib.sha256(str(index).encode("ascii")).hexdigest(),
+             "duplicate_of": None} for index in range(32)
+        ]
+        records[2]["ms"], records[3]["ms"] = 100000, 600000
+        records[4].update(ms=600000, lookup_ms=500000, command_type=256)
+        for data, expected in ((lookup.encode(records), 0), (MARKER.encode(), 1)):
+            with self.subTest(valid=expected == 0), self.parent() as (root, budget, _, _):
+                run = budget.run.side_effect
+
+                def completion(*args, **kwargs):
+                    result = run(*args, **kwargs)
+                    lookup.write_capsule(root, data)
+                    return result
+
+                budget.run.side_effect = completion
+                code, report = self.invoke(root, require_prepared=True)
+                self.assertEqual(expected, code)
+                if expected == 0:
+                    self.assertEqual(32, len(report["carriers"]["lookup"]["records"][0]["roots"]))
+                    self.assertEqual("observed", report["carriers"]["lookup"]["status"])
+                else:
+                    self.assertEqual("refused", report["carriers"]["lookup"]["status"])
+                    self.assertNotIn("records", report["carriers"]["lookup"])
+
+    def test_synthetic_child_failures_errors_skips_and_expected_outcomes_never_return_zero(self):
+        for outcome in ("failures", "errors", "skipped", "expectedFailures", "unexpectedSuccesses"):
+            def body(case):
+                if outcome in ("failures", "expectedFailures"):
+                    case.fail(MARKER)
+                elif outcome == "errors":
+                    raise OSError(MARKER)
+                elif outcome == "skipped":
+                    raise unittest.SkipTest(MARKER)
+
+            if outcome in ("expectedFailures", "unexpectedSuccesses"):
+                body = unittest.expectedFailure(body)
+            name = qualification.SHELL_FOCUS_TARGET.rsplit(".", 1)[1]
+            case = type("ProcessBudgetTest", (unittest.TestCase,), {"__module__": "test_money_mutation", name: body})
+            module = SimpleNamespace(ProcessBudgetTest=case, APPROVED_SHELL_PAIR_ENCLOSURE=None,
+                                     process_budget=self.fixture.budget())
+            raw = io.BytesIO()
+            with self.subTest(outcome=outcome), mock.patch.object(qualification, "shell_focus_module", return_value=module), \
+                    mock.patch.object(qualification, "shell_focus_sources"), \
+                    mock.patch.object(qualification.sys, "stdout", SimpleNamespace(buffer=raw)):
+                self.assertEqual(1, qualification.shell_focus_child(Path("synthetic-only")))
+            self.assertNotIn(MARKER.encode(), raw.getvalue())
+            record, passed = qualification.shell_focus_result(subprocess.CompletedProcess([], 1, raw.getvalue(), b""))
+            self.assertFalse(passed)
+            self.assertEqual(1, record[outcome])
+            self.assertEqual(1, record["tests_run"])
+
+    def test_child_record_short_write_and_flush_failure_cannot_return_a_passing_result(self):
+        name = qualification.SHELL_FOCUS_TARGET.rsplit(".", 1)[1]
+        case = type("ProcessBudgetTest", (unittest.TestCase,), {
+            "__module__": "test_money_mutation", name: lambda unused: None,
+        })
+        module = SimpleNamespace(ProcessBudgetTest=case, APPROVED_SHELL_PAIR_ENCLOSURE=None,
+                                 process_budget=self.fixture.budget())
+        for fault in ("short-write", "flush"):
+            output = mock.Mock()
+            output.write.side_effect = (lambda data: len(data) - 1) if fault == "short-write" else len
+            if fault == "flush":
+                output.flush.side_effect = OSError(MARKER)
+            with self.subTest(fault=fault), mock.patch.object(qualification, "shell_focus_module", return_value=module), \
+                    mock.patch.object(qualification, "shell_focus_sources"), \
+                    mock.patch.object(qualification.sys, "stdout", SimpleNamespace(buffer=output)), \
+                    self.assertRaises((ValueError, OSError)):
+                qualification.shell_focus_child(Path("synthetic-only"))
+            data, = output.write.call_args.args
+            self.assertLessEqual(len(data), 4096)
+            self.assertTrue(data.endswith(b"\n"))
+            self.assertNotIn(b"\r", data)
+            self.assertNotIn(MARKER.encode(), data)
 
 
 class WindowsObserverGitBindingTests(unittest.TestCase):

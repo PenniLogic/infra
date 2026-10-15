@@ -49,6 +49,31 @@ OBSERVER_RUNTIME_ENV = {
     "PENNILOGIC_API106_MONEY": "${{ steps.api106_money.outcome }}",
     "PENNILOGIC_API106_TEMP": "${{ runner.temp }}",
 }
+SHELL_FOCUS_INPUT = {
+    "description": "Run only the original approved-shell diagnostic in a separate job; never qualification",
+    "type": "boolean", "required": False, "default": False,
+}
+SHELL_FOCUS_CONDITION = "github.event_name == 'workflow_dispatch' && inputs.api106_shell_focus == true"
+
+
+def remove_shell_focus(case, value):
+    dispatch = value["on"]["workflow_dispatch"]
+    case.assertEqual({"inputs"}, set(dispatch))
+    case.assertEqual({"api106_observer_pair", "api106_shell_focus"}, set(dispatch["inputs"]))
+    focus = dispatch["inputs"]["api106_shell_focus"]
+    case.assertEqual(SHELL_FOCUS_INPUT, focus)
+    case.assertIs(False, focus["required"])
+    case.assertIs(False, focus["default"])
+    case.assertEqual({"ci", "windows", "ci-result", "api106-shell-focus"}, set(value["jobs"]))
+    job = support.generator.encoded(value["jobs"]["api106-shell-focus"]).encode("ascii")
+    case.assertEqual(7366, len(job))
+    case.assertEqual("76740d82b10dc59f571ca52b5963abb665023d8db534e27a2e7e6f84bac96c30",
+                     hashlib.sha256(job).hexdigest())
+    del dispatch["inputs"]["api106_shell_focus"]
+    del value["jobs"]["api106-shell-focus"]
+    case.assertEqual("1f44d7da097bbc3d9c0f9f50b16a33008737660bdfd7fdf9f87196f52f4fcd95",
+                     hashlib.sha256(support.generator.encoded(value).encode("ascii")).hexdigest())
+    return value
 
 
 def native_environment():
@@ -107,6 +132,7 @@ def remove_observer_runtime(case, value):
 
 
 def remove_observer_pair(case, value):
+    value = remove_shell_focus(case, value)
     value = remove_observer_runtime(case, value)
     case.assertEqual({"inputs": {"api106_observer_pair": {
         "description": "Opt in to the diagnostic observer pair; owning failures still fail CI",
@@ -173,6 +199,53 @@ def remove_native_steps(case, workflow, jobs=("ci", "windows")):
         steps[-1]["run"] = combined.replace(preparation, preparation + " --fetch")
         del steps[-5:-1]
     return support.generator.encoded(value)
+
+
+class ShellFocusReversalTests(unittest.TestCase):
+    def test_only_exact_focus_delta_is_removed_before_all_existing_reversals(self):
+        current = json.loads(support.generator.workflow("api"))
+        previous = remove_shell_focus(self, copy.deepcopy(current))
+        for name in ("ci", "windows", "ci-result"):
+            self.assertEqual(support.generator.encoded(current["jobs"][name]),
+                             support.generator.encoded(previous["jobs"][name]))
+        self.assertEqual(current["permissions"], previous["permissions"])
+        self.assertEqual({"contents": "read"}, current["permissions"])
+        self.assertEqual(["ci", "windows"], current["jobs"]["ci-result"]["needs"])
+        for name in ("ci", "windows", "api106-shell-focus"):
+            steps = current["jobs"][name]["steps"]
+            self.assertEqual([native_step(name != "ci"), native_step(name != "ci", phase=1)],
+                             [step for step in steps if step.get("name") in STEP_NAMES])
+            for step in steps:
+                if step.get("name") not in STEP_NAMES:
+                    self.assertNotIn(TOKEN_NAME, json.dumps(step))
+                    self.assertNotIn("${{ github.token }}", json.dumps(step))
+        remove_observer_pair(self, copy.deepcopy(current))
+        remove_native_steps(self, support.generator.encoded(current))
+
+    def test_focus_reversal_refuses_missing_extra_or_changed_input_job_and_required_workflow(self):
+        original = json.loads(support.generator.workflow("api"))
+        mutations = (
+            lambda v: v["on"]["workflow_dispatch"]["inputs"].pop("api106_shell_focus"),
+            lambda v: v["on"]["workflow_dispatch"]["inputs"].update(arbitrary={"type": "string"}),
+            lambda v: v["on"]["workflow_dispatch"]["inputs"]["api106_shell_focus"].update(type="string"),
+            lambda v: v["on"]["workflow_dispatch"]["inputs"]["api106_shell_focus"].update(default=True),
+            lambda v: v["on"]["workflow_dispatch"]["inputs"]["api106_shell_focus"].update(default=0),
+            lambda v: v["on"]["workflow_dispatch"]["inputs"]["api106_shell_focus"].update(required=0),
+            lambda v: v["jobs"].pop("api106-shell-focus"),
+            lambda v: v["jobs"].update(other=copy.deepcopy(v["jobs"]["api106-shell-focus"])),
+            lambda v: v["jobs"]["api106-shell-focus"].update({"if": "true"}),
+            lambda v: v["jobs"]["api106-shell-focus"].update({"continue-on-error": True}),
+            lambda v: v["jobs"]["api106-shell-focus"]["steps"][-1].update(run="echo accepted"),
+            lambda v: v["jobs"]["api106-shell-focus"]["steps"][-1]["env"].update(GH_TOKEN="${{ github.token }}"),
+            lambda v: v["jobs"]["ci-result"].update(needs=["ci"]),
+            lambda v: v["jobs"]["windows"].update({"timeout-minutes": 31}),
+            lambda v: v.update(permissions={"contents": "write"}),
+        )
+        for index, mutation in enumerate(mutations):
+            value = copy.deepcopy(original)
+            mutation(value)
+            with self.subTest(mutation=index), self.assertRaises(AssertionError):
+                remove_shell_focus(self, value)
 
 
 class NativeWorkflowTests(unittest.TestCase):

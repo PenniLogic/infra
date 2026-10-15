@@ -38,6 +38,24 @@ OBSERVER_BUDGET_BYTES = 30820
 OBSERVER_BUDGET_SHA256 = "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"
 OBSERVER_COMMAND_SECONDS = 270
 OBSERVER_CLOSED_SECONDS = 300
+SHELL_FOCUS_TARGET = "test_money_mutation.ProcessBudgetTest.test_approved_system_shell_survives_without_inheriting_ambient_path"
+SHELL_FOCUS_SOURCES = {
+    "scripts/tests/test_money_mutation.py": (235983, "c237505d6d986aa6fe98472ac874f92a4be62363fa7774723ea8cb9016d2fb72"),
+    "scripts/money_mutation.py": (24847, "b4e9ca3218d16af605537714b365962d94f40265d092bb5302538e7efb7de000"),
+    "scripts/quality.py": (33687, "725fac94b7c4496a265260503f5492acdc28d45e7690254f1328e596a11b42cd"),
+    "scripts/process_budget.py": (30820, "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"),
+}
+SHELL_FOCUS_REFUSALS = {
+    "focus-source-binding", "focus-preexisting-diagnostic-area", "focus-preexisting-test-module",
+    "focus-module-or-seam", "focus-import-identity", "focus-target-count", "focus-child-record-limit",
+    "focus-child-record-write", "focus-explicit-selection", "focus-python-comparison", "focus-image-metadata",
+    "focus-child-result", "focus-child-output", "focus-exception-shape", "focus-requires-prepared", "focus-report-limit",
+    "observer-job-context", "observer-workspace-identity", "observer-same-job-preparation", "observer-checkout-binding",
+    "observer-git-state-changed", "observer-python-selection", "observer-git-selection", "observer-java-selection",
+    "observer-runtime-path", "observer-runtime-shadowed", "observer-temporary-selection",
+    "observer-unadmitted-runtime-state", "observer-budget-source",
+    "reparse-path", "nonregular-path", "file-limit", "file-changed",
+}
 PYTHON_CASE = re.compile(rb"(test[A-Za-z0-9_]*) \(([A-Za-z_][A-Za-z0-9_.]*)\)(?: \.\.\. (.*))?")
 PYTHON_SUMMARY = re.compile(rb"Ran (\d+) tests? in [0-9.]+s")
 PYTHON_TERMINAL = re.compile(
@@ -965,7 +983,8 @@ def observer_enclosure_records(data):
     return records, complete
 
 
-def observer_context(root):
+def observer_context(root, *, shell_focus=False):
+    observer_require(type(shell_focus) is bool, "observer-job-context")
     for path in (root, *root.parents):
         metadata = path.lstat()
         observer_require(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
@@ -984,7 +1003,8 @@ def observer_context(root):
                          and os.environ.get("GITHUB_REPOSITORY_ID") == "1394134582"
                          and os.environ.get("GITHUB_REPOSITORY_OWNER_ID") == "335295566"
                          and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-                         and os.environ.get("GITHUB_JOB") == "windows", "observer-job-context")
+                         and os.environ.get("GITHUB_JOB") == ("api106-shell-focus" if shell_focus else "windows"),
+                         "observer-job-context")
         sha = os.environ.get("GITHUB_SHA", "")
         observer_require(re.fullmatch(r"[0-9a-f]{40}", sha) is not None, "observer-job-context")
         context.append(sha)
@@ -994,6 +1014,9 @@ def observer_context(root):
             "GITHUB_REPOSITORY_OWNER_ID", "GITHUB_JOB", "GITHUB_SHA",
         )), "observer-job-context")
         context.append("local-workspace-only")
+    if shell_focus:
+        observer_require(actions == "true", "observer-job-context")
+        context.append("api106-shell-focus")
     return hashlib.sha256(json.dumps(context, separators=(",", ":")).encode("ascii")).hexdigest()
 
 
@@ -1086,7 +1109,8 @@ def observer_java_version_matches(version, version_build, selected, release):
     return int(setup[2]) == patch * 100 + int(runtime[2])
 
 
-def observer_runtime_inputs(root, budget):
+def observer_runtime_inputs(root, budget, *, shell_focus=False):
+    observer_require(type(shell_focus) is bool, "observer-job-context")
     observer_require(os.environ.get("GITHUB_ACTIONS") == "true"
                      and os.environ.get("PENNILOGIC_API106_MONEY") == "success"
                      and os.environ.get("PENNILOGIC_API106_PREPARED") == "verified",
@@ -1143,7 +1167,8 @@ def observer_runtime_inputs(root, budget):
     temporary = observer_runtime_path(os.environ.get("PENNILOGIC_API106_TEMP"), directory=True)
     observer_require(temporary == observer_runtime_path(os.environ.get("RUNNER_TEMP"), directory=True)
                      and not temporary.is_relative_to(root), "observer-temporary-selection")
-    owned = temporary / ("api106-observer-" + observer_context(root))
+    context = observer_context(root, shell_focus=True) if shell_focus else observer_context(root)
+    owned = temporary / (("api106-shell-focus-" if shell_focus else "api106-observer-") + context)
     owned.mkdir()
     for name in ("home", "temp", "gradle"):
         (owned / name).mkdir()
@@ -1400,6 +1425,294 @@ def observer_failed_result_outcomes(root, primary, include_junit=False):
             observer_secondary_failure(primary, "captured-junit-outcome-report-unavailable")
 
 
+def shell_focus_sources(root):
+    for relative, (size, digest) in SHELL_FOCUS_SOURCES.items():
+        data = diagnostic_bytes(root, Path(relative), size)
+        observer_require(len(data) == size and hashlib.sha256(data).hexdigest() == digest, "focus-source-binding")
+    return {name: {"bytes": size, "sha256": digest} for name, (size, digest) in SHELL_FOCUS_SOURCES.items()}
+
+
+def shell_focus_absent(root):
+    observer_runtime_path(str(root / "build"), directory=True)
+    try:
+        (root / "build" / "diagnostics").lstat()
+    except FileNotFoundError:
+        return
+    raise Refused("focus-preexisting-diagnostic-area")
+
+
+def shell_focus_exception(error, budget, *, separate=True):
+    def kind(value):
+        if budget is not None and isinstance(value, budget.OutputExceeded):
+            return "output-budget-exceeded"
+        if budget is not None and isinstance(value, budget.BudgetExceeded):
+            return "work-budget-exceeded"
+        if isinstance(value, Refused):
+            return "admission-or-result-refused"
+        if isinstance(value, OSError):
+            return "process-capture-or-cleanup-error"
+        return "unexpected-error"
+
+    chain, seen, current = [], set(), error
+    capture, capture_index = dict(PROCESS_BUDGET_CAPTURE_UNAVAILABLE), None
+    while current is not None and len(chain) < 4 and id(current) not in seen:
+        seen.add(id(current))
+        if capture_index is None and budget is not None and isinstance(current, budget.BudgetExceeded):
+            observed = process_budget_capture_note(
+                budget.capture_observation(getattr(current, "streams", None), separate=separate).encode("ascii"))
+            if observed["status"] == "observed":
+                capture, capture_index = observed, len(chain)
+        chain.append(kind(current))
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    code = (error.args[0] if isinstance(error, Refused) and len(error.args) == 1
+            and type(error.args[0]) is str and len(error.args[0]) <= 64 and error.args[0] in SHELL_FOCUS_REFUSALS else None)
+    return {"kind": kind(error), "code": code, "chain": chain, "chain_truncated": current is not None,
+            "capture": capture, "capture_from_chain_index": capture_index}
+
+
+def shell_focus_module(root):
+    import importlib.util
+
+    shell_focus_sources(root)
+    observer_require("test_money_mutation" not in sys.modules, "focus-preexisting-test-module")
+    path = root / "scripts" / "tests" / "test_money_mutation.py"
+    spec = importlib.util.spec_from_file_location("test_money_mutation", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    observer_require(module.__name__ == "test_money_mutation" and Path(module.__file__) == path
+                     and module.SCRIPTS == root / "scripts"
+                     and module.APPROVED_SHELL_PAIR_ENCLOSURE is None, "focus-module-or-seam")
+    for imported, relative in ((module.mutation, "money_mutation.py"), (module.quality, "quality.py"),
+                               (module.process_budget, "process_budget.py")):
+        observer_require(Path(imported.__file__) == root / "scripts" / relative, "focus-import-identity")
+    shell_focus_sources(root)
+    return module
+
+
+def shell_focus_child(root):
+    import unittest
+
+    module = shell_focus_module(root)
+    loader = unittest.TestLoader()
+    suite = loader.loadTestsFromName(SHELL_FOCUS_TARGET.removeprefix("test_money_mutation."), module)
+    cases = list(suite)
+    observer_require(not loader.errors and suite.countTestCases() == len(cases) == 1
+                     and cases[0].id() == SHELL_FOCUS_TARGET, "focus-target-count")
+
+    class Result(unittest.TestResult):
+        observation = None
+
+        def addError(self, test, error):
+            self.observation = shell_focus_exception(error[1], module.process_budget, separate=False)
+            super().addError(test, error)
+
+        def addFailure(self, test, error):
+            self.observation = shell_focus_exception(error[1], module.process_budget, separate=False)
+            super().addFailure(test, error)
+
+    result = Result()
+    started = time.monotonic_ns()
+    suite.run(result)
+    elapsed = time.monotonic_ns() - started
+    shell_focus_sources(root)
+    observer_require(module.APPROVED_SHELL_PAIR_ENCLOSURE is None and result.testsRun == 1, "focus-target-count")
+    counts = {name: len(getattr(result, name)) for name in (
+        "failures", "errors", "skipped", "expectedFailures", "unexpectedSuccesses")}
+    record = {"v": 1, "event": "api106_shell_focus_target", "target": SHELL_FOCUS_TARGET,
+              "tests_run": result.testsRun, "elapsed_ns": elapsed, **counts, "exception": result.observation}
+    data = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
+    observer_require(len(data) <= 4096, "focus-child-record-limit")
+    observer_require(sys.stdout.buffer.write(data) == len(data), "focus-child-record-write")
+    sys.stdout.buffer.flush()
+    return int(not result.wasSuccessful() or any(counts.values()))
+
+
+def shell_focus_command(root, environment):
+    path = root / "scripts" / "qualify_windows.py"
+    source = observer_runtime_bytes(path, 1024 * 1024)
+    cache = observer_runtime_path(environment["TEMP"], directory=True) / "api106-python-cache"
+    cache.mkdir()
+    observer_runtime_path(str(cache), directory=True)
+    # The fixed child rebinds its controller before importing the unchanged target.
+    bootstrap = (
+        "import hashlib,pathlib,sys;"
+        "p=pathlib.Path(" + repr(str(path)) + ");"
+        "f=p.open('rb');b=f.read(" + str(len(source) + 1) + ");f.close();"
+        "(len(b)==" + str(len(source)) + " and hashlib.sha256(b).hexdigest()=="
+        + repr(hashlib.sha256(source).hexdigest()) + ") or sys.exit(1);"
+        "n={'__name__':'api106_fixed_shell_focus','__file__':str(p)};"
+        "exec(compile(b,str(p),'exec'),n);sys.exit(n['shell_focus_child'](p.parents[1]))"
+    )
+    return [sys.executable, "-I", "-S", "-B", "-X", "pycache_prefix=" + str(cache), "-c", bootstrap]
+
+
+def shell_focus_runtime(root, budget):
+    observer_require(os.environ.get("PENNILOGIC_API106_SHELL_FOCUS") == "true", "focus-explicit-selection")
+    context = observer_context(root, shell_focus=True)
+    observer_require(sys.version_info[:3] == (3, 14, 8)
+                     and os.environ.get("PENNILOGIC_API106_PYTHON_VERSION") == "3.14.8", "focus-python-comparison")
+    image_os, image_version = os.environ.get("ImageOS"), os.environ.get("ImageVersion", "")
+    observer_require(image_os in ("win25", "win25-vs2026")
+                     and re.fullmatch(r"[0-9]{8}\.[0-9]{1,4}\.[0-9]{1,4}", image_version) is not None,
+                     "focus-image-metadata")
+    supplied, directories = observer_runtime_inputs(root, budget, shell_focus=True)
+    environment = budget.environment(supplied=supplied, runtime_dirs=directories)
+    for name, expected in (("python", Path(sys.executable)), ("git", directories[0] / "git.exe"),
+                           ("java", Path(supplied["JAVA_HOME"]) / "bin" / "java.exe")):
+        observer_require(Path(budget.resolve_command([name], environment)[0]) == expected, "observer-runtime-shadowed")
+    system = Path(environment["COMSPEC"]).parent
+    images = {}
+    for name, path in (("python", Path(sys.executable)), ("cmd", system / "cmd.exe"),
+                       ("powershell", system / "WindowsPowerShell" / "v1.0" / "powershell.exe")):
+        observer_runtime_path(str(path), directory=False)
+        data = observer_runtime_bytes(path, 32 * 1024 * 1024)
+        images[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    return environment, {
+        "context_sha256": context, "checkout": os.environ["PENNILOGIC_API106_CHECKOUT"],
+        "tree": os.environ["PENNILOGIC_API106_TREE"], "python_version": "3.14.8",
+        "python_matches_comparison": True, "image_os": image_os, "image_version": image_version,
+        "image_metadata_sha256": hashlib.sha256((image_os + "\n" + image_version).encode("ascii")).hexdigest(),
+        "image_evidence": "runner-metadata-only", "historical_image_equivalence": "unavailable",
+        "images": images, "fixture_source_commit": "6ccd4eda3f424f22825ef20d27622005ed3f1144",
+        "whole_checkout_equivalence": "not-claimed",
+    }
+
+
+def shell_focus_result(result):
+    observer_require(type(result.returncode) is int and result.returncode in (0, 1)
+                     and type(result.stdout) is bytes and type(result.stderr) is bytes, "focus-child-result")
+    data = result.stdout
+    observer_require(len(data) <= 4096 and data.isascii() and b"\r" not in data and b"\x1b" not in data
+                     and data.endswith(b"\n") and data.count(b"\n") == 1 and result.stderr == b"", "focus-child-output")
+    record = json.loads(data, object_pairs_hook=lookup_json_object)
+    counters = ("failures", "errors", "skipped", "expectedFailures", "unexpectedSuccesses")
+    observer_require(type(record) is dict and set(record) == {
+        "v", "event", "target", "tests_run", "elapsed_ns", "exception", *counters,
+    }, "focus-child-result")
+    observer_require(type(record["v"]) is int and record["v"] == 1
+                     and record["event"] == "api106_shell_focus_target" and record["target"] == SHELL_FOCUS_TARGET
+                     and type(record["tests_run"]) is int and record["tests_run"] == 1
+                     and observer_integer(record["elapsed_ns"], 0, 150_000_000_000)
+                     and all(type(record[name]) is int and record[name] in (0, 1) for name in counters)
+                     and sum(record[name] for name in counters) <= 1, "focus-child-result")
+    failure = any(record[name] for name in counters)
+    observer_require(result.returncode == int(failure), "focus-child-result")
+    exception = record["exception"]
+    observer_require((exception is not None) == bool(record["errors"] or record["failures"]), "focus-child-result")
+    if exception is not None:
+        shell_focus_exception_shape(exception)
+    return record, not failure
+
+
+def shell_focus_exception_shape(value):
+    kinds = {"output-budget-exceeded", "work-budget-exceeded", "admission-or-result-refused",
+             "process-capture-or-cleanup-error", "unexpected-error"}
+    observer_require(type(value) is dict and set(value) == {
+        "kind", "code", "chain", "chain_truncated", "capture", "capture_from_chain_index",
+    } and type(value["kind"]) is str and value["kind"] in kinds
+                     and type(value["chain"]) is list and 1 <= len(value["chain"]) <= 4
+                     and all(type(item) is str and item in kinds for item in value["chain"])
+                     and value["chain"][0] == value["kind"] and type(value["chain_truncated"]) is bool,
+                     "focus-exception-shape")
+    observer_require(value["code"] is None or (
+        value["kind"] == "admission-or-result-refused" and type(value["code"]) is str
+        and value["code"] in SHELL_FOCUS_REFUSALS), "focus-exception-shape")
+    capture = process_budget_capture_note(
+        PROCESS_BUDGET_CAPTURE_PREFIX + json.dumps(value["capture"], sort_keys=True, separators=(",", ":")).encode("ascii"))
+    observer_require(capture == value["capture"], "focus-exception-shape")
+    index = value["capture_from_chain_index"]
+    observer_require((capture["status"] == "unavailable" and index is None) or (
+        capture["status"] == "observed" and observer_integer(index, 0, len(value["chain"]) - 1)
+        and value["chain"][index] in ("output-budget-exceeded", "work-budget-exceeded")), "focus-exception-shape")
+
+
+def shell_focus_lookup_evidence(lookup):
+    # The shared reader's terminal "observed" status does not establish availability.
+    records = lookup.get("records", [])
+    if (lookup["status"] == "refused" or lookup.get("code") == "read-error"
+            or any(record["status"] == "refused" or record.get("not_found", {}).get("status") == "refused"
+                   for record in records)):
+        return "refused"
+    phases = [record["phase"] for record in records]
+    if (lookup["status"] != "observed" or lookup["capsule_complete"] is not True
+            or phases not in (["roots", "observer", "pre", "post"],
+                              ["roots", "observer", "pre", "not-found", "post"])):
+        return "inconclusive"
+    for record in records:
+        if (record["status"] != ("armed" if record["phase"] == "observer" else "observed")
+                or ("not_found" in record and record["not_found"]["status"] != "armed")
+                or any(key in record and record[key] is None for key in ("ms", "lookup_ms"))):
+            return "inconclusive"
+    if records[-1]["module_kind"] == "unknown":
+        return "inconclusive"
+    return "complete-observed"
+
+
+def shell_focus(root, require_prepared=False):
+    report = {"event": "windows_shell_focus", "diagnostic_only": True, "status": "refused",
+              "work_seconds": 150, "single_cleanup_seconds": 10, "hard_end_to_end_deadline": False,
+              "interval_scope": "one-helper-call-not-preparation-admission-or-reporting",
+              "synchronous_calls_preempted": False, "inherit_tree": "shipped-default-false",
+              "owner_release": "not-started", "phase": "admission", "runtime": None, "target": None,
+              "target_status": "unavailable", "lookup_evidence": "unavailable",
+              "error": None, "capture": None, "carriers": None, "owned_call_elapsed_ns": None,
+              "native_qualification": False, "physical_cleanup_attestation": False}
+    budget, started, before = None, None, "absent"
+    try:
+        observer_require(require_prepared is True, "focus-requires-prepared")
+        observer_context(root, shell_focus=True)
+        shell_focus_absent(root)
+        sources = shell_focus_sources(root)
+        budget = observer_budget_module(root)
+        environment, report["runtime"] = shell_focus_runtime(root, budget)
+        report["runtime"]["sources"] = sources
+        command = shell_focus_command(root, environment)
+        (root / "build" / "diagnostics").mkdir()
+        report["phase"], report["owner_release"] = "owner", "unconfirmed"
+        started = time.monotonic_ns()
+        try:
+            result = budget.run(command, root, 150, capture=True, separate=True, env=environment)
+        except budget.OutputExceeded:
+            report["owner_release"] = "helper-settled"
+            raise
+        except budget.BudgetExceeded:
+            report["owner_release"] = "helper-settled"
+            raise
+        finally:
+            report["owned_call_elapsed_ns"] = time.monotonic_ns() - started
+        report["owner_release"], report["phase"] = "helper-settled", "result"
+        report["capture"] = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                             for name, data in (("stdout", result.stdout), ("stderr", result.stderr))
+                             if type(data) is bytes}
+        report["target"], passed = shell_focus_result(result)
+        report["target_status"] = "passed" if passed else "failed"
+        shell_focus_sources(root)
+        report["status"] = report["target_status"]
+    except (Exception, KeyboardInterrupt) as error:
+        # A cleanup error may replace the original budget error and have no captures.
+        report["error"] = shell_focus_exception(error, budget)
+        report["status"] = "failed"
+    if report["owner_release"] == "helper-settled":
+        try:
+            boundary = diagnostic_bytes(root, OBSERVER_FILES["required-boundary"][0], 7)
+            report["carriers"] = {"boundary": observer_boundary(boundary),
+                                  "lookup": json.loads(lookup_diagnostic_json(root, before))}
+            report["lookup_evidence"] = shell_focus_lookup_evidence(report["carriers"]["lookup"])
+            if report["lookup_evidence"] == "refused":
+                report["status"] = "failed"
+            elif report["lookup_evidence"] != "complete-observed" and report["status"] == "passed":
+                report["status"] = "inconclusive"
+        except (OSError, ValueError):
+            report["carriers"] = {"status": "unavailable"}
+            report["lookup_evidence"] = "refused"
+            report["status"] = "failed"
+    data = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    observer_require(len(data.encode("ascii")) + len(os.linesep) <= 16384, "focus-report-limit")
+    print(data, flush=True)
+    return 0 if report["status"] == "passed" else 1
+
+
 def qualify(root, require_prepared=False, api106_observer_pair=False):
     if api106_observer_pair and not require_prepared:
         raise Refused("observer-pair-requires-prepared")
@@ -1461,10 +1774,13 @@ def main(argv=None):
     observer = parser.add_mutually_exclusive_group()
     observer.add_argument("--api106-observer-pair", action="store_true", help="Explicit diagnostic owning-suite route")
     observer.add_argument("--collect-api106-observer-pair", action="store_true", help="Read only the settled fixed diagnostic files")
+    observer.add_argument("--api106-shell-focus", action="store_true", help="Explicit isolated single-target diagnostic, never qualification")
     args = parser.parse_args(argv)
     try:
         if sys.platform != "win32":
             raise Refused("windows-owning-suites-require-windows")
+        if args.api106_shell_focus:
+            return shell_focus(ROOT, require_prepared=args.require_prepared)
         if args.collect_api106_observer_pair:
             if args.require_prepared:
                 parser.error("collection does not accept --require-prepared")

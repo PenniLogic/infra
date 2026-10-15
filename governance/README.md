@@ -642,6 +642,95 @@ dispatched or published by this source change; the existing Windows holds and
 [Infra #22](https://github.com/PenniLogic/infra/issues/22)'s trusted-workflow
 identity/mandatory-absence gap remain open.
 
+### Default-off isolated approved-shell diagnostic (native execution held)
+
+The API-only Boolean `workflow_dispatch.inputs.api106_shell_focus` defaults to
+false. Its separate `api106-shell-focus` job requires both `workflow_dispatch`
+and typed `true`. It has no test-name, command, destination or budget input and
+no `continue-on-error`. The three required `ci`, `windows` and `ci-result` jobs,
+their dependencies, read-only permissions, full 557-test Windows suite, ordinary
+and observer-pair routes and existing deadlines are unchanged byte for byte.
+This optional job is not a replacement qualification or required-result bypass.
+The source regression removes only the exact pinned focus input/job before the
+existing observer/native reversals; any extra or changed input, job or required
+workflow byte is refused.
+
+The new job reuses the pinned checkout, actions, preparation and same-job
+Git/index/config, Java and runtime admission. Only this job selects and requires
+observed CPython **3.14.8**. It records bounded runner-image metadata and its
+digest, and byte counts/SHA-256s of the selected Python, system `cmd.exe` and
+Windows PowerShell images. Runner labels or metadata are not image equivalence
+or build/vendor attestation. Its job identity is admitted separately; the
+observer route still admits only `windows`. Its new runner-temp namespace and
+checkout `build/diagnostics` must be absent and non-reparse. No prior diagnostic
+directory/file or required-suite output is deleted, moved, overwritten or reused.
+
+`--api106-shell-focus --require-prepared` invokes a fixed isolated Python child.
+The child rebinds its controller bytes and uses a newly created private Python
+bytecode-cache prefix with bytecode writing disabled, so the local import closure
+does not consume existing ignored `.pyc` files. It imports the original
+`test_money_mutation` module and runs only
+`ProcessBudgetTest.test_approved_system_shell_survives_without_inheriting_ambient_path`,
+first, with the original module/SCRIPTS identity and pair seam `None`. The four
+unchanged test/import-closure bodies are individually size/hash-bound to API
+`6ccd4eda3f424f22825ef20d27622005ed3f1144`; this does not identify the new generated
+checkout as that old commit. Bare `Write-Output`, argv, environment, capture and
+the target's own 10-second work assertion remain unchanged. Count must be exactly
+one, and failures, errors, skips and expected/unexpected failures fail closed.
+
+The unchanged 30,820-byte `process_budget.py`, SHA-256
+`a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364`,
+is loaded through `observer_budget_module`. One fixed
+`run(command, root, 150, capture=True, separate=True, env=admitted_environment)`
+leaves `inherit_tree` at its shipped default `False` (Windows ownership is
+Job Object-based): **150 seconds work plus one shared
+10-second cleanup allowance**, not 150+5. Nested Windows Job assignment gates
+the real command; capture is bounded by the shipped combined 4 MiB limit.
+The reported monotonic interval surrounds only that helper call. Preparation,
+admission and reporting are outside it, and synchronous calls are checked when
+they return: this is not a new hard 160-second caller/job watchdog, application
+deadline, or 300/600-second acceptance claim.
+
+Only bounded redacted projections are emitted: the one-case result (at most
+4,096 bytes, written as binary ASCII plus one LF, without Windows text newline
+translation), safe exception categories/cause-context chain and available capture
+digests, and the final diagnostic report (at most 16,384 bytes). Raw traceback,
+output, environment, executable paths and diagnostic contents are not published.
+`OutputExceeded` is distinguished before `BudgetExceeded`; a cleanup exception
+may supersede either and may carry no capture. Unknown settlement is failure with
+`owner_release: unconfirmed`, unavailable carriers and no clean-release claim.
+Carriers are read only after the helper confirms its owned tree has settled.
+This is not system-wide physical cleanup or native acceptance.
+
+The focused report separates `target_status` (`passed`, `failed`, or `unavailable`
+when no valid child result was captured) from `lookup_evidence`. Overall `passed`
+and exit zero require the genuine child pass **and** `complete-observed` lookup
+evidence: validated roots, an armed observer, observed pre/post records, available
+timing samples and lookup duration, and available command/module classification.
+A v2 negative hook must be armed; its not-found event need not occur, but if
+present its observation and timing must be available. Observed absent roots,
+no command or no module remain facts, not missing observations; an unknown
+module path or null timing does not establish complete available evidence.
+
+Missing files, empty or any valid partial prefix, unavailable observer/hook
+metadata, and terminal `post` records with unavailable evidence produce
+`lookup_evidence: inconclusive`. With a genuine child pass the overall status is
+`inconclusive`, exit one, and the original passing child record is retained.
+Parser/read errors or explicit refused phases produce `lookup_evidence: refused`
+and an overall failure without relabeling the child. A terminal phase or the
+shared reader's `capsule_complete`/`observed` flags alone are insufficient.
+Real child, capture, owner or cleanup failures keep precedence; unread evidence
+remains `unavailable`. The shared observer/pair parsers and their partial,
+unavailable and nullable representations are unchanged.
+
+Canonical mock regressions are not live nested-Job or hosted-target qualification.
+The generated workflow, checker digest and qualifier must be adopted together
+only after independent review and later actual-commit registry/history binding.
+That binding is intentionally deferred for this local source candidate; the
+previous Java/SemVer binding does not cover the new diagnostic. No dispatch,
+publication, deployment/spend approval, full-suite/performance waiver or change
+to the existing native, parity, cleanup, protected and Infra #22 holds follows.
+
 ## Infra Windows/Linux ordinary qualification (owner transition held)
 
 Infra adds the same two parallel standard-hosted qualification jobs and always-running
