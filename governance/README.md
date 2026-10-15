@@ -610,13 +610,16 @@ the prior `d31994d6` binding cannot represent this reader. Full-history validati
 remains required, and a prebinding mismatch remains an honest failure, not a
 placeholder reference or an acceptance waiver.
 The observer-pair increment additionally changed the workflow and checker, so
-that old reader reference cannot bind it. The current Java/SemVer contract
-is bound separately to actual source `1ddc3434d8826605fc9dce7adb843d185dc92aaa`.
-Its historical workflow, checker and qualifier must exactly match current output.
-Prior `14af2187` and `02fdb18b` render the same workflow but retain the same
-operand-only qualifier. Reversing only the version-contract helper and exact
-release/selected comparison block reproduces both historical qualifiers byte
-for byte; other differences are refused.
+that old reader reference cannot bind it. The Java/SemVer contract was bound
+separately to actual source `1ddc3434d8826605fc9dce7adb843d185dc92aaa`.
+The current focused-diagnostic binding is described below. Reversing only its
+exact input/job and derived checker digest recovers the Java/SemVer workflow
+and checker; the qualifier from actual `1ddc3434` remains the version-contract
+historical control. Prior `14af2187` and `02fdb18b` render that same pre-focus
+workflow but retain the same operand-only qualifier. Reversing only the
+version-contract helper and exact
+release/selected comparison block from actual `1ddc3434` reproduces both
+historical qualifiers byte for byte; other differences are refused.
 Prior `865ae908` and `cc779064` render the same workflow but retain the same
 categorical qualifier without version operands. Removing only the bounded operand
 projection, optional version record and its argument from actual `14af2187`
@@ -719,17 +722,25 @@ metadata, and terminal `post` records with unavailable evidence produce
 Parser/read errors or explicit refused phases produce `lookup_evidence: refused`
 and an overall failure without relabeling the child. A terminal phase or the
 shared reader's `capsule_complete`/`observed` flags alone are insufficient.
-Real child, capture, owner or cleanup failures keep precedence; unread evidence
-remains `unavailable`. The shared observer/pair parsers and their partial,
-unavailable and nullable representations are unchanged.
+Real child, capture, owner or cleanup failures keep precedence. Unconfirmed-owner
+suppression leaves lookup evidence `unavailable`; a preceding boundary or
+collection error can classify it `refused` without proving that lookup was read.
+The shared observer/pair parsers and their partial, unavailable and nullable
+representations are unchanged.
 
 Canonical mock regressions are not live nested-Job or hosted-target qualification.
-The generated workflow, checker digest and qualifier must be adopted together
-only after independent review and later actual-commit registry/history binding.
-That binding is intentionally deferred for this local source candidate; the
-previous Java/SemVer binding does not cover the new diagnostic. No dispatch,
-publication, deployment/spend approval, full-suite/performance waiver or change
-to the existing native, parity, cleanup, protected and Infra #22 holds follows.
+The API registry now names actual local source commit
+`a5c572a23e9c90dfc6732c70d06eeedcd94f52fa`, not its DATA tree, a previous
+Java/SemVer reference or this later binding change. That commit must reproduce
+the complete current workflow, checker and qualifier. Exact focus reversal
+recovers the workflow/checker of `1ddc3434` and `47f8ac77`; their pinned
+qualifiers lack this diagnostic and cannot bind it. All 25 generated API bodies
+remain those of actual `a5c572a`. Generated workflow, checker digest and qualifier
+must still be adopted together only after separate producer/consumer review.
+This binding is local source/history evidence, not publication, adoption, native
+execution, automatic source trust or deployment/spend approval. No dispatch,
+full-suite/performance waiver or change to the existing native, parity, cleanup,
+protected and Infra #22 holds follows.
 
 ## Infra Windows/Linux ordinary qualification (owner transition held)
 

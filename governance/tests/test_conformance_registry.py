@@ -16,7 +16,7 @@ from pathlib import Path
 import conformance_support as support
 from conformance import generator as generator_module
 from conformance import registry, schema, steps
-from test_api_native_source_fetch import remove_observer_pair
+from test_api_native_source_fetch import remove_observer_pair, remove_shell_focus
 
 
 class SchemaValidatorTests(unittest.TestCase):
@@ -141,18 +141,18 @@ class RegistryTests(unittest.TestCase):
                     self.skipTest("commit not present in this (shallow) history")
                 self.assertEqual(support.generator.artifacts(name)[".github/workflows/ci.yml"].encode("utf-8"), rendered)
 
-    def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
-        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
-        self.assertEqual("1ddc3434d8826605fc9dce7adb843d185dc92aaa", entry["workflow_ref"])
-        rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], "api")
-        self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
-        self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
+    def api_source_ref(self, entry):
+        self.assertEqual("a5c572a23e9c90dfc6732c70d06eeedcd94f52fa", entry["workflow_ref"])
+        return entry["workflow_ref"]
+
+    @contextlib.contextmanager
+    def api_generator_at(self, ref):
         with tempfile.TemporaryDirectory(prefix="api-registry-source-") as temporary:
             root = Path(temporary)
             for relative in ("generate.py", "repository-profiles.json", "templates/check_repository.py",
                              "templates/api_ci_checker.py", "templates/qualify_windows.py"):
                 committed = subprocess.run(
-                    ["git", "--no-pager", "show", entry["workflow_ref"] + ":governance/" + relative],
+                    ["git", "--no-pager", "show", ref + ":governance/" + relative],
                     cwd=support.GOVERNANCE.parent, env=support.defects.probe_environment(),
                     capture_output=True, check=False, timeout=30,
                 )
@@ -160,10 +160,73 @@ class RegistryTests(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(committed.stdout)
+            yield root, generator_module.load(root / "generate.py", name="api_registry_source_" + ref)
+
+    def test_api_workflow_ref_exists_and_replays_the_current_reader_and_checker(self):
+        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
+        ref = self.api_source_ref(entry)
+        kind = subprocess.run(
+            ["git", "--no-pager", "cat-file", "-t", ref], cwd=support.GOVERNANCE.parent,
+            env=support.defects.probe_environment(), capture_output=True, check=False, timeout=30,
+        )
+        self.assertEqual(0, kind.returncode)
+        self.assertEqual(b"commit\n", kind.stdout)
+        rendered = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
+        self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
+        self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
+        with self.api_generator_at(ref) as (root, historical):
             self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(),
                              (root / "templates/qualify_windows.py").read_bytes())
-            historical = generator_module.load(root / "generate.py", name="api_registry_source")
             self.assertEqual(support.generator.checker("api"), historical.checker("api"))
+
+    def test_api_source_binding_rejects_data_tree_stale_and_placeholder_refs(self):
+        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
+        for case, ref in (
+            ("reviewed-data-tree-not-commit", "3a6c9d6006c28139204200058634862b0505dc2c"),
+            ("previous-semver-source", "1ddc3434d8826605fc9dce7adb843d185dc92aaa"),
+            ("previous-binding-commit", "47f8ac77155603f7b156c9ab214c36e95c26d6fb"),
+            ("missing-source", "0" * 40),
+            ("moving-head-placeholder", "HEAD"),
+        ):
+            with self.subTest(case=case), self.assertRaises(AssertionError):
+                self.api_source_ref({**entry, "workflow_ref": ref})
+
+    def api_before_shell_focus(self):
+        current = support.generator.workflow("api")
+        previous = support.generator.encoded(remove_shell_focus(self, json.loads(current)))
+        current_digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
+        self.assertEqual("b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e", current_digest)
+        previous_digest = hashlib.sha256(previous.encode("utf-8")).hexdigest()
+        checker = support.generator.checker("api")
+        self.assertEqual(1, checker.count(current_digest))
+        current_binding = 'API_CI_SHA256 = "' + current_digest + '"'
+        self.assertEqual(1, checker.count(current_binding))
+        previous_binding = 'API_CI_SHA256 = "' + previous_digest + '"'
+        return previous, checker.replace(current_binding, previous_binding, 1)
+
+    def test_previous_api_refs_cannot_bind_the_focused_diagnostic(self):
+        workflow, checker = self.api_before_shell_focus()
+        current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        self.assertEqual((97831, "5ea60d30e6ea09c640243a461746c393627b2390b98bffd4e473deb7a8723799"),
+                         (len(current), hashlib.sha256(current).hexdigest()))
+        for ref in ("1ddc3434d8826605fc9dce7adb843d185dc92aaa", "47f8ac77155603f7b156c9ab214c36e95c26d6fb"):
+            with self.subTest(ref=ref), self.api_generator_at(ref) as (root, historical):
+                self.assertNotEqual(support.generator.workflow("api"), historical.workflow("api"))
+                self.assertNotEqual(support.generator.checker("api"), historical.checker("api"))
+                self.assertEqual(workflow, historical.workflow("api"))
+                self.assertEqual(checker, historical.checker("api"))
+                for case, source, wrong_workflow in (
+                    ("current-checker-historical-workflow", support.generator.checker("api"), workflow),
+                    ("historical-checker-current-workflow", historical.checker("api"), support.generator.workflow("api")),
+                ):
+                    namespace = {"__name__": "api_registry_digest_control", "__file__": str(root / "check_repository.py")}
+                    exec(compile(source, "API historical checker control", "exec"), namespace)
+                    with self.subTest(case=case), self.assertRaisesRegex(ValueError, "API CI must match"):
+                        namespace["validate_workflow"](".github/workflows/ci.yml", wrong_workflow.encode("utf-8"))
+                qualifier = (root / "templates/qualify_windows.py").read_bytes()
+                self.assertNotEqual(current, qualifier)
+                self.assertEqual((78865, "31ab38c33e2c45c8bf324ebf55ff239a4a018ee68edd58bcafae52c5b00e5926"),
+                                 (len(qualifier), hashlib.sha256(qualifier).hexdigest()))
 
     def test_previous_api_refs_cannot_bind_the_writer_return_reader(self):
         current = remove_observer_pair(self, json.loads(support.generator.workflow("api")))
@@ -197,7 +260,7 @@ class RegistryTests(unittest.TestCase):
             "$git = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source"
         )
         previous = historical.workflow("api")
-        current = support.generator.workflow("api")
+        current, current_checker = self.api_before_shell_focus()
         self.assertEqual(1, previous.count(old_selection))
         self.assertEqual(1, current.count(new_selection))
         self.assertNotEqual(current, previous)
@@ -205,7 +268,6 @@ class RegistryTests(unittest.TestCase):
         previous_digest = hashlib.sha256(previous.encode("utf-8")).hexdigest()
         current_digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
         previous_checker = historical.checker("api")
-        current_checker = support.generator.checker("api")
         self.assertEqual(1, previous_checker.count(previous_digest))
         self.assertEqual(1, current_checker.count(current_digest))
         self.assertNotEqual(current_checker, previous_checker)
@@ -271,7 +333,7 @@ class RegistryTests(unittest.TestCase):
             with self.subTest(ref=ref):
                 previous = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
                 self.assertIsNotNone(previous, "the scalar-Git source must exist in real history")
-                self.assertEqual(support.generator.workflow("api").encode("utf-8"), previous)
+                self.assertEqual(self.api_before_shell_focus()[0].encode("utf-8"), previous)
                 qualifier = self.api_qualifier_at(ref)
                 self.assertNotEqual(categorical_qualifier, qualifier)
                 qualifiers.append(qualifier)
@@ -303,13 +365,14 @@ class RegistryTests(unittest.TestCase):
             with self.subTest(ref=ref):
                 workflow = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
                 self.assertIsNotNone(workflow, "the categorical-Java source must exist in real Git history")
-                self.assertEqual(support.generator.workflow("api").encode("utf-8"), workflow)
+                self.assertEqual(self.api_before_shell_focus()[0].encode("utf-8"), workflow)
                 qualifier = self.api_qualifier_at(ref)
                 self.assertNotEqual(current, qualifier)
                 self.assertEqual(categorical, qualifier)
 
     def test_previous_api_refs_cannot_bind_java_semver_contract(self):
-        current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        current = self.api_qualifier_at("1ddc3434d8826605fc9dce7adb843d185dc92aaa")
+        self.assertNotEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), current)
         operands = current
         for added, previous in (
             (br'''def observer_java_version_matches(version, version_build, selected, release):
@@ -358,7 +421,7 @@ class RegistryTests(unittest.TestCase):
             with self.subTest(ref=ref):
                 workflow = registry.render_workflow_at(support.GOVERNANCE.parent, ref, "api")
                 self.assertIsNotNone(workflow, "the operand-only source must exist in real Git history")
-                self.assertEqual(support.generator.workflow("api").encode("utf-8"), workflow)
+                self.assertEqual(self.api_before_shell_focus()[0].encode("utf-8"), workflow)
                 qualifier = self.api_qualifier_at(ref)
                 self.assertNotEqual(current, qualifier)
                 self.assertEqual(operands, qualifier)
