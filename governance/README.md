@@ -378,25 +378,56 @@ at most 192 bytes including the line ending. It contains no Java path, version,
 release contents, environment value or exception text. Valid selections emit
 no such record. Only `selected-version-match` also emits a separate
 `windows_observer_java_versions` diagnostic-only record with `release_version`
-and `selected_version`: the exact comparison operands after the existing
-release capture and selected `+build` removal. Each operand is either an
+and `selected_version`: the release's numeric version and the setup label's
+numeric core, retaining the earlier diagnostic projection without exporting
+runtime/build metadata. Each operand is either an
 unchanged numeric Java 21 version or the fixed string `unavailable`. The export
 grammar is `21(?:\.(?:0|[1-9][0-9]{0,4})){1,3}`, at most 20 ASCII characters:
 one to three components after 21, each zero or one to five digits without
 leading zeros. Malformed, oversized and non-string operands are unavailable,
 never truncated, coerced or normalized. The version-only record also fits
-192 bytes including its line ending. This stricter export grammar is not an
-admission rule; accepted selections remain silent, including versions outside
-the export grammar. The existing release grammar, single-match requirement,
-exact version comparison, Adoptium requirement and evaluation order are unchanged.
+192 bytes including its line ending. These two diagnostic projections are not
+the complete version comparison below. Accepted selections remain silent.
+The five check names/order, home/path and Adoptium requirements remain unchanged.
 Path/read/decode failures retain their existing static refusal rather than
 inventing a failed selection predicate. Diagnostic I/O cannot replace the
 primary refusal; the existing fixed secondary-failure path records unavailable
 reporting. Admission still stops before owner/custody creation, so absent
-collector state remains a refusal. The current native evidence identifies
-`selected-version-match`, but does not contain its release-side operand.
-This diagnostic does not establish that operand, repair Java selection, or
-clear native, timing, parity or cleanup holds before a new actual observation.
+collector state remains a refusal.
+
+Java admission compares two different representations, not just their first
+three components. The pinned setup-java
+[`de7274f`](https://github.com/actions/setup-java/blob/de7274f081f381c8f8158605e0321c36c376e2e6/src/distributions/temurin/installer.ts)
+reports Adoptium's `version_data.semver`, including when selected from its cache.
+The pinned Adoptium
+[`c980bfc`](https://github.com/adoptium/api.adoptium.net/blob/c980bfc3f0262fec6e696cf4401a3b7b59178ea4/adoptium-models-parent/adoptium-api-v3-models/src/main/kotlin/net/adoptium/api/v3/models/VersionData.kt)
+encodes a nonzero Java patch as `patch * 100 + build` in SemVer build metadata.
+Admission therefore requires one canonical `JAVA_VERSION` and one
+`JAVA_RUNTIME_VERSION` from the already bounded 16-KiB release file. The runtime
+version must exactly repeat the Java numeric version and supply a build from
+1 through 99, optionally followed by the fixed `-LTS` suffix. A build suffix
+present in `JAVA_VERSION` must agree too. This bounded build range makes the
+patch/build encoding unambiguous; no division, truncation or guessed carry is
+used. Missing/duplicate/malformed fields, leading zeros, non-ASCII digits,
+control characters and builds of 0 or 100 and above refuse.
+
+Numeric Java versions have exactly three components, or four with a nonzero
+patch, using the bounded numeric component grammar above. The setup label must
+have the same first three components plus the exact encoded patch/build number;
+its only permitted additional metadata is the observed zero-only `.0` suffix.
+Nonzero/extra distribution metadata is unproved, not ignored. Ordinary
+`21.0.9+10` and `21.0.9+10.0` labels still match release `21.0.9` with runtime
+`21.0.9+10[-LTS]`. Release `21.0.12.1` with runtime `21.0.12.1+1[-LTS]` matches
+`21.0.12+101[.0]`, but wrong patch/build/update/major values do not. Metadata-free
+labels, raw four-part setup labels and earlier permissive numeric/suffix forms
+are no longer sufficient evidence of a selected build.
+
+The actual manual run `38662126136/1` reported release `21.0.12.1` versus setup
+numeric core `21.0.12`, from label `21.0.12+101.0`. It did not establish the
+runtime build or vendor. This source correction addresses that evidenced
+representation mismatch; a reviewed changed-source native run must still prove
+qualification. No native, timing, parity, cleanup or protected-integration hold
+is cleared by synthetic correspondence.
 
 The existing successful terminal `materialize_money_sources.py --verify`
 binds all eleven Money inputs and fourteen provider files. The immediately

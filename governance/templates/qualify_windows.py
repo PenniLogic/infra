@@ -1063,6 +1063,29 @@ def observer_java_require(condition, check, *, versions=None):
     raise primary
 
 
+def observer_java_version_matches(version, version_build, selected, release):
+    if observer_java_version_operand(version) == "unavailable" or type(selected) is not str or len(selected) > 32:
+        return False
+    parts = version.split(".")
+    if len(parts) not in (3, 4) or (len(parts) == 4 and parts[3] == "0"):
+        return False
+    setup = re.fullmatch(r"(21(?:\.(?:0|[1-9][0-9]{0,4})){2})\+([1-9][0-9]{0,6})(?:\.0)?", selected)
+    if setup is None or setup[1] != ".".join(parts[:3]):
+        return False
+    runtimes = re.findall(r"^[ \t]*JAVA_RUNTIME_VERSION\b[^\n]*$", release, re.MULTILINE)
+    if len(runtimes) != 1 or len(runtimes[0]) > 64:
+        return False
+    runtime = re.fullmatch(
+        r'JAVA_RUNTIME_VERSION="(21(?:\.(?:0|[1-9][0-9]{0,4})){2,3})\+([1-9][0-9]?)(?:-LTS)?"', runtimes[0])
+    if runtime is None or runtime[1] != version:
+        return False
+    if version_build is not None and version_build not in (runtime[2], runtime[2] + "-LTS"):
+        return False
+    # Adoptium adds patch * 100 to the build; builds 1..99 keep this mapping unambiguous.
+    patch = int(parts[3]) if len(parts) == 4 else 0
+    return int(setup[2]) == patch * 100 + int(runtime[2])
+
+
 def observer_runtime_inputs(root, budget):
     observer_require(os.environ.get("GITHUB_ACTIONS") == "true"
                      and os.environ.get("PENNILOGIC_API106_MONEY") == "success"
@@ -1100,11 +1123,15 @@ def observer_runtime_inputs(root, budget):
     observer_java_require("," not in str(java), "home-single-path")
     for name in ("java.exe", "javac.exe"):
         observer_runtime_path(str(java / "bin" / name), directory=False)
-    release = "\n".join(observer_runtime_bytes(java / "release", 16384).decode("utf-8").splitlines())
-    versions = re.findall(r'^JAVA_VERSION="(21(?:\.[0-9]+){1,3})(?:\+[0-9A-Za-z.-]+)?"$', release, re.MULTILINE)
-    selected = os.environ.get("PENNILOGIC_API106_JAVA_VERSION", "").split("+", 1)[0]
-    observer_java_require(len(versions) == 1, "release-version-single-match")
-    observer_java_require(versions[0] == selected, "selected-version-match", versions=(versions[0], selected))
+    release = observer_runtime_bytes(java / "release", 16384).decode("utf-8").replace("\r\n", "\n")
+    version_lines = re.findall(r"^[ \t]*JAVA_VERSION\b[^\n]*$", release, re.MULTILINE)
+    versions = [match for line in version_lines if (
+        match := re.fullmatch(r'JAVA_VERSION="(21(?:\.[0-9]+){1,3})(?:\+([0-9A-Za-z.-]+))?"', line))]
+    selected_label = os.environ.get("PENNILOGIC_API106_JAVA_VERSION", "")
+    selected = selected_label.split("+", 1)[0]
+    observer_java_require(len(version_lines) == 1 and len(versions) == 1, "release-version-single-match")
+    observer_java_require(observer_java_version_matches(versions[0][1], versions[0][2], selected_label, release),
+                          "selected-version-match", versions=(versions[0][1], selected))
     observer_java_require(re.findall(r'^IMPLEMENTOR="([^"\r\n]+)"$', release, re.MULTILINE) == ["Eclipse Adoptium"],
                           "release-implementor")
     for relative in ("build/source-materialization", "build/contracts-money",
