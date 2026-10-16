@@ -45,8 +45,9 @@ SHELL_FOCUS_SOURCES = {
     "scripts/quality.py": (33687, "725fac94b7c4496a265260503f5492acdc28d45e7690254f1328e596a11b42cd"),
     "scripts/process_budget.py": (30820, "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"),
 }
-SHELL_FOCUS_CONTROLS = ("plain-bare-command", "explicit-built-in-utility")
+SHELL_FOCUS_CONTROLS = ("plain-bare-command", "os-module-root-environment", "explicit-built-in-utility")
 SHELL_FOCUS_CONTROL_DIRECTORY = LOOKUP.parent / "api106-fixed-shell-controls"
+SHELL_FOCUS_ENVIRONMENT_CARRIER = SHELL_FOCUS_CONTROL_DIRECTORY / "module-environment.jsonl"
 SHELL_FOCUS_REFUSALS = {
     "focus-source-binding", "focus-preexisting-diagnostic-area", "focus-preexisting-test-module",
     "focus-module-or-seam", "focus-import-identity", "focus-target-count", "focus-child-record-limit",
@@ -54,6 +55,7 @@ SHELL_FOCUS_REFUSALS = {
     "focus-child-result", "focus-child-output", "focus-exception-shape", "focus-requires-prepared", "focus-report-limit",
     "focus-control-shell", "focus-control-module", "focus-control-result", "focus-control-output",
     "focus-control-context", "focus-control-namespace", "focus-control-report-limit",
+    "focus-control-environment", "focus-control-carrier",
     "observer-job-context", "observer-workspace-identity", "observer-same-job-preparation", "observer-checkout-binding",
     "observer-git-state-changed", "observer-python-selection", "observer-git-selection", "observer-java-selection",
     "observer-runtime-path", "observer-runtime-shadowed", "observer-temporary-selection",
@@ -1663,7 +1665,28 @@ def shell_focus_control_command(environment, runtime, label):
     }, "focus-control-shell")
     command = [str(shell), "-NoProfile", "-NonInteractive", "-Command", "Write-Output 'approved-shell'"]
     module = None
-    if label == "explicit-built-in-utility":
+    if label == "os-module-root-environment":
+        python = observer_runtime_path(sys.executable, directory=False)
+        image = observer_runtime_bytes(python, 32 * 1024 * 1024)
+        observer_require(runtime["images"]["python"] == {
+            "bytes": len(image), "sha256": hashlib.sha256(image).hexdigest(),
+        }, "observer-python-selection")
+        modules = observer_runtime_path(str(shell.parent / "Modules"), directory=True)
+        observer_require(";" not in str(modules), "focus-control-environment")
+        command[-1] = shell_focus_environment_script(shell, modules)
+        # The unchanged helper strips PSModulePath; only this already-owned bridge sets the child's input.
+        bridge = (
+            "import os,subprocess,sys\n"
+            "child={key:value for key,value in os.environ.items() if key.upper()!='PSMODULEPATH'}\n"
+            "child['PSModulePath']=" + repr(str(modules)) + "\n"
+            "try:\n"
+            "    result=subprocess.run(" + repr(command) + ",env=child,check=False)\n"
+            "except OSError:\n"
+            "    sys.exit(70)\n"
+            "sys.exit(result.returncode)\n"
+        )
+        command = [str(python), "-I", "-S", "-B", "-c", bridge]
+    elif label == "explicit-built-in-utility":
         manifest = observer_runtime_path(str(
             shell.parent / "Modules" / "Microsoft.PowerShell.Utility" / "Microsoft.PowerShell.Utility.psd1"
         ), directory=False)
@@ -1678,12 +1701,179 @@ def shell_focus_control_command(environment, runtime, label):
     return command, module
 
 
+def shell_focus_module_root_normalized(value):
+    value = value.replace("/", "\\").translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+    while len(value) > 3 and value.endswith("\\"):
+        value = value[:-1]
+    return value
+
+
+def shell_focus_environment_script(shell, modules):
+    prefix = (
+        "$injected='" + str(modules).replace("'", "''") + "'; "
+        "$expectedHome='" + str(shell.parent).replace("'", "''") + "'; "
+    )
+    return prefix + r"""
+$ErrorActionPreference='Stop'
+$stream=$null
+$sha=$null
+$phase='admission'
+$code='snapshot'
+try {
+    $path=[IO.Path]::GetFullPath('..\build\diagnostics\api106-fixed-shell-controls\module-environment.jsonl')
+    $directory=[IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($path))
+    while ($null -ne $directory) {
+        if (([IO.File]::GetAttributes($directory.FullName) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 71 }
+        $directory=$directory.Parent
+    }
+    $stream=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    $phase='snapshot'
+    if (-not [string]::Equals($PSHOME,$expectedHome,[StringComparison]::OrdinalIgnoreCase)) {
+        $code='shell-home'
+        throw [InvalidOperationException]::new()
+    }
+    $sha=[Security.Cryptography.SHA256]::Create()
+    $utf8=[Text.UTF8Encoding]::new($false,$true)
+    $normalize={
+        param([string]$entry)
+        $entry=$entry.Replace('/','\')
+        for ($letter=65; $letter -le 90; $letter++) { $entry=$entry.Replace([char]$letter,[char]($letter+32)) }
+        while ($entry.Length -gt 3 -and $entry.EndsWith('\',[StringComparison]::Ordinal)) {
+            $entry=$entry.Substring(0,$entry.Length-1)
+        }
+        return $entry
+    }
+    $normalized=& $normalize $injected
+    $injectedHash=[BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($normalized))).Replace('-','').ToLowerInvariant()
+    $value=[Environment]::GetEnvironmentVariable('PSModulePath',[EnvironmentVariableTarget]::Process)
+    $present='absent'
+    [string[]]$roots=@()
+    if ($null -ne $value) {
+        $present='present'
+        if ($value.Length -gt 32768) { $code='input-limit'; throw [InvalidOperationException]::new() }
+        $roots=$value.Split([char]59)
+    }
+    if ($roots.Length -gt 32) { $code='input-limit'; throw [InvalidOperationException]::new() }
+    $seen=[Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
+    $rows=[Text.StringBuilder]::new()
+    for ($i=0; $i -lt $roots.Length; $i++) {
+        $entry=$roots[$i]
+        if ($entry.Length -gt 2048) { $code='input-limit'; throw [InvalidOperationException]::new() }
+        $entry=& $normalize $entry
+        $hash=[BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($entry))).Replace('-','').ToLowerInvariant()
+        $kind='unknown'
+        if ($entry.Length -eq 0) { $kind='empty' }
+        elseif ([string]::Equals($entry,$normalized,[StringComparison]::Ordinal)) { $kind='injected' }
+        $duplicate='null'
+        if ($seen.ContainsKey($entry)) { $duplicate=$seen[$entry].ToString([Globalization.CultureInfo]::InvariantCulture) }
+        else { $seen.Add($entry,$i) }
+        if ($i -ne 0) { [void]$rows.Append(',') }
+        [void]$rows.Append('['+$i.ToString([Globalization.CultureInfo]::InvariantCulture)+',"'+$kind+'","'+$hash+'",'+$duplicate+']')
+    }
+    $text='{"v":1,"phase":"pre","status":"observed","injected_sha256":"'+$injectedHash+'","value":"'+$present+'","roots":['+$rows.ToString()+']}'
+    $bytes=[Text.Encoding]::ASCII.GetBytes($text+"`n")
+    if ($bytes.Length -gt 4096) { $code='input-limit'; throw [InvalidOperationException]::new() }
+    $phase='pre-write'
+    $stream.Write($bytes,0,$bytes.Length)
+    $stream.Flush($true)
+    $phase='command'
+    Write-Output 'approved-shell'
+    $phase='post-write'
+    $bytes=[Text.Encoding]::ASCII.GetBytes('{"v":1,"phase":"post","status":"observed"}'+"`n")
+    $stream.Write($bytes,0,$bytes.Length)
+    $stream.Flush($true)
+} catch {
+    if ($phase -eq 'snapshot' -or $phase -eq 'command') {
+        if ($phase -eq 'command') { $part='post'; $code='command-failed' } else { $part='pre' }
+        $bytes=[Text.Encoding]::ASCII.GetBytes('{"v":1,"phase":"'+$part+'","status":"refused","code":"'+$code+'"}'+"`n")
+        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } catch { exit 72 }
+    }
+    exit 1
+} finally {
+    if ($null -ne $sha) { $sha.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
+}
+"""
+
+
+def shell_focus_environment_evidence(root, environment):
+    result = {"status": "unavailable", "code": "not-observed", "pre": None, "post": None}
+    try:
+        injected = str(Path(environment["COMSPEC"]).parent / "WindowsPowerShell" / "v1.0" / "Modules")
+        injected_hash = hashlib.sha256(shell_focus_module_root_normalized(injected).encode("utf-8")).hexdigest()
+        data = diagnostic_bytes(root, SHELL_FOCUS_ENVIRONMENT_CARRIER, 4096)
+        observer_require(len(data) <= 4096, "file-limit")
+        observer_require(data.isascii() and b"\r" not in data and b"\x1b" not in data, "encoding")
+        lines = data.split(b"\n")
+        tail = lines.pop()
+        for index, line in enumerate(lines):
+            observer_require(index < 2, "record-count")
+            record = json.loads(line, object_pairs_hook=lookup_json_object)
+            observer_require(type(record) is dict and type(record.get("v")) is int and record["v"] == 1
+                             and record.get("phase") == ("pre", "post")[index], "record-shape")
+            if index == 1:
+                observer_require(result["pre"] is not None and result["pre"].get("status") == "observed", "record-shape")
+            if record.get("status") == "refused":
+                observer_require(set(record) == {"v", "phase", "status", "code"} and record["code"] in (
+                    ("input-limit", "shell-home", "snapshot") if index == 0 else ("command-failed",)), "record-shape")
+                result[record["phase"]] = record
+                result.update(status="refused", code="child-refused")
+            elif index == 0:
+                observer_require(set(record) == {"v", "phase", "status", "injected_sha256", "value", "roots"}
+                                 and record["status"] == "observed" and record["injected_sha256"] == injected_hash
+                                 and record["value"] in ("present", "absent"), "record-shape")
+                roots = record["roots"]
+                observer_require(type(roots) is list and len(roots) <= 32
+                                 and (record["value"] == "absent") == (len(roots) == 0), "roots")
+                seen = {}
+                for i, entry in enumerate(roots):
+                    observer_require(type(entry) is list and len(entry) == 4, "roots")
+                    position, kind, hashed, duplicate = entry
+                    observer_require(type(position) is int and position == i and type(kind) is str
+                                     and kind in ("injected", "unknown", "empty")
+                                     and type(hashed) is str and re.fullmatch(r"[0-9a-f]{64}", hashed) is not None
+                                     and (kind == "empty") == (hashed == hashlib.sha256(b"").hexdigest())
+                                     and (kind == "injected") == (hashed == injected_hash)
+                                     and (duplicate is None or observer_integer(duplicate, 0, i - 1)), "roots")
+                    observer_require((hashed not in seen and duplicate is None)
+                                     or seen.get(hashed) == (duplicate, kind), "roots")
+                    seen.setdefault(hashed, (i, kind))
+                result["pre"] = {
+                    "status": "observed", "injected": {"kind": "os-derived-builtin-modules", "count": 1,
+                                                      "sha256": injected_hash, "scope": "supplied-input"},
+                    "effective_value": record["value"], "effective_count": len(roots),
+                    "effective_matches_injected_only": len(roots) == 1 and roots[0][1] == "injected",
+                    "normalization": "slash-to-backslash-ascii-case-fold-trailing-separator-minimum-three",
+                    "root_columns": ["i", "kind", "sha256", "duplicate_of"], "roots": roots,
+                }
+            else:
+                observer_require(set(record) == {"v", "phase", "status"} and record["status"] == "observed", "record-shape")
+                result["post"] = {"status": "observed"}
+        observer_require(not tail, "partial-line")
+        if result["status"] != "refused":
+            result.update(status="observed" if result["pre"] is not None and result["post"] is not None else "inconclusive",
+                          code=None if result["post"] is not None else "incomplete-prefix")
+    except FileNotFoundError:
+        pass
+    except Refused as error:
+        allowed = {"file-limit", "encoding", "partial-line", "record-count", "record-shape", "roots",
+                   "duplicate-json-key", "reparse-path", "nonregular-path", "file-changed", "incomplete-read"}
+        result.update(status="refused", code=str(error) if str(error) in allowed else "invalid-carrier")
+    except (OSError, ValueError, RecursionError):
+        result.update(status="refused", code="read-or-format-error")
+    return result
+
+
 def shell_focus_control(root, budget, environment, runtime, record):
     try:
         record["phase"] = "command-admission"
         command, record["module"] = shell_focus_control_command(environment, runtime, record["label"])
-        observer_require(budget.resolve_command(["powershell.exe"], environment) == [command[0]],
+        shell = str(Path(environment["COMSPEC"]).parent / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+        observer_require(budget.resolve_command(["powershell.exe"], environment) == [shell],
                          "focus-control-shell")
+        if record["label"] == "os-module-root-environment":
+            carrier = root / SHELL_FOCUS_ENVIRONMENT_CARRIER
+            observer_require(not carrier.exists() and not carrier.is_symlink(), "focus-control-carrier")
         scripts = observer_runtime_path(str(root / "scripts"), directory=True)
         record["phase"], record["owner_release"] = "owner", "unconfirmed"
         started = time.monotonic_ns()
@@ -1714,6 +1904,11 @@ def shell_focus_control(root, budget, environment, runtime, record):
     except (Exception, KeyboardInterrupt) as error:
         record["error"] = shell_focus_exception(error, budget, separate=False)
         record["outcome"] = record["error"]["kind"]
+    if record["label"] == "os-module-root-environment" and record["owner_release"] == "helper-settled":
+        record["environment"] = shell_focus_environment_evidence(root, environment)
+        if record["outcome"] == "passed" and record["environment"]["status"] != "observed":
+            record["outcome"] = ("admission-or-result-refused" if record["environment"]["status"] == "refused"
+                                 else "inconclusive")
 
 
 def shell_focus_controls(root, budget, environment, baseline):
@@ -1724,12 +1919,16 @@ def shell_focus_controls(root, budget, environment, baseline):
         "work_seconds": 10, "single_cleanup_seconds": 10, "hard_end_to_end_deadline": False,
         "synchronous_calls_preempted": False, "inherit_tree": "shipped-default-false",
         "interval_scope": "each-helper-call-not-admission-or-reporting",
-        "stage_scope": "parent-only-no-child-checkpoints", "comparison": "ordered-counterfactual-not-causal-proof",
+        "stage_scope": "parent-stages-plus-environment-child-carrier", "comparison": "ordered-counterfactual-not-causal-proof",
         "blocked_by": "baseline-not-confirmed-settled", "error": None,
         "controls": [{
             "label": label, "outcome": "not-started", "phase": "admission", "owner_release": "not-started",
             "owned_call_elapsed_ns": None, "returncode": None, "capture": {"status": "unavailable"},
             "module": None, "error": None,
+            "process_boundary": ("shipped-bootstrap-to-isolated-python-bridge-to-shell"
+                                 if label == "os-module-root-environment" else "shipped-bootstrap-to-shell"),
+            "environment": ({"status": "unavailable", "code": "owner-not-confirmed-settled", "pre": None, "post": None}
+                            if label == "os-module-root-environment" else None),
         } for label in SHELL_FOCUS_CONTROLS],
     }
     if baseline["owner_release"] == "helper-settled":

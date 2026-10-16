@@ -729,21 +729,21 @@ The shared observer/pair parsers and their partial, unavailable and nullable
 representations are unchanged.
 
 After that original report is emitted, a separate
-`windows_shell_focus_controls` event records at most two fixed command
+`windows_shell_focus_controls` event records at most three fixed serial command
 observations, **not additional tests**. The original named target remains first
 and only, with `tests_run: 1`; its status, nested exception, lookup and four source
 hashes are not replaced by control results. No control starts unless the baseline
-helper positively settled, and the second cannot start after unknown first-control
+helper positively settled, and a later control cannot start after unknown earlier
 settlement. A direct shipped timeout/output exception establishes settlement;
 a superseding creation, capture, owner or cleanup error does not, even when its
 cause contains a timeout. There is no retry.
 
-The serial order is `plain-bare-command`, then `explicit-built-in-utility`.
-Both use the same admitted Windows PowerShell image with
+The serial order is `plain-bare-command`, `os-module-root-environment`, then
+`explicit-built-in-utility`. All use the same admitted Windows PowerShell image with
 `-NoProfile -NonInteractive -Command`, the original `scripts` working directory, the
 unchanged inner-helper environment sanitization and merged capture. The first
 command is exactly `Write-Output 'approved-shell'`, without lookup delegates or
-child checkpoints. The second checks that the shell's `$PSHOME` matches its
+child checkpoints. The last checks that the shell's `$PSHOME` matches its
 admitted image directory, imports only that directory's absolute
 `Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1` using
 `-ErrorAction Stop`, then runs the same bare command. Reparse paths, wildcard
@@ -753,18 +753,59 @@ policy bypass, prewarming or larger work allowance. Manifest admission checks
 only path/type/size metadata; it does not read or import the module before the
 control's helper starts.
 
+The middle arm measures one **prospective child-only environment input**. Its
+fixed `-I -S -B` Python bridge runs inside the same unchanged helper-owned process
+tree and starts only the approved absolute Windows PowerShell image. It inherits
+the helper-filtered environment and replaces only the child's `PSModulePath` with
+the literal `WindowsPowerShell\v1.0\Modules` directory derived from the helper's
+OS-selected system shell. It does not patch the helper's environment function,
+change registry/global settings, introduce a configurable command/path, or
+reintroduce an ambient module list. The extra Python bridge/process boundary is
+explicit in the record. Its fixed carrier instrumentation also uses terminating
+error handling; this is not an equivalent plain-shell invocation.
+
+Before the same bare `Write-Output 'approved-shell'`, Core/.NET-only code checks
+`$PSHOME`, then writes and flushes a pre record to the fixed exclusive non-reparse
+`module-environment.jsonl` carrier. It reads the child's **effective post-startup**
+`PSModulePath`, not just the bridge's supplied value. At most 32 roots retain their
+order, normalized digests, duplicate-of indexes, and only `injected`, `unknown` or
+`empty` identities. Normalization replaces slashes, folds only ASCII A-Z and
+removes trailing separators while preserving a minimum of three characters.
+Non-ASCII characters remain exact, avoiding Python/.NET Unicode-fold differences;
+there is no path resolution,
+root recovery or module-content read. A strict singleton comparison with the
+injected root is reported separately from the supplied count of one. Startup may
+insert additional roots; those remain unknown, and a passing command does not
+assert that the supplied singleton survived.
+
+No module import, command lookup hook, `Get-Command`, or prewarm precedes the
+middle arm's bare command. The explicit-import positive control stays last.
+A successful post record is written only after the bare command returns.
+The 4,096-byte carrier is read only after confirmed helper settlement; a retained
+pre prefix can survive lookup timeout, with missing post evidence left null.
+Missing/empty evidence and valid partial prefixes stay unavailable or inconclusive.
+Torn/malformed lines, oversized, reparse or read-failed evidence are refused;
+any valid pre record already read remains available. Existing command/owner
+failures retain precedence. Carrier or bridge failures cannot replace the
+baseline or launch a retry. A bridge OS launch failure returns nonzero without
+printing its exception.
+
 Each control calls the unchanged shipped helper once with **10 seconds work
-plus its existing single 10-second cleanup allowance**. Startup and explicit
-import are inside those ten work seconds. Actual monotonic elapsed time surrounds
+plus its existing single 10-second cleanup allowance**. Bridge/shell startup,
+carrier writing and explicit import are inside their respective ten work seconds.
+There is no nested control owner, inner bridge timeout or deadline rearm.
+Actual monotonic elapsed time surrounds
 that helper call, including its cleanup, not admission/reporting. These intervals
 are separate from the baseline's **150+10**, the original target's **10+10**, and
 application **300/600** gates; none supplies a new hard end-to-end guarantee.
 One newly created, non-reparse `build/diagnostics/api106-fixed-shell-controls`
 directory spends the control namespace. It must not already exist and is never
-deleted or reused; no child writes there or changes the baseline carriers.
+deleted or reused. Only the middle control writes its fixed new carrier there;
+none changes the baseline carriers.
 
-The additional event is capped at 8,192 ASCII bytes. Its two closed records retain
-fixed labels, parent-only stages, actual elapsed/exit/outcome, known or unconfirmed
+The additional event remains capped at 8,192 ASCII bytes. Its three closed records retain
+fixed labels, parent stages and the middle arm's separate child-carrier evidence,
+actual elapsed/exit/outcome, known or unconfirmed
 helper settlement, bounded manifest size metadata (not a content digest), and safe exception
 projections. Normal merged output is only counted/hashed as **decoded UTF-8 text**,
 not misreported as original wire bytes. Budget exceptions retain the existing
@@ -772,7 +813,8 @@ partial raw-capture snapshot projection when available; missing/malformed eviden
 stays unavailable, never an invented zero. Raw paths, environment values, exception
 messages and child streams are not emitted. Nonzero exits, unexpected output,
 timeouts, refused evidence or unknown settlement keep the control event nonpassing.
-Overall exit zero additionally requires both controls to pass; their success can
+Overall exit zero additionally requires all three controls and complete middle-arm
+evidence to pass; their success can
 never override a failed/refused/inconclusive baseline or unavailable lookup.
 
 These ordered counterfactual observations are diagnostic, not causal proof.
@@ -784,32 +826,50 @@ explicitly importing a module fixes the cause. The shipped environment already
 excludes `PSModulePath`/`WinPSModulePath`; generic module-path advice is not a
 demonstrated repair. Native, performance, parity and cleanup holds remain.
 
+The retained API manual run `38895034128` at `2af8335` failed the original
+target and plain control (about 10.014 seconds), while its last explicit-import
+control returned the expected 16-byte decoded output in 0.5747907 seconds.
+The original target/helper had already discarded incoming `PSModulePath`, yet
+the child's startup reported six effective roots, with PSHOME at index four
+and five unknown digests. Deleting the incoming variable again is not a repair.
+The new middle arm is the pending measurement needed to investigate an
+environment-only change, not a production fix, singleton guarantee, or causal
+conclusion. Manual 457.999 and natural 313.540 seconds remain FAIL300 alongside
+the earlier failures.
+
 Canonical mock regressions are not live nested-Job or hosted-target qualification.
 The API registry names actual source commit
 `e504364cbce8525053540d48d661b23e1d930db9`, whose sole parent is
-`e2bd839f8e79c7146c2bf006f811e0638647669b`. This source is **local only** at
-binding preparation. Its reviewed `a09f30073ae6af946b87227681de9b2bd6e8a72c`
+`e2bd839f8e79c7146c2bf006f811e0638647669b`. That source and its later
+`cfc7c741e22e0ef060edc2f736b1ba073810991a` binding have been published on the
+existing topic; the new environment arm is a separate uncommitted SOURCE candidate.
+Its actual-source binding, publication and consumer adoption remain later steps.
+The earlier reviewed `a09f30073ae6af946b87227681de9b2bd6e8a72c`
 tree is not a source commit; neither moving `HEAD` nor a future binding commit
-is an acceptable substitute. The registry update is a separate binding candidate,
-not publication or consumer adoption.
+is an acceptable substitute. A later registry update for this environment arm
+requires its own actual reviewed source commit, not this DATA candidate.
 
-Actual e504 history reproduces the current qualifier, workflow and checker.
+Actual e504 history reproduces the earlier two-control qualifier, workflow and checker,
+not this pending environment-arm extension. Registry/history files are unchanged;
+their current-source assertions are not claimed to pass for this unbound candidate.
 The earlier a5 source and e2bd binding still reproduce the **same workflow and
 checker**: the workflow remains SHA-256
 `b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e`, and the
 generated checker binds that workflow digest, not the qualifier body. Their
 97,831-byte qualifier, SHA-256
 `5ea60d30e6ea09c640243a461746c393627b2390b98bffd4e473deb7a8723799`, cannot
-bind the new 105,474-byte qualifier, SHA-256
+bind that 105,474-byte two-control qualifier, SHA-256
 `69db94e8923e299c399bfd8d80c1b2e9b54a1195e943bb85e387264664223f02`.
-History tests positively validate both workflow/checker baselines before rejecting
-the stale qualifier. Reversing only the five exact fixed-control changes
+The retained e504 binding history tests positively validate both workflow/checker
+baselines before rejecting the stale qualifier. Reversing only the five exact fixed-control changes
 recovers the old qualifier byte for byte. The older focus reversal still recovers
 the distinct workflow/checker of `1ddc3434` and `47f8ac77`; their original
 crossed-digest negatives and Java/SemVer reversal anchors remain required.
 
-The private 25-output API generation/check compares every body with the prior
-accepted preview; only the qualifier changes. Generated workflow, checker digest
+The prior binding's private 25-output API generation/check compared every body
+with its accepted preview; only the two-control qualifier changed. No new generation,
+native control or hosted run is included in this environment-arm SOURCE scope.
+Generated workflow, checker digest
 and qualifier must still be adopted together after separate producer/consumer
 review. Source persistence, this binding, later publication and consumer adoption
 are distinct steps. None establishes a causal repair, source PR, hosted pass,
