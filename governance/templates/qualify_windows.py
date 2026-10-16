@@ -45,11 +45,15 @@ SHELL_FOCUS_SOURCES = {
     "scripts/quality.py": (33687, "725fac94b7c4496a265260503f5492acdc28d45e7690254f1328e596a11b42cd"),
     "scripts/process_budget.py": (30820, "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"),
 }
+SHELL_FOCUS_CONTROLS = ("plain-bare-command", "explicit-built-in-utility")
+SHELL_FOCUS_CONTROL_DIRECTORY = LOOKUP.parent / "api106-fixed-shell-controls"
 SHELL_FOCUS_REFUSALS = {
     "focus-source-binding", "focus-preexisting-diagnostic-area", "focus-preexisting-test-module",
     "focus-module-or-seam", "focus-import-identity", "focus-target-count", "focus-child-record-limit",
     "focus-child-record-write", "focus-explicit-selection", "focus-python-comparison", "focus-image-metadata",
     "focus-child-result", "focus-child-output", "focus-exception-shape", "focus-requires-prepared", "focus-report-limit",
+    "focus-control-shell", "focus-control-module", "focus-control-result", "focus-control-output",
+    "focus-control-context", "focus-control-namespace", "focus-control-report-limit",
     "observer-job-context", "observer-workspace-identity", "observer-same-job-preparation", "observer-checkout-binding",
     "observer-git-state-changed", "observer-python-selection", "observer-git-selection", "observer-java-selection",
     "observer-runtime-path", "observer-runtime-shadowed", "observer-temporary-selection",
@@ -1649,6 +1653,121 @@ def shell_focus_lookup_evidence(lookup):
     return "complete-observed"
 
 
+def shell_focus_control_command(environment, runtime, label):
+    observer_require(label in SHELL_FOCUS_CONTROLS, "focus-control-result")
+    system = observer_runtime_path(environment["COMSPEC"], directory=False).parent
+    shell = observer_runtime_path(str(system / "WindowsPowerShell" / "v1.0" / "powershell.exe"), directory=False)
+    data = observer_runtime_bytes(shell, 32 * 1024 * 1024)
+    observer_require(runtime["images"]["powershell"] == {
+        "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+    }, "focus-control-shell")
+    command = [str(shell), "-NoProfile", "-NonInteractive", "-Command", "Write-Output 'approved-shell'"]
+    module = None
+    if label == "explicit-built-in-utility":
+        manifest = observer_runtime_path(str(
+            shell.parent / "Modules" / "Microsoft.PowerShell.Utility" / "Microsoft.PowerShell.Utility.psd1"
+        ), directory=False)
+        observer_require(not any(character in str(manifest) for character in "*?[]"), "focus-control-module")
+        size = manifest.lstat().st_size
+        observer_require(observer_integer(size, 1, 65536), "focus-control-module")
+        module = {"bytes": size, "evidence": "metadata-only-no-content-read"}
+        command[-1] = (
+            "if ($PSHOME -ine '" + str(shell.parent).replace("'", "''") + "') { exit 1 }; "
+            "Import-Module -Name '" + str(manifest).replace("'", "''") + "' -ErrorAction Stop; " + command[-1]
+        )
+    return command, module
+
+
+def shell_focus_control(root, budget, environment, runtime, record):
+    try:
+        record["phase"] = "command-admission"
+        command, record["module"] = shell_focus_control_command(environment, runtime, record["label"])
+        observer_require(budget.resolve_command(["powershell.exe"], environment) == [command[0]],
+                         "focus-control-shell")
+        scripts = observer_runtime_path(str(root / "scripts"), directory=True)
+        record["phase"], record["owner_release"] = "owner", "unconfirmed"
+        started = time.monotonic_ns()
+        try:
+            result = budget.run(command, scripts, 10, capture=True, env=environment)
+        except budget.OutputExceeded:
+            record["owner_release"] = "helper-settled"
+            raise
+        except budget.BudgetExceeded:
+            record["owner_release"] = "helper-settled"
+            raise
+        finally:
+            record["owned_call_elapsed_ns"] = time.monotonic_ns() - started
+        record["owner_release"], record["phase"] = "helper-settled", "result"
+        if observer_integer(getattr(result, "returncode", None), -2147483648, 4294967295):
+            record["returncode"] = result.returncode
+        observer_require(record["returncode"] is not None and type(result.stdout) is str
+                         and result.stderr is None, "focus-control-result")
+        observer_require(len(result.stdout) <= 4 * 1024 * 1024, "focus-control-output")
+        data = result.stdout.encode("utf-8")
+        observer_require(len(data) <= 12 * 1024 * 1024, "focus-control-output")
+        # The shipped merged-capture API returns decoded text, not the original bytes.
+        record["capture"] = {"status": "observed", "scope": "decoded-merged-text",
+                             "text_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        record["outcome"] = ("nonzero-exit" if result.returncode else
+                             "passed" if result.stdout.strip() == "approved-shell" else "unexpected-output")
+        record["phase"] = "complete"
+    except (Exception, KeyboardInterrupt) as error:
+        record["error"] = shell_focus_exception(error, budget, separate=False)
+        record["outcome"] = record["error"]["kind"]
+
+
+def shell_focus_controls(root, budget, environment, baseline):
+    report = {
+        "v": 1, "event": "windows_shell_focus_controls", "diagnostic_only": True, "acceptance": False,
+        "native_qualification": False, "physical_cleanup_attestation": False, "status": "not-run",
+        "baseline_status": baseline["status"], "baseline_owner_release": baseline["owner_release"],
+        "work_seconds": 10, "single_cleanup_seconds": 10, "hard_end_to_end_deadline": False,
+        "synchronous_calls_preempted": False, "inherit_tree": "shipped-default-false",
+        "interval_scope": "each-helper-call-not-admission-or-reporting",
+        "stage_scope": "parent-only-no-child-checkpoints", "comparison": "ordered-counterfactual-not-causal-proof",
+        "blocked_by": "baseline-not-confirmed-settled", "error": None,
+        "controls": [{
+            "label": label, "outcome": "not-started", "phase": "admission", "owner_release": "not-started",
+            "owned_call_elapsed_ns": None, "returncode": None, "capture": {"status": "unavailable"},
+            "module": None, "error": None,
+        } for label in SHELL_FOCUS_CONTROLS],
+    }
+    if baseline["owner_release"] == "helper-settled":
+        report["status"], report["blocked_by"] = "failed", None
+        try:
+            context = observer_context(root, shell_focus=True)
+            observer_require(context == baseline["runtime"]["context_sha256"], "focus-control-context")
+            shell_focus_sources(root)
+            # Match the original target's inner helper sanitization, without extra runtime directories.
+            control_environment = budget.environment(supplied=environment)
+            observer_require(control_environment["COMSPEC"] == environment["COMSPEC"], "focus-control-shell")
+            observer_runtime_path(str(root / LOOKUP.parent), directory=True)
+            directory = root / SHELL_FOCUS_CONTROL_DIRECTORY
+            directory.mkdir()
+            observer_runtime_path(str(directory), directory=True)
+            identity = directory.lstat()
+            for record in report["controls"]:
+                observer_runtime_path(str(directory), directory=True)
+                observer_require(os.path.samestat(identity, directory.lstat()), "focus-control-namespace")
+                shell_focus_control(root, budget, control_environment, baseline["runtime"], record)
+                if record["owner_release"] != "helper-settled":
+                    report["blocked_by"] = "control-not-confirmed-settled"
+                    break
+                shell_focus_sources(root)
+                observer_require(observer_context(root, shell_focus=True) == context, "focus-control-context")
+                observer_runtime_path(str(directory), directory=True)
+                observer_require(os.path.samestat(identity, directory.lstat()), "focus-control-namespace")
+            if all(record["outcome"] == "passed" for record in report["controls"]):
+                report["status"] = "passed"
+        except (Exception, KeyboardInterrupt) as error:
+            report["error"] = shell_focus_exception(error, budget, separate=False)
+            report["blocked_by"] = "control-admission-or-evidence"
+    data = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    observer_require(len(data.encode("ascii")) + len(os.linesep) <= 8192, "focus-control-report-limit")
+    print(data, flush=True)
+    return report["status"] == "passed"
+
+
 def shell_focus(root, require_prepared=False):
     report = {"event": "windows_shell_focus", "diagnostic_only": True, "status": "refused",
               "work_seconds": 150, "single_cleanup_seconds": 10, "hard_end_to_end_deadline": False,
@@ -1658,7 +1777,7 @@ def shell_focus(root, require_prepared=False):
               "target_status": "unavailable", "lookup_evidence": "unavailable",
               "error": None, "capture": None, "carriers": None, "owned_call_elapsed_ns": None,
               "native_qualification": False, "physical_cleanup_attestation": False}
-    budget, started, before = None, None, "absent"
+    budget, started, before, environment = None, None, "absent", None
     try:
         observer_require(require_prepared is True, "focus-requires-prepared")
         observer_context(root, shell_focus=True)
@@ -1710,7 +1829,8 @@ def shell_focus(root, require_prepared=False):
     data = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     observer_require(len(data.encode("ascii")) + len(os.linesep) <= 16384, "focus-report-limit")
     print(data, flush=True)
-    return 0 if report["status"] == "passed" else 1
+    controls_passed = shell_focus_controls(root, budget, environment, report)
+    return 0 if report["status"] == "passed" and controls_passed else 1
 
 
 def qualify(root, require_prepared=False, api106_observer_pair=False):

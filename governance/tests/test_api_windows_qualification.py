@@ -454,7 +454,7 @@ class WindowsShellFocusTests(unittest.TestCase):
             self.record(**changes), sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n", b"")
 
     @contextlib.contextmanager
-    def parent(self, result=None, *, lookup_data=None):
+    def parent(self, result=None, *, lookup_data=None, controls=False):
         with tempfile.TemporaryDirectory(prefix="focus-synthetic-owner-") as temporary:
             root = Path(temporary)
             (root / "build").mkdir()
@@ -476,6 +476,8 @@ class WindowsShellFocusTests(unittest.TestCase):
                     ("shell_focus_command", command),
                 ):
                     stack.enter_context(mock.patch.object(qualification, name, return_value=value))
+                if not controls:
+                    stack.enter_context(mock.patch.object(qualification, "shell_focus_controls", return_value=True))
                 yield root, budget, command, environment
 
     def invoke(self, root, **options):
@@ -1153,6 +1155,423 @@ class WindowsShellFocusTests(unittest.TestCase):
             self.assertTrue(data.endswith(b"\n"))
             self.assertNotIn(b"\r", data)
             self.assertNotIn(MARKER.encode(), data)
+
+
+class WindowsShellControlTests(unittest.TestCase):
+    def setUp(self):
+        spawn = mock.patch.object(subprocess, "Popen", side_effect=AssertionError("No live shell in source controls"))
+        spawn.start()
+        self.addCleanup(spawn.stop)
+        self.focus = WindowsShellFocusTests()
+        self.focus.fixture = WindowsObserverPairDiagnosticTests()
+        self.addCleanup(self.focus.fixture.doCleanups)
+
+    @contextlib.contextmanager
+    def fixture(self, *, baseline=None, lookup_data=None):
+        lookup = WindowsShellLookupDiagnosticTests()
+        if lookup_data is None:
+            lookup_data = lookup.encode(lookup.v2_records())
+        with self.focus.parent(baseline, lookup_data=lookup_data, controls=True) as (root, budget, command, supplied):
+            (root / "scripts").mkdir()
+            supplied.update(budget.environment.return_value)
+            environment = dict(supplied)
+            budget.environment.return_value = environment
+            shell = Path(environment["COMSPEC"]).parent / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+            manifest = shell.parent / "Modules" / "Microsoft.PowerShell.Utility" / "Microsoft.PowerShell.Utility.psd1"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_bytes(b"@{ ModuleVersion = '3.1.0.0' }\n")
+            runtime = {"context_sha256": "a" * 64, "images": {"powershell": {
+                "bytes": shell.stat().st_size, "sha256": hashlib.sha256(shell.read_bytes()).hexdigest(),
+            }}}
+            qualification.shell_focus_runtime.return_value = (supplied, runtime)
+            budget.resolve_command.side_effect = lambda argv, env: [str(shell)]
+            baseline_run = budget.run.side_effect
+
+            def run(argv, cwd, seconds, **options):
+                if seconds == 150:
+                    return baseline_run(argv, cwd, seconds, **options)
+                return subprocess.CompletedProcess(argv, 0, "approved-shell\r\n", None)
+
+            budget.run.side_effect = run
+            yield SimpleNamespace(root=root, budget=budget, supplied=supplied, environment=environment,
+                                  runtime=runtime, shell=shell, manifest=manifest, baseline_command=command)
+
+    def invoke(self, fixture, *, require_prepared=True):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = qualification.shell_focus(fixture.root, require_prepared=require_prepared)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(2, len(lines))
+        baseline, controls = map(json.loads, lines)
+        self.assertLessEqual(len(lines[0].encode("ascii")) + len(os.linesep), 16384)
+        self.assertLessEqual(len(lines[1].encode("ascii")) + len(os.linesep), 8192)
+        self.assertEqual("windows_shell_focus", baseline["event"])
+        self.assertEqual("windows_shell_focus_controls", controls["event"])
+        self.assertEqual({
+            "v", "event", "diagnostic_only", "acceptance", "native_qualification", "physical_cleanup_attestation",
+            "status", "baseline_status", "baseline_owner_release", "work_seconds", "single_cleanup_seconds",
+            "hard_end_to_end_deadline", "synchronous_calls_preempted", "inherit_tree", "interval_scope",
+            "stage_scope", "comparison", "blocked_by", "error", "controls",
+        }, set(controls))
+        self.assertEqual(list(qualification.SHELL_FOCUS_CONTROLS), [item["label"] for item in controls["controls"]])
+        for item in controls["controls"]:
+            self.assertEqual({
+                "label", "outcome", "phase", "owner_release", "owned_call_elapsed_ns", "returncode",
+                "capture", "module", "error",
+            }, set(item))
+        self.assertIs(controls["diagnostic_only"], True)
+        for field in ("acceptance", "native_qualification", "physical_cleanup_attestation",
+                      "hard_end_to_end_deadline", "synchronous_calls_preempted"):
+            self.assertIs(controls[field], False)
+        for private in (MARKER, str(fixture.root), str(fixture.shell), str(fixture.manifest), "Traceback"):
+            self.assertNotIn(private, output.getvalue())
+        return code, baseline, controls
+
+    def test_fixed_absolute_commands_use_only_the_approved_shell_builtin_and_no_lookup_hooks(self):
+        with self.fixture() as fixture:
+            first, module = qualification.shell_focus_control_command(
+                fixture.environment, fixture.runtime, "plain-bare-command")
+            self.assertEqual([str(fixture.shell), "-NoProfile", "-NonInteractive", "-Command",
+                              "Write-Output 'approved-shell'"], first)
+            self.assertIsNone(module)
+            with mock.patch.object(qualification, "observer_runtime_bytes",
+                                   wraps=qualification.observer_runtime_bytes) as reader:
+                second, module = qualification.shell_focus_control_command(
+                    fixture.environment, fixture.runtime, "explicit-built-in-utility")
+            reader.assert_called_once_with(fixture.shell, 32 * 1024 * 1024)
+            self.assertEqual(first[:-1], second[:-1])
+            self.assertEqual(
+                "if ($PSHOME -ine '" + str(fixture.shell.parent) + "') { exit 1 }; Import-Module -Name '"
+                + str(fixture.manifest) + "' -ErrorAction Stop; Write-Output 'approved-shell'", second[-1])
+            self.assertEqual({"bytes": fixture.manifest.stat().st_size,
+                              "evidence": "metadata-only-no-content-read"}, module)
+            for forbidden in ("ExecutionPolicy", "PSModulePath", "CommandNotFoundAction",
+                              "PreCommandLookupAction", "PostCommandLookupAction", "pennilogicLookup", "-Force"):
+                self.assertNotIn(forbidden, " ".join(first + second))
+            fixture.budget.run.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "focus-control-result"):
+                qualification.shell_focus_control_command(fixture.environment, fixture.runtime, MARKER)
+
+    def test_original_first_only_record_precedes_two_serial_merged_ten_second_controls(self):
+        with self.fixture() as fixture, mock.patch.object(qualification.time, "monotonic_ns",
+                                                         side_effect=(10, 30, 40, 80, 90, 150)):
+            output = io.StringIO()
+            run = fixture.budget.run.side_effect
+
+            def observe(*args, **options):
+                if args[2] == 10:
+                    prior = [json.loads(line) for line in output.getvalue().splitlines()]
+                    self.assertEqual(["windows_shell_focus"], [item["event"] for item in prior])
+                    self.assertEqual("helper-settled", prior[0]["owner_release"])
+                    self.assertEqual(1, prior[0]["target"]["tests_run"])
+                return run(*args, **options)
+
+            fixture.budget.run.side_effect = observe
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(0, qualification.shell_focus(fixture.root, require_prepared=True))
+            baseline, controls = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual(qualification.SHELL_FOCUS_TARGET, baseline["target"]["target"])
+            self.assertEqual(20, baseline["owned_call_elapsed_ns"])
+            self.assertEqual([40, 60], [record["owned_call_elapsed_ns"] for record in controls["controls"]])
+            self.assertEqual([150, 10, 10], [call.args[2] for call in fixture.budget.run.call_args_list])
+            self.assertEqual(mock.call(fixture.baseline_command, fixture.root, 150, capture=True,
+                                       separate=True, env=fixture.supplied), fixture.budget.run.call_args_list[0])
+            for call, label in zip(fixture.budget.run.call_args_list[1:], qualification.SHELL_FOCUS_CONTROLS, strict=True):
+                command, _ = qualification.shell_focus_control_command(fixture.environment, fixture.runtime, label)
+                self.assertEqual(mock.call(command, fixture.root / "scripts", 10, capture=True,
+                                           env=fixture.environment), call)
+            fixture.budget.environment.assert_called_once_with(supplied=fixture.supplied)
+            self.assertEqual((150, 10), (baseline["work_seconds"], baseline["single_cleanup_seconds"]))
+            self.assertEqual((10, 10), (controls["work_seconds"], controls["single_cleanup_seconds"]))
+            self.assertEqual(b"ES111CX", (fixture.root / qualification.OBSERVER_FILES["required-boundary"][0]).read_bytes())
+            self.assertEqual([], list((fixture.root / qualification.SHELL_FOCUS_CONTROL_DIRECTORY).iterdir()))
+            self.assertEqual("passed", controls["status"])
+            self.assertNotIn("tests_run", json.dumps(controls))
+
+    def test_passing_controls_cannot_erase_a_nested_baseline_failure_or_incomplete_lookup(self):
+        exception = {"kind": "work-budget-exceeded", "code": None, "chain": ["work-budget-exceeded"],
+                     "chain_truncated": False, "capture": dict(qualification.PROCESS_BUDGET_CAPTURE_UNAVAILABLE),
+                     "capture_from_chain_index": None}
+        lookup = WindowsShellLookupDiagnosticTests()
+        partial = lookup.encode(lookup.v2_records()[:3])
+        for result, status in ((self.focus.result(1, errors=1, exception=exception), "failed"),
+                               (self.focus.result(), "inconclusive")):
+            with self.subTest(status=status), self.fixture(baseline=result, lookup_data=partial) as fixture:
+                code, baseline, controls = self.invoke(fixture)
+                self.assertEqual((1, status, "inconclusive"), (code, baseline["status"], baseline["lookup_evidence"]))
+                self.assertEqual(json.loads(result.stdout), baseline["target"])
+                self.assertIsNone(baseline["error"])
+                self.assertEqual("passed", controls["status"])
+                self.assertEqual(status, controls["baseline_status"])
+                self.assertEqual(3, fixture.budget.run.call_count)
+
+    def test_no_control_after_unstarted_or_unknown_baseline_even_with_a_budget_error_cause(self):
+        for fault in ("admission", "creation", "owner", "capture", "cleanup", "interrupt"):
+            with self.subTest(fault=fault), self.fixture() as fixture:
+                if fault != "admission":
+                    error = KeyboardInterrupt(MARKER) if fault == "interrupt" else OSError(MARKER)
+                    if fault == "cleanup":
+                        error.__cause__ = fixture.budget.BudgetExceeded()
+                    fixture.budget.run.side_effect = error
+                code, baseline, controls = self.invoke(fixture, require_prepared=fault != "admission")
+                self.assertEqual(1, code)
+                self.assertEqual("not-run", controls["status"])
+                self.assertEqual("baseline-not-confirmed-settled", controls["blocked_by"])
+                self.assertEqual(0 if fault == "admission" else 1, fixture.budget.run.call_count)
+                fixture.budget.environment.assert_not_called()
+                self.assertFalse((fixture.root / qualification.SHELL_FOCUS_CONTROL_DIRECTORY).exists())
+                self.assertTrue(all(item["owned_call_elapsed_ns"] is None for item in controls["controls"]))
+                self.assertNotEqual("helper-settled", baseline["owner_release"])
+
+    def test_each_control_retains_negative_timeout_output_and_unknown_settlement_without_retry(self):
+        for index in (0, 1):
+            for fault in ("exit", "empty", "timeout", "output", "creation", "capture", "cleanup", "interrupt"):
+                with self.subTest(index=index, fault=fault), self.fixture() as fixture:
+                    run, count = fixture.budget.run.side_effect, 0
+
+                    def outcome(*args, **options):
+                        nonlocal count
+                        result = run(*args, **options)
+                        if args[2] != 10:
+                            return result
+                        selected = count == index
+                        count += 1
+                        if not selected:
+                            return result
+                        if fault == "exit":
+                            return subprocess.CompletedProcess(args[0], 37, MARKER + str(fixture.root), None)
+                        if fault == "empty":
+                            return subprocess.CompletedProcess(args[0], 0, "", None)
+                        error = (fixture.budget.OutputExceeded() if fault == "output" else
+                                 fixture.budget.BudgetExceeded() if fault == "timeout" else
+                                 KeyboardInterrupt(MARKER) if fault == "interrupt" else OSError(MARKER))
+                        if fault == "cleanup":
+                            error.__cause__ = fixture.budget.BudgetExceeded()
+                        raise error
+
+                    fixture.budget.run.side_effect = outcome
+                    code, baseline, controls = self.invoke(fixture)
+                    self.assertEqual((1, "passed", "failed"), (code, baseline["status"], controls["status"]))
+                    record = controls["controls"][index]
+                    known = fault in ("exit", "empty", "timeout", "output")
+                    self.assertEqual("helper-settled" if known else "unconfirmed", record["owner_release"])
+                    self.assertEqual(3 if known or index == 1 else 2, fixture.budget.run.call_count)
+                    self.assertIsInstance(record["owned_call_elapsed_ns"], int)
+                    self.assertGreaterEqual(record["owned_call_elapsed_ns"], 0)
+                    expected = {"exit": "nonzero-exit", "empty": "unexpected-output",
+                                "timeout": "work-budget-exceeded", "output": "output-budget-exceeded",
+                                "interrupt": "unexpected-error"}.get(fault, "process-capture-or-cleanup-error")
+                    self.assertEqual(expected, record["outcome"])
+                    if fault == "cleanup":
+                        self.assertEqual(["process-capture-or-cleanup-error", "work-budget-exceeded"],
+                                         record["error"]["chain"])
+                    if fault in ("timeout", "output", "cleanup"):
+                        fixture.budget.capture_observation.assert_called_with({}, separate=False)
+                    if not known and index == 0:
+                        self.assertEqual("not-started", controls["controls"][1]["outcome"])
+
+    def test_settled_baseline_timeout_and_output_failure_still_allow_only_the_two_controls(self):
+        for fault in ("timeout", "output"):
+            with self.subTest(fault=fault), self.fixture() as fixture:
+                run = fixture.budget.run.side_effect
+
+                def fail_baseline(*args, **options):
+                    result = run(*args, **options)
+                    if args[2] == 150:
+                        raise fixture.budget.BudgetExceeded() if fault == "timeout" else fixture.budget.OutputExceeded()
+                    return result
+
+                fixture.budget.run.side_effect = fail_baseline
+                code, baseline, controls = self.invoke(fixture)
+                self.assertEqual((1, "failed", "passed"), (code, baseline["status"], controls["status"]))
+                self.assertEqual("helper-settled", baseline["owner_release"])
+                self.assertIsNone(baseline["target"])
+                self.assertEqual(3, fixture.budget.run.call_count)
+
+    def test_malformed_merged_results_remain_refused_and_never_hide_a_valid_exit(self):
+        results = (
+            (True, "approved-shell", None), (None, "", None), (4294967296, "", None),
+            (0, b"approved-shell", None), (0, None, None), (37, MARKER, b""),
+            (0, "x" * (4 * 1024 * 1024 + 1), None), (0, "\ud800", None),
+            (0, "\U0001f642" * (4 * 1024 * 1024), None),
+        )
+        for index, (exit_code, stdout, stderr) in enumerate(results):
+            with self.subTest(index=index), self.fixture() as fixture:
+                run = fixture.budget.run.side_effect
+
+                def malformed(*args, **options):
+                    result = run(*args, **options)
+                    return result if args[2] == 150 else subprocess.CompletedProcess(args[0], exit_code, stdout, stderr)
+
+                fixture.budget.run.side_effect = malformed
+                code, _, controls = self.invoke(fixture)
+                self.assertEqual((1, "failed"), (code, controls["status"]))
+                self.assertEqual(3, fixture.budget.run.call_count)
+                for record in controls["controls"]:
+                    self.assertEqual("helper-settled", record["owner_release"])
+                    self.assertEqual("result", record["phase"])
+                    self.assertIsNotNone(record["error"])
+                    self.assertEqual(exit_code if type(exit_code) is int and exit_code <= 4294967295 else None,
+                                     record["returncode"])
+                    self.assertEqual({"status": "unavailable"}, record["capture"])
+
+    def test_capture_hashes_label_decoded_text_and_exception_snapshots_without_raw_streams(self):
+        with self.fixture() as fixture:
+            run = fixture.budget.run.side_effect
+            text = MARKER + str(fixture.root) + "\ufffd\n"
+
+            def negative(*args, **options):
+                result = run(*args, **options)
+                return result if args[2] == 150 else subprocess.CompletedProcess(args[0], 37, text, None)
+
+            fixture.budget.run.side_effect = negative
+            _, _, controls = self.invoke(fixture)
+            self.assertTrue(all(record["capture"] == {
+                "status": "observed", "scope": "decoded-merged-text", "text_bytes": len(text.encode("utf-8")),
+                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            } for record in controls["controls"]))
+        for valid in (True, False):
+            with self.subTest(valid=valid), self.fixture() as fixture:
+                capture = {"schema": "pennilogic.process-budget-capture-state/1", "status": "observed",
+                           "scope": "snapshot", "complete": False, "mode": "merged",
+                           "stdout": {"bytes": 18446744073709551615, "sha256": "a" * 64},
+                           "stderr": {"bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()}}
+                fixture.budget.capture_observation.return_value = (
+                    "process_budget_capture_state=" + json.dumps(capture, sort_keys=True, separators=(",", ":"))
+                    if valid else MARKER
+                )
+                run = fixture.budget.run.side_effect
+
+                def timeout(*args, **options):
+                    result = run(*args, **options)
+                    if args[2] == 10:
+                        raise fixture.budget.BudgetExceeded()
+                    return result
+
+                fixture.budget.run.side_effect = timeout
+                _, _, controls = self.invoke(fixture)
+                for record in controls["controls"]:
+                    self.assertEqual(capture if valid else qualification.PROCESS_BUDGET_CAPTURE_UNAVAILABLE,
+                                     record["error"]["capture"])
+                    self.assertEqual(0 if valid else None, record["error"]["capture_from_chain_index"])
+                    self.assertEqual("helper-settled", record["owner_release"])
+
+    def test_exclusive_namespace_collision_and_spent_reentry_never_launch_or_reuse_an_arm(self):
+        for kind in ("directory", "file"):
+            with self.subTest(kind=kind), self.fixture() as fixture:
+                run = fixture.budget.run.side_effect
+                directory = fixture.root / qualification.SHELL_FOCUS_CONTROL_DIRECTORY
+                marker = directory / "retain" if kind == "directory" else directory
+
+                def collision(*args, **options):
+                    result = run(*args, **options)
+                    if kind == "directory":
+                        directory.mkdir()
+                    marker.write_text(MARKER)
+                    return result
+
+                fixture.budget.run.side_effect = collision
+                code, baseline, controls = self.invoke(fixture)
+                self.assertEqual((1, "passed", "failed"), (code, baseline["status"], controls["status"]))
+                self.assertEqual(1, fixture.budget.run.call_count)
+                self.assertEqual(MARKER, marker.read_text())
+        with self.fixture() as fixture:
+            _, baseline, _ = self.invoke(fixture)
+            fixture.budget.run.reset_mock()
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertFalse(qualification.shell_focus_controls(
+                    fixture.root, fixture.budget, fixture.supplied, baseline))
+            fixture.budget.run.assert_not_called()
+
+    def test_source_context_shell_resolution_and_namespace_drift_block_further_controls(self):
+        for fault in ("source", "context", "shell-image", "shell-selection", "namespace"):
+            with self.subTest(fault=fault), self.fixture() as fixture:
+                run = fixture.budget.run.side_effect
+
+                def drift(*args, **options):
+                    result = run(*args, **options)
+                    if args[2] == 150 and fault == "shell-image":
+                        fixture.runtime["images"]["powershell"]["sha256"] = "0" * 64
+                    elif args[2] == 150 and fault == "shell-selection":
+                        fixture.budget.resolve_command.side_effect = lambda argv, env: [str(fixture.root / "powershell.exe")]
+                    elif args[2] == 10:
+                        if fault == "source":
+                            qualification.shell_focus_sources.side_effect = qualification.Refused("focus-source-binding")
+                        elif fault == "context":
+                            qualification.observer_context.return_value = "c" * 64
+                        elif fault == "namespace":
+                            moved = fixture.root / qualification.SHELL_FOCUS_CONTROL_DIRECTORY
+                            moved.rename(moved.with_name(moved.name + "-retained"))
+                            moved.mkdir()
+                    return result
+
+                fixture.budget.run.side_effect = drift
+                code, baseline, controls = self.invoke(fixture)
+                self.assertEqual((1, "passed", "failed"), (code, baseline["status"], controls["status"]))
+                self.assertEqual(1 if fault.startswith("shell-") else 2, fixture.budget.run.call_count)
+                self.assertEqual("not-started", controls["controls"][1]["outcome"])
+
+    def test_builtin_is_literal_nonreparse_bounded_and_not_a_caller_module_search(self):
+        for fault in ("missing", "directory", "empty", "oversized", "reparse"):
+            with self.subTest(fault=fault), self.fixture() as fixture:
+                if fault in ("missing", "directory"):
+                    fixture.manifest.unlink()
+                    if fault == "directory":
+                        fixture.manifest.mkdir()
+                elif fault == "empty":
+                    fixture.manifest.write_bytes(b"")
+                elif fault == "oversized":
+                    fixture.manifest.write_bytes(b"x" * 65537)
+                real = Path.lstat
+
+                def metadata(path, *args, **options):
+                    value = real(path, *args, **options)
+                    if fault == "reparse" and path == fixture.manifest.parent:
+                        return SimpleNamespace(st_mode=value.st_mode, st_file_attributes=0x400)
+                    return value
+
+                with mock.patch.object(Path, "lstat", autospec=True, side_effect=metadata):
+                    code, baseline, controls = self.invoke(fixture)
+                self.assertEqual((1, "passed", "failed"), (code, baseline["status"], controls["status"]))
+                self.assertEqual(2, fixture.budget.run.call_count)
+                self.assertEqual("passed", controls["controls"][0]["outcome"])
+                self.assertEqual("not-started", controls["controls"][1]["owner_release"])
+                self.assertIsNone(controls["controls"][1]["owned_call_elapsed_ns"])
+        for name in ("literal'root", "wild[card]"):
+            with self.subTest(name=name), self.fixture() as fixture:
+                system = Path(fixture.environment["COMSPEC"]).parent / name
+                shell = system / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+                manifest = shell.parent / "Modules" / "Microsoft.PowerShell.Utility" / "Microsoft.PowerShell.Utility.psd1"
+                manifest.parent.mkdir(parents=True)
+                (system / "cmd.exe").write_bytes(b"inert")
+                shell.write_bytes(fixture.shell.read_bytes())
+                manifest.write_bytes(fixture.manifest.read_bytes())
+                environment = {**fixture.environment, "COMSPEC": str(system / "cmd.exe")}
+                if name == "wild[card]":
+                    with self.assertRaisesRegex(ValueError, "focus-control-module"):
+                        qualification.shell_focus_control_command(environment, fixture.runtime, "explicit-built-in-utility")
+                else:
+                    command, _ = qualification.shell_focus_control_command(
+                        environment, fixture.runtime, "explicit-built-in-utility")
+                    self.assertIn(str(manifest).replace("'", "''"), command[-1])
+                    self.assertIn(str(shell.parent).replace("'", "''"), command[-1])
+
+    def test_control_namespace_reparse_refuses_before_any_control_call(self):
+        with self.fixture() as fixture:
+            directory = fixture.root / qualification.SHELL_FOCUS_CONTROL_DIRECTORY
+            real = Path.lstat
+
+            def metadata(path, *args, **options):
+                value = real(path, *args, **options)
+                if path == directory:
+                    return SimpleNamespace(st_mode=value.st_mode, st_file_attributes=0x400)
+                return value
+
+            with mock.patch.object(Path, "lstat", autospec=True, side_effect=metadata):
+                code, _, controls = self.invoke(fixture)
+            self.assertEqual((1, "failed"), (code, controls["status"]))
+            self.assertEqual(1, fixture.budget.run.call_count)
+            self.assertTrue(all(item["outcome"] == "not-started" for item in controls["controls"]))
 
 
 class WindowsObserverGitBindingTests(unittest.TestCase):

@@ -706,8 +706,8 @@ Carriers are read only after the helper confirms its owned tree has settled.
 This is not system-wide physical cleanup or native acceptance.
 
 The focused report separates `target_status` (`passed`, `failed`, or `unavailable`
-when no valid child result was captured) from `lookup_evidence`. Overall `passed`
-and exit zero require the genuine child pass **and** `complete-observed` lookup
+when no valid child result was captured) from `lookup_evidence`. Its `passed`
+status requires the genuine child pass **and** `complete-observed` lookup
 evidence: validated roots, an armed observer, observed pre/post records, available
 timing samples and lookup duration, and available command/module classification.
 A v2 negative hook must be armed; its not-found event need not occur, but if
@@ -728,14 +728,74 @@ collection error can classify it `refused` without proving that lookup was read.
 The shared observer/pair parsers and their partial, unavailable and nullable
 representations are unchanged.
 
+After that original report is emitted, a separate
+`windows_shell_focus_controls` event records at most two fixed command
+observations, **not additional tests**. The original named target remains first
+and only, with `tests_run: 1`; its status, nested exception, lookup and four source
+hashes are not replaced by control results. No control starts unless the baseline
+helper positively settled, and the second cannot start after unknown first-control
+settlement. A direct shipped timeout/output exception establishes settlement;
+a superseding creation, capture, owner or cleanup error does not, even when its
+cause contains a timeout. There is no retry.
+
+The serial order is `plain-bare-command`, then `explicit-built-in-utility`.
+Both use the same admitted Windows PowerShell image with
+`-NoProfile -NonInteractive -Command`, the original `scripts` working directory, the
+unchanged inner-helper environment sanitization and merged capture. The first
+command is exactly `Write-Output 'approved-shell'`, without lookup delegates or
+child checkpoints. The second checks that the shell's `$PSHOME` matches its
+admitted image directory, imports only that directory's absolute
+`Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1` using
+`-ErrorAction Stop`, then runs the same bare command. Reparse paths, wildcard
+paths, missing/empty/oversized manifests and changed shell bytes are refused.
+There is no caller-supplied module, module search, third-party module, execution
+policy bypass, prewarming or larger work allowance. Manifest admission checks
+only path/type/size metadata; it does not read or import the module before the
+control's helper starts.
+
+Each control calls the unchanged shipped helper once with **10 seconds work
+plus its existing single 10-second cleanup allowance**. Startup and explicit
+import are inside those ten work seconds. Actual monotonic elapsed time surrounds
+that helper call, including its cleanup, not admission/reporting. These intervals
+are separate from the baseline's **150+10**, the original target's **10+10**, and
+application **300/600** gates; none supplies a new hard end-to-end guarantee.
+One newly created, non-reparse `build/diagnostics/api106-fixed-shell-controls`
+directory spends the control namespace. It must not already exist and is never
+deleted or reused; no child writes there or changes the baseline carriers.
+
+The additional event is capped at 8,192 ASCII bytes. Its two closed records retain
+fixed labels, parent-only stages, actual elapsed/exit/outcome, known or unconfirmed
+helper settlement, bounded manifest size metadata (not a content digest), and safe exception
+projections. Normal merged output is only counted/hashed as **decoded UTF-8 text**,
+not misreported as original wire bytes. Budget exceptions retain the existing
+partial raw-capture snapshot projection when available; missing/malformed evidence
+stays unavailable, never an invented zero. Raw paths, environment values, exception
+messages and child streams are not emitted. Nonzero exits, unexpected output,
+timeouts, refused evidence or unknown settlement keep the control event nonpassing.
+Overall exit zero additionally requires both controls to pass; their success can
+never override a failed/refused/inconclusive baseline or unavailable lookup.
+
+These ordered counterfactual observations are diagnostic, not causal proof.
+Earlier baseline/control execution can affect caches, and runner-image metadata
+does not establish identical image/context. The focused baseline already failed
+without preceding full/pair execution; the older hooks-disarmed pair auxiliary
+also failed in its owning-suite context. Neither proves that removing hooks or
+explicitly importing a module fixes the cause. The shipped environment already
+excludes `PSModulePath`/`WinPSModulePath`; generic module-path advice is not a
+demonstrated repair. Native, performance, parity and cleanup holds remain.
+
 Canonical mock regressions are not live nested-Job or hosted-target qualification.
-The API registry now names actual local source commit
+The API registry still names the previously published source commit
 `a5c572a23e9c90dfc6732c70d06eeedcd94f52fa`, not its DATA tree, a previous
-Java/SemVer reference or this later binding change. That commit must reproduce
-the complete current workflow, checker and qualifier. Exact focus reversal
+Java/SemVer reference or the later `e2bd839f` binding commit. The new fixed-control
+qualifier is an **unbound source candidate**; a5 does not reproduce its changed
+body. The existing exact registry/current-qualifier history assertions remain
+unchanged and need a separately authorized actual-source binding after independent
+review, not a guessed commit or a waiver in this source change. Exact focus reversal
 recovers the workflow/checker of `1ddc3434` and `47f8ac77`; their pinned
-qualifiers lack this diagnostic and cannot bind it. All 25 generated API bodies
-remain those of actual `a5c572a`. Generated workflow, checker digest and qualifier
+qualifiers lack the focus route and cannot bind it. The workflow/checker are
+unchanged; among the 25 generated API bodies only this qualifier is a new candidate.
+Generated workflow, checker digest and qualifier
 must still be adopted together only after separate producer/consumer review.
 This binding is local source/history evidence, not publication, adoption, native
 execution, automatic source trust or deployment/spend approval. No dispatch,
