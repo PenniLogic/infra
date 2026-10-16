@@ -772,8 +772,12 @@ order, normalized digests, duplicate-of indexes, and only `injected`, `unknown` 
 `empty` identities. Normalization replaces slashes, folds only ASCII A-Z and
 removes trailing separators while preserving a minimum of three characters.
 Non-ASCII characters remain exact, avoiding Python/.NET Unicode-fold differences;
-there is no path resolution,
-root recovery or module-content read. A strict singleton comparison with the
+the minimum-three boundary is not universal for arbitrary Unicode. Python counts
+code points while .NET counts UTF-16 units, so very short non-BMP unknown roots
+can retain different trailing separators. No general normalization-equivalence
+claim follows; such short unknown entries cannot equal the longer fixed injected
+root. There is no path resolution, root recovery or module-content read.
+A strict singleton comparison with the
 injected root is reported separately from the supplied count of one. Startup may
 insert additional roots; those remain unknown, and a passing command does not
 assert that the supplied singleton survived.
@@ -838,6 +842,43 @@ conclusion. Manual 457.999 and natural 313.540 seconds remain FAIL300 alongside
 the earlier failures.
 
 Canonical mock regressions are not live nested-Job or hosted-target qualification.
+
+**Current actual-source binding.** The API registry now names actual
+`8b87ef8188c68e68c8c0e9cb33878c3151a7e18e`, with sole parent
+`cfc7c741e22e0ef060edc2f736b1ba073810991a`. Its tree
+`6a1ebb15cfe7d50b1823fba299e35d53be698201` is reviewed DATA, not a commit
+substitute. Actual 8b87 contains the 117,468-byte environment-control qualifier,
+SHA-256 `b5850ffb3286086602a617f0a99152f8c312453b160cd0b96e9e6bfbfcfccf10`.
+That source is **local only** at binding preparation. The other eight registry
+entries and Infra gate are unchanged. This separate uncommitted binding needs
+fresh non-author review; the SOURCE opinions do not approve it. Binding
+persistence, remote availability and consumer validation remain later steps.
+
+The exact history regression first validates actual e504 and cfc7 against the
+same workflow SHA-256
+`b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e` and checker
+SHA-256 `33eaa615a6d2fc79b21dd6054b5c026e38c1ecdb14a0e00ee53fc96495266e2d`.
+It then rejects their 105,474-byte two-control qualifier for the new binding.
+Ten counted environment-delta reversals, including two exact hashed blocks,
+recover that prior qualifier byte for byte; the earlier fixed-control/focus,
+valid and crossed workflow/checker, and Java/SemVer regressions remain intact.
+The binding's private validation requires one official 25-output API generation
+and `--check`: only `scripts/qualify_windows.py` may change from 105,474 to
+117,468 bytes, with every other output compared byte for byte against the
+prior e504/cfc7 preview. Nothing is generated into the live API consumer.
+
+SOURCE evidence retains its limits: the author's 62-method/597-subtest result
+is author evidence. QA's normal 19-method subset was denied at the unchanged
+`ctypes` import before methods and was not rerun. Its separate 35-reader/8-Python
+and Windows PowerShell 5.1 parser/pure checks are not native-control execution.
+Full stdin-runner/outer-callback evidence remains missing, and the arbitrary-Unicode
+minimum-three caveat above applies. Source/mock, parser and local history results
+do not demonstrate an environment-only repair or clear any native/performance hold.
+
+**Earlier environment-arm SOURCE-freeze record (retained history).** The following
+records preserve that scope's then-uncommitted and unbound state, including its
+publication-preparation wording; they are not assertions about the current binding:
+
 The API registry names actual source commit
 `e504364cbce8525053540d48d661b23e1d930db9`, whose sole parent is
 `e2bd839f8e79c7146c2bf006f811e0638647669b`. That source and its later

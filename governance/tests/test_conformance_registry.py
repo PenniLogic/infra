@@ -143,8 +143,15 @@ class RegistryTests(unittest.TestCase):
 
     def api_source_ref(self, entry):
         self.assertIn("workflow_ref", entry)
-        self.assertEqual("e504364cbce8525053540d48d661b23e1d930db9", entry["workflow_ref"])
+        self.assertEqual("8b87ef8188c68e68c8c0e9cb33878c3151a7e18e", entry["workflow_ref"])
         return entry["workflow_ref"]
+
+    def assert_api_module_environment_qualifier(self, qualifier):
+        self.assertEqual(
+            (117468, "b5850ffb3286086602a617f0a99152f8c312453b160cd0b96e9e6bfbfcfccf10"),
+            (len(qualifier), hashlib.sha256(qualifier).hexdigest()),
+            "module environment control requires the reviewed 8b87 qualifier",
+        )
 
     def assert_api_fixed_controls_qualifier(self, qualifier):
         self.assertEqual(
@@ -189,7 +196,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
         with self.api_generator_at(ref) as (root, historical):
             qualifier = (root / "templates/qualify_windows.py").read_bytes()
-            self.assert_api_fixed_controls_qualifier(qualifier)
+            self.assert_api_module_environment_qualifier(qualifier)
             self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), qualifier)
             self.assertEqual(support.generator.workflow("api"), historical.workflow("api"))
             self.assertEqual(support.generator.checker("api"), historical.checker("api"))
@@ -201,6 +208,9 @@ class RegistryTests(unittest.TestCase):
         for case, ref in (
             ("reviewed-data-tree-not-commit", "3a6c9d6006c28139204200058634862b0505dc2c"),
             ("fixed-controls-data-tree-not-commit", "a09f30073ae6af946b87227681de9b2bd6e8a72c"),
+            ("module-environment-data-tree-not-commit", "6a1ebb15cfe7d50b1823fba299e35d53be698201"),
+            ("previous-fixed-controls-source", "e504364cbce8525053540d48d661b23e1d930db9"),
+            ("previous-fixed-controls-binding", "cfc7c741e22e0ef060edc2f736b1ba073810991a"),
             ("previous-focus-source", "a5c572a23e9c90dfc6732c70d06eeedcd94f52fa"),
             ("previous-focus-binding", "e2bd839f8e79c7146c2bf006f811e0638647669b"),
             ("previous-semver-source", "1ddc3434d8826605fc9dce7adb843d185dc92aaa"),
@@ -215,8 +225,76 @@ class RegistryTests(unittest.TestCase):
         with self.subTest(case="missing-workflow-ref"), self.assertRaises(AssertionError):
             self.api_source_ref({key: value for key, value in entry.items() if key != "workflow_ref"})
 
-    def api_before_fixed_shell_controls(self):
+    def api_before_module_environment_control(self):
         current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        self.assert_api_module_environment_qualifier(current)
+        blocks = []
+        for start, end, include_end, expected in (
+            (b"def shell_focus_module_root_normalized(value):\n",
+             b"def shell_focus_control(root, budget, environment, runtime, record):\n", False,
+             (9409, "08496be172f0a57c8dc9080b6ef1fd525c0a72010ef0c21d29a37c230676f5ff")),
+            (b'    if label == "os-module-root-environment":\n',
+             b'    elif label == "explicit-built-in-utility":\n', True,
+             (1265, "a4b264697b7d581a1fd43de9089396958b429d944de4c0a8bb70b5560e3362d9")),
+        ):
+            self.assertEqual(1, current.count(start))
+            self.assertEqual(1, current.count(end))
+            block = current[current.index(start):current.index(end) + (len(end) if include_end else 0)]
+            self.assertEqual(expected, (len(block), hashlib.sha256(block).hexdigest()))
+            blocks.append(block)
+        for added, previous in (
+            (b'SHELL_FOCUS_CONTROLS = ("plain-bare-command", "os-module-root-environment", "explicit-built-in-utility")\n',
+             b'SHELL_FOCUS_CONTROLS = ("plain-bare-command", "explicit-built-in-utility")\n'),
+            (b'SHELL_FOCUS_ENVIRONMENT_CARRIER = SHELL_FOCUS_CONTROL_DIRECTORY / "module-environment.jsonl"\n', b""),
+            (b'    "focus-control-environment", "focus-control-carrier",\n', b""),
+            (blocks[0], b""),
+            (blocks[1], b'    if label == "explicit-built-in-utility":\n'),
+            (b'        shell = str(Path(environment["COMSPEC"]).parent / "WindowsPowerShell" / "v1.0" / "powershell.exe")\n'
+             b'        observer_require(budget.resolve_command(["powershell.exe"], environment) == [shell],\n',
+             b'        observer_require(budget.resolve_command(["powershell.exe"], environment) == [command[0]],\n'),
+            (b'        if record["label"] == "os-module-root-environment":\n'
+             b'            carrier = root / SHELL_FOCUS_ENVIRONMENT_CARRIER\n'
+             b'            observer_require(not carrier.exists() and not carrier.is_symlink(), "focus-control-carrier")\n', b""),
+            (b'    if record["label"] == "os-module-root-environment" and record["owner_release"] == "helper-settled":\n'
+             b'        record["environment"] = shell_focus_environment_evidence(root, environment)\n'
+             b'        if record["outcome"] == "passed" and record["environment"]["status"] != "observed":\n'
+             b'            record["outcome"] = ("admission-or-result-refused" if record["environment"]["status"] == "refused"\n'
+             b'                                 else "inconclusive")\n', b""),
+            (b'        "stage_scope": "parent-stages-plus-environment-child-carrier", "comparison": "ordered-counterfactual-not-causal-proof",\n',
+             b'        "stage_scope": "parent-only-no-child-checkpoints", "comparison": "ordered-counterfactual-not-causal-proof",\n'),
+            (b'            "process_boundary": ("shipped-bootstrap-to-isolated-python-bridge-to-shell"\n'
+             b'                                 if label == "os-module-root-environment" else "shipped-bootstrap-to-shell"),\n'
+             b'            "environment": ({"status": "unavailable", "code": "owner-not-confirmed-settled", "pre": None, "post": None}\n'
+             b'                            if label == "os-module-root-environment" else None),\n', b""),
+        ):
+            self.assertEqual(1, current.count(added))
+            current = current.replace(added, previous, 1)
+        self.assert_api_fixed_controls_qualifier(current)
+        return current
+
+    def test_previous_fixed_control_refs_replay_workflow_and_checker_but_cannot_bind_module_environment(self):
+        previous_qualifier = self.api_before_module_environment_control()
+        workflow, checker = support.generator.workflow("api"), support.generator.checker("api")
+        self.assertEqual("b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e",
+                         hashlib.sha256(workflow.encode("utf-8")).hexdigest())
+        self.assertEqual("33eaa615a6d2fc79b21dd6054b5c026e38c1ecdb14a0e00ee53fc96495266e2d",
+                         hashlib.sha256(checker.encode("utf-8")).hexdigest())
+        for ref in ("e504364cbce8525053540d48d661b23e1d930db9", "cfc7c741e22e0ef060edc2f736b1ba073810991a"):
+            with self.subTest(ref=ref), self.api_generator_at(ref) as (root, historical):
+                self.assertEqual(workflow, historical.workflow("api"))
+                self.assertEqual(checker, historical.checker("api"))
+                for case, source in (("current-checker", checker), ("historical-checker", historical.checker("api"))):
+                    with self.subTest(case=case):
+                        self.assertIsNone(self.api_workflow_validator(source, root)(
+                            ".github/workflows/ci.yml", workflow.encode("utf-8")))
+                qualifier = (root / "templates/qualify_windows.py").read_bytes()
+                self.assertEqual(previous_qualifier, qualifier)
+                self.assert_api_fixed_controls_qualifier(qualifier)
+                with self.assertRaisesRegex(AssertionError, "module environment control requires the reviewed 8b87 qualifier"):
+                    self.assert_api_module_environment_qualifier(qualifier)
+
+    def api_before_fixed_shell_controls(self):
+        current = self.api_before_module_environment_control()
         self.assert_api_fixed_controls_qualifier(current)
         start = b"def shell_focus_control_command("
         end = b"def shell_focus(root, require_prepared=False):"
