@@ -142,8 +142,21 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(support.generator.artifacts(name)[".github/workflows/ci.yml"].encode("utf-8"), rendered)
 
     def api_source_ref(self, entry):
-        self.assertEqual("a5c572a23e9c90dfc6732c70d06eeedcd94f52fa", entry["workflow_ref"])
+        self.assertIn("workflow_ref", entry)
+        self.assertEqual("e504364cbce8525053540d48d661b23e1d930db9", entry["workflow_ref"])
         return entry["workflow_ref"]
+
+    def assert_api_fixed_controls_qualifier(self, qualifier):
+        self.assertEqual(
+            (105474, "69db94e8923e299c399bfd8d80c1b2e9b54a1195e943bb85e387264664223f02"),
+            (len(qualifier), hashlib.sha256(qualifier).hexdigest()),
+            "fixed shell controls require the reviewed e504 qualifier",
+        )
+
+    def api_workflow_validator(self, source, root):
+        namespace = {"__name__": "api_registry_digest_control", "__file__": str(root / "check_repository.py")}
+        exec(compile(source, "API historical checker control", "exec"), namespace)
+        return namespace["validate_workflow"]
 
     @contextlib.contextmanager
     def api_generator_at(self, ref):
@@ -175,21 +188,78 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNotNone(rendered, "the API source binding must exist in real Git history")
         self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
         with self.api_generator_at(ref) as (root, historical):
-            self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(),
-                             (root / "templates/qualify_windows.py").read_bytes())
+            qualifier = (root / "templates/qualify_windows.py").read_bytes()
+            self.assert_api_fixed_controls_qualifier(qualifier)
+            self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), qualifier)
+            self.assertEqual(support.generator.workflow("api"), historical.workflow("api"))
             self.assertEqual(support.generator.checker("api"), historical.checker("api"))
+            self.assertIsNone(self.api_workflow_validator(historical.checker("api"), root)(
+                ".github/workflows/ci.yml", rendered))
 
     def test_api_source_binding_rejects_data_tree_stale_and_placeholder_refs(self):
         entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
         for case, ref in (
             ("reviewed-data-tree-not-commit", "3a6c9d6006c28139204200058634862b0505dc2c"),
+            ("fixed-controls-data-tree-not-commit", "a09f30073ae6af946b87227681de9b2bd6e8a72c"),
+            ("previous-focus-source", "a5c572a23e9c90dfc6732c70d06eeedcd94f52fa"),
+            ("previous-focus-binding", "e2bd839f8e79c7146c2bf006f811e0638647669b"),
             ("previous-semver-source", "1ddc3434d8826605fc9dce7adb843d185dc92aaa"),
             ("previous-binding-commit", "47f8ac77155603f7b156c9ab214c36e95c26d6fb"),
             ("missing-source", "0" * 40),
+            ("empty-source", ""),
+            ("null-source", None),
             ("moving-head-placeholder", "HEAD"),
         ):
             with self.subTest(case=case), self.assertRaises(AssertionError):
                 self.api_source_ref({**entry, "workflow_ref": ref})
+        with self.subTest(case="missing-workflow-ref"), self.assertRaises(AssertionError):
+            self.api_source_ref({key: value for key, value in entry.items() if key != "workflow_ref"})
+
+    def api_before_fixed_shell_controls(self):
+        current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        self.assert_api_fixed_controls_qualifier(current)
+        start = b"def shell_focus_control_command("
+        end = b"def shell_focus(root, require_prepared=False):"
+        self.assertEqual(1, current.count(start))
+        self.assertEqual(1, current.count(end))
+        controls = current[current.index(start):current.index(end)]
+        self.assertEqual((7188, "d5bec28cadef4dd5e860f7c2dbfef9b1a567884447dc4c1fe1d65da2ad3a70b7"),
+                         (len(controls), hashlib.sha256(controls).hexdigest()))
+        for added, previous in (
+            (b'SHELL_FOCUS_CONTROLS = ("plain-bare-command", "explicit-built-in-utility")\n'
+             b'SHELL_FOCUS_CONTROL_DIRECTORY = LOOKUP.parent / "api106-fixed-shell-controls"\n', b""),
+            (b'    "focus-control-shell", "focus-control-module", "focus-control-result", "focus-control-output",\n'
+             b'    "focus-control-context", "focus-control-namespace", "focus-control-report-limit",\n', b""),
+            (controls, b""),
+            (b'    budget, started, before, environment = None, None, "absent", None\n',
+             b'    budget, started, before = None, None, "absent"\n'),
+            (b'    controls_passed = shell_focus_controls(root, budget, environment, report)\n'
+             b'    return 0 if report["status"] == "passed" and controls_passed else 1\n',
+             b'    return 0 if report["status"] == "passed" else 1\n'),
+        ):
+            self.assertEqual(1, current.count(added))
+            current = current.replace(added, previous, 1)
+        self.assertEqual((97831, "5ea60d30e6ea09c640243a461746c393627b2390b98bffd4e473deb7a8723799"),
+                         (len(current), hashlib.sha256(current).hexdigest()))
+        return current
+
+    def test_previous_focus_refs_replay_workflow_and_checker_but_cannot_bind_fixed_controls(self):
+        previous_qualifier = self.api_before_fixed_shell_controls()
+        workflow, checker = support.generator.workflow("api"), support.generator.checker("api")
+        self.assertEqual("b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e",
+                         hashlib.sha256(workflow.encode("utf-8")).hexdigest())
+        for ref in ("a5c572a23e9c90dfc6732c70d06eeedcd94f52fa", "e2bd839f8e79c7146c2bf006f811e0638647669b"):
+            with self.subTest(ref=ref), self.api_generator_at(ref) as (root, historical):
+                self.assertEqual(workflow, historical.workflow("api"))
+                self.assertEqual(checker, historical.checker("api"))
+                for case, source in (("current-checker", checker), ("historical-checker", historical.checker("api"))):
+                    with self.subTest(case=case):
+                        self.assertIsNone(self.api_workflow_validator(source, root)(
+                            ".github/workflows/ci.yml", workflow.encode("utf-8")))
+                qualifier = (root / "templates/qualify_windows.py").read_bytes()
+                self.assertEqual(previous_qualifier, qualifier)
+                with self.assertRaisesRegex(AssertionError, "fixed shell controls require the reviewed e504 qualifier"):
+                    self.assert_api_fixed_controls_qualifier(qualifier)
 
     def api_before_shell_focus(self):
         current = support.generator.workflow("api")
@@ -206,7 +276,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_previous_api_refs_cannot_bind_the_focused_diagnostic(self):
         workflow, checker = self.api_before_shell_focus()
-        current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        current = self.api_before_fixed_shell_controls()
         self.assertEqual((97831, "5ea60d30e6ea09c640243a461746c393627b2390b98bffd4e473deb7a8723799"),
                          (len(current), hashlib.sha256(current).hexdigest()))
         for ref in ("1ddc3434d8826605fc9dce7adb843d185dc92aaa", "47f8ac77155603f7b156c9ab214c36e95c26d6fb"):
@@ -215,14 +285,20 @@ class RegistryTests(unittest.TestCase):
                 self.assertNotEqual(support.generator.checker("api"), historical.checker("api"))
                 self.assertEqual(workflow, historical.workflow("api"))
                 self.assertEqual(checker, historical.checker("api"))
+                for case, source, valid_workflow in (
+                    ("current-checker-current-workflow", support.generator.checker("api"), support.generator.workflow("api")),
+                    ("historical-checker-historical-workflow", historical.checker("api"), workflow),
+                ):
+                    with self.subTest(case=case):
+                        self.assertIsNone(self.api_workflow_validator(source, root)(
+                            ".github/workflows/ci.yml", valid_workflow.encode("utf-8")))
                 for case, source, wrong_workflow in (
                     ("current-checker-historical-workflow", support.generator.checker("api"), workflow),
                     ("historical-checker-current-workflow", historical.checker("api"), support.generator.workflow("api")),
                 ):
-                    namespace = {"__name__": "api_registry_digest_control", "__file__": str(root / "check_repository.py")}
-                    exec(compile(source, "API historical checker control", "exec"), namespace)
                     with self.subTest(case=case), self.assertRaisesRegex(ValueError, "API CI must match"):
-                        namespace["validate_workflow"](".github/workflows/ci.yml", wrong_workflow.encode("utf-8"))
+                        self.api_workflow_validator(source, root)(
+                            ".github/workflows/ci.yml", wrong_workflow.encode("utf-8"))
                 qualifier = (root / "templates/qualify_windows.py").read_bytes()
                 self.assertNotEqual(current, qualifier)
                 self.assertEqual((78865, "31ab38c33e2c45c8bf324ebf55ff239a4a018ee68edd58bcafae52c5b00e5926"),

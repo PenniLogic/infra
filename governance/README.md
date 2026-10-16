@@ -785,22 +785,39 @@ excludes `PSModulePath`/`WinPSModulePath`; generic module-path advice is not a
 demonstrated repair. Native, performance, parity and cleanup holds remain.
 
 Canonical mock regressions are not live nested-Job or hosted-target qualification.
-The API registry still names the previously published source commit
-`a5c572a23e9c90dfc6732c70d06eeedcd94f52fa`, not its DATA tree, a previous
-Java/SemVer reference or the later `e2bd839f` binding commit. The new fixed-control
-qualifier is an **unbound source candidate**; a5 does not reproduce its changed
-body. The existing exact registry/current-qualifier history assertions remain
-unchanged and need a separately authorized actual-source binding after independent
-review, not a guessed commit or a waiver in this source change. Exact focus reversal
-recovers the workflow/checker of `1ddc3434` and `47f8ac77`; their pinned
-qualifiers lack the focus route and cannot bind it. The workflow/checker are
-unchanged; among the 25 generated API bodies only this qualifier is a new candidate.
-Generated workflow, checker digest and qualifier
-must still be adopted together only after separate producer/consumer review.
-This binding is local source/history evidence, not publication, adoption, native
-execution, automatic source trust or deployment/spend approval. No dispatch,
-full-suite/performance waiver or change to the existing native, parity, cleanup,
-protected and Infra #22 holds follows.
+The API registry names actual source commit
+`e504364cbce8525053540d48d661b23e1d930db9`, whose sole parent is
+`e2bd839f8e79c7146c2bf006f811e0638647669b`. This source is **local only** at
+binding preparation. Its reviewed `a09f30073ae6af946b87227681de9b2bd6e8a72c`
+tree is not a source commit; neither moving `HEAD` nor a future binding commit
+is an acceptable substitute. The registry update is a separate binding candidate,
+not publication or consumer adoption.
+
+Actual e504 history reproduces the current qualifier, workflow and checker.
+The earlier a5 source and e2bd binding still reproduce the **same workflow and
+checker**: the workflow remains SHA-256
+`b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e`, and the
+generated checker binds that workflow digest, not the qualifier body. Their
+97,831-byte qualifier, SHA-256
+`5ea60d30e6ea09c640243a461746c393627b2390b98bffd4e473deb7a8723799`, cannot
+bind the new 105,474-byte qualifier, SHA-256
+`69db94e8923e299c399bfd8d80c1b2e9b54a1195e943bb85e387264664223f02`.
+History tests positively validate both workflow/checker baselines before rejecting
+the stale qualifier. Reversing only the five exact fixed-control changes
+recovers the old qualifier byte for byte. The older focus reversal still recovers
+the distinct workflow/checker of `1ddc3434` and `47f8ac77`; their original
+crossed-digest negatives and Java/SemVer reversal anchors remain required.
+
+The private 25-output API generation/check compares every body with the prior
+accepted preview; only the qualifier changes. Generated workflow, checker digest
+and qualifier must still be adopted together after separate producer/consumer
+review. Source persistence, this binding, later publication and consumer adoption
+are distinct steps. None establishes a causal repair, source PR, hosted pass,
+native execution, automatic source trust, deployment/spend approval or product
+acceptance. No dispatch, full-suite/performance waiver or change to the original
+Windows/CI failures, 319.677/399.807-second FAIL300 results, parity, vendor,
+cleanup, protected, [#22](https://github.com/PenniLogic/infra/issues/22) or
+[PenniLogic/api#3](https://github.com/PenniLogic/api/issues/3) holds follows.
 
 ## Infra Windows/Linux ordinary qualification (owner transition held)
 
