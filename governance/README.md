@@ -845,7 +845,46 @@ the earlier failures.
 
 Canonical mock regressions are not live nested-Job or hosted-target qualification.
 
-**API helper SOURCE alignment (local-only input).** The observed API source commit is
+**API helper registry/history binding (2026-10-17; local only).** The API entry in
+`conformance/check-names.json` now names actual Infra SOURCE
+`78e6d573f5956cfc933354d2a3fdf22bdea1d4b3`, sole parent
+`1dec8cbd5a752e474a7340373d26c6cf8392aa6e`, with tree
+`3a239dfa95b6917c6cc705a92a47050f996ae29d`. That SOURCE contains the 117,552-byte
+qualifier, SHA-256 `6f6b47f9be3557a910b605b64a1f422be7bfa59000997a57997f4ef99b0443b7`.
+The tree is not a commit substitute. The other eight registry entries, including
+Infra's primary check and `PR workflow integrity` gate at
+`889c5c35a1677ef33899a2e63bc528d3bac802f9`, are unchanged.
+
+At this binding's preparation, both Infra SOURCE 78e6 and API source
+`5948543f7ce6c3d8382c63bda0510e81f4941c17` are local only: neither has been remotely
+published or protected accepted. This is a separate, uncommitted registry/history
+binding, not another SOURCE implementation change or a future binding commit.
+It requires fresh non-author Core, QA and CI/privacy review; the SOURCE opinions
+do not approve this binding. Persistence, publication, consumer adoption and
+native qualification remain separate later work.
+
+The history regression first reverses exactly five helper-pin/comment assignments
+to recover the historical 117,468-byte `b5850ffb` qualifier. Only then does it apply
+the existing environment inverse, retaining the exact 1,265-byte `a4b26469` block
+and the 105,474-byte `69db94e8` to 97,831-byte `5ea60d30` and older Java/SemVer
+oracles. Actual 8b87 and 1dec must first render matching valid workflows and
+checkers before their qualifiers and source refs are refused for the current
+binding. API commit 5948 and DATA tree 3a239 are explicitly rejected as Infra
+SOURCE substitutes. Missing required local history is a failure, not a passing skip.
+
+Validation requires the complete affected registry/history module, the repository
+checker and diff hygiene, plus one official private API 25-output generation and
+check. All 25 outputs must be byte-identical to the approved 3a239 SOURCE preview;
+relative to the older 8b87/1dec preview, only `scripts/qualify_windows.py` differs.
+Nothing is generated into the live API checkout. No native 300/600-second,
+WindowsCI, parity, vendor/context, cleanup, source-PR/protected or product hold is
+cleared by these local binding checks.
+
+**Earlier API helper SOURCE-alignment record (retained history, 2026-10-17).**
+The following keeps that scope's then-uncommitted canonical alignment and 8b87
+registry state; it is not the status of the new binding.
+
+The observed API source commit is
 `5948543f7ce6c3d8382c63bda0510e81f4941c17`, sole parent
 `5a1c3cedc39d489aae7c8edc1c404a77ffbad08b`, with actual tree
 `d1fcb9bd91b513d2b247ab26593664267abd061e`. Its committed, retained source is the

@@ -137,14 +137,20 @@ class RegistryTests(unittest.TestCase):
             name = registry.profile_name(entry["repo"])
             with self.subTest(repo=entry["repo"]):
                 rendered = registry.render_workflow_at(support.GOVERNANCE.parent, entry["workflow_ref"], name)
-                if rendered is None:
-                    self.skipTest("commit not present in this (shallow) history")
+                self.assertIsNotNone(rendered, "every recorded workflow source must exist in real Git history")
                 self.assertEqual(support.generator.artifacts(name)[".github/workflows/ci.yml"].encode("utf-8"), rendered)
 
     def api_source_ref(self, entry):
         self.assertIn("workflow_ref", entry)
-        self.assertEqual("8b87ef8188c68e68c8c0e9cb33878c3151a7e18e", entry["workflow_ref"])
+        self.assertEqual("78e6d573f5956cfc933354d2a3fdf22bdea1d4b3", entry["workflow_ref"])
         return entry["workflow_ref"]
+
+    def assert_api_helper_source_qualifier(self, qualifier):
+        self.assertEqual(
+            (117552, "6f6b47f9be3557a910b605b64a1f422be7bfa59000997a57997f4ef99b0443b7"),
+            (len(qualifier), hashlib.sha256(qualifier).hexdigest()),
+            "helper source alignment requires the reviewed 78e6 qualifier",
+        )
 
     def assert_api_module_environment_qualifier(self, qualifier):
         self.assertEqual(
@@ -196,7 +202,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(support.generator.workflow("api").encode("utf-8"), rendered)
         with self.api_generator_at(ref) as (root, historical):
             qualifier = (root / "templates/qualify_windows.py").read_bytes()
-            self.assert_api_module_environment_qualifier(qualifier)
+            self.assert_api_helper_source_qualifier(qualifier)
             self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(), qualifier)
             self.assertEqual(support.generator.workflow("api"), historical.workflow("api"))
             self.assertEqual(support.generator.checker("api"), historical.checker("api"))
@@ -209,6 +215,8 @@ class RegistryTests(unittest.TestCase):
             ("reviewed-data-tree-not-commit", "3a6c9d6006c28139204200058634862b0505dc2c"),
             ("fixed-controls-data-tree-not-commit", "a09f30073ae6af946b87227681de9b2bd6e8a72c"),
             ("module-environment-data-tree-not-commit", "6a1ebb15cfe7d50b1823fba299e35d53be698201"),
+            ("helper-alignment-data-tree-not-commit", "3a239dfa95b6917c6cc705a92a47050f996ae29d"),
+            ("API-source-not-Infra-source", "5948543f7ce6c3d8382c63bda0510e81f4941c17"),
             ("previous-fixed-controls-source", "e504364cbce8525053540d48d661b23e1d930db9"),
             ("previous-fixed-controls-binding", "cfc7c741e22e0ef060edc2f736b1ba073810991a"),
             ("previous-focus-source", "a5c572a23e9c90dfc6732c70d06eeedcd94f52fa"),
@@ -225,8 +233,52 @@ class RegistryTests(unittest.TestCase):
         with self.subTest(case="missing-workflow-ref"), self.assertRaises(AssertionError):
             self.api_source_ref({key: value for key, value in entry.items() if key != "workflow_ref"})
 
-    def api_before_module_environment_control(self):
+    def api_before_helper_source_alignment(self):
         current = (support.GOVERNANCE / "templates/qualify_windows.py").read_bytes()
+        self.assert_api_helper_source_qualifier(current)
+        for added, previous in (
+            (b'OBSERVER_BUDGET_BYTES = 33441\n', b'OBSERVER_BUDGET_BYTES = 30820\n'),
+            (b'OBSERVER_BUDGET_SHA256 = "eca36677c55d7addb00660532fd1aafa4343db752bb014641c667530ada83525"\n',
+             b'OBSERVER_BUDGET_SHA256 = "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"\n'),
+            (b'    "scripts/tests/test_money_mutation.py": (248547, "987aeb75eb219d2cd5a927f89eb84a0e2f9c67f834ab419f45a8d02d383f390e"),\n',
+             b'    "scripts/tests/test_money_mutation.py": (235983, "c237505d6d986aa6fe98472ac874f92a4be62363fa7774723ea8cb9016d2fb72"),\n'),
+            (b'    "scripts/process_budget.py": (33441, "eca36677c55d7addb00660532fd1aafa4343db752bb014641c667530ada83525"),\n',
+             b'    "scripts/process_budget.py": (30820, "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"),\n'),
+            (b"        # The helper discards ambient input and builds OS-inbox plus KnownFolder-shared output.\n"
+             b"        # This bridge deliberately replaces that output with the child's singleton inbox path.\n",
+             b"        # The unchanged helper strips PSModulePath; only this already-owned bridge sets the child's input.\n"),
+        ):
+            self.assertEqual(1, current.count(added))
+            current = current.replace(added, previous, 1)
+        self.assert_api_module_environment_qualifier(current)
+        return current
+
+    def test_previous_module_environment_refs_replay_workflow_and_checker_but_cannot_bind_helper_source(self):
+        previous_qualifier = self.api_before_helper_source_alignment()
+        workflow, checker = support.generator.workflow("api"), support.generator.checker("api")
+        self.assertEqual("b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e",
+                         hashlib.sha256(workflow.encode("utf-8")).hexdigest())
+        self.assertEqual("33eaa615a6d2fc79b21dd6054b5c026e38c1ecdb14a0e00ee53fc96495266e2d",
+                         hashlib.sha256(checker.encode("utf-8")).hexdigest())
+        entry = next(entry for entry in self.document["entries"] if entry["repo"] == "PenniLogic/api")
+        for ref in ("8b87ef8188c68e68c8c0e9cb33878c3151a7e18e", "1dec8cbd5a752e474a7340373d26c6cf8392aa6e"):
+            with self.subTest(ref=ref), self.api_generator_at(ref) as (root, historical):
+                self.assertEqual(workflow, historical.workflow("api"))
+                self.assertEqual(checker, historical.checker("api"))
+                for case, source in (("current-checker", checker), ("historical-checker", historical.checker("api"))):
+                    with self.subTest(case=case):
+                        self.assertIsNone(self.api_workflow_validator(source, root)(
+                            ".github/workflows/ci.yml", workflow.encode("utf-8")))
+                qualifier = (root / "templates/qualify_windows.py").read_bytes()
+                self.assertEqual(previous_qualifier, qualifier)
+                self.assert_api_module_environment_qualifier(qualifier)
+                with self.assertRaisesRegex(AssertionError, "helper source alignment requires the reviewed 78e6 qualifier"):
+                    self.assert_api_helper_source_qualifier(qualifier)
+                with self.assertRaises(AssertionError):
+                    self.api_source_ref({**entry, "workflow_ref": ref})
+
+    def api_before_module_environment_control(self):
+        current = self.api_before_helper_source_alignment()
         self.assert_api_module_environment_qualifier(current)
         blocks = []
         for start, end, include_end, expected in (
