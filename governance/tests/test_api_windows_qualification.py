@@ -923,10 +923,51 @@ class WindowsShellFocusTests(unittest.TestCase):
             (root / "scripts" / "process_budget.py").write_text("raise RuntimeError('must not import')")
             with self.assertRaisesRegex(ValueError, "observer-budget-source"):
                 qualification.observer_budget_module(root)
-        self.assertEqual((30820, "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"),
+        self.assertEqual((33441, "eca36677c55d7addb00660532fd1aafa4343db752bb014641c667530ada83525"),
                          qualification.SHELL_FOCUS_SOURCES["scripts/process_budget.py"])
         self.assertEqual(4, len(qualification.SHELL_FOCUS_SOURCES))
         self.assertIsNone(qualification.shell_focus_exception(qualification.Refused(MARKER), None)["code"])
+
+    def test_common_and_focus_pins_agree_with_exact_reviewed_source_closure(self):
+        expected = {
+            "scripts/tests/test_money_mutation.py": (248547, "987aeb75eb219d2cd5a927f89eb84a0e2f9c67f834ab419f45a8d02d383f390e"),
+            "scripts/money_mutation.py": (24847, "b4e9ca3218d16af605537714b365962d94f40265d092bb5302538e7efb7de000"),
+            "scripts/quality.py": (33687, "725fac94b7c4496a265260503f5492acdc28d45e7690254f1328e596a11b42cd"),
+            "scripts/process_budget.py": (33441, "eca36677c55d7addb00660532fd1aafa4343db752bb014641c667530ada83525"),
+        }
+        self.assertEqual(expected, qualification.SHELL_FOCUS_SOURCES)
+        self.assertEqual(expected["scripts/process_budget.py"],
+                         (qualification.OBSERVER_BUDGET_BYTES, qualification.OBSERVER_BUDGET_SHA256))
+
+    def test_common_loader_refuses_obsolete_sizes_and_modified_bytes_before_import(self):
+        size = qualification.OBSERVER_BUDGET_BYTES
+        with tempfile.TemporaryDirectory(prefix="observer-pinned-source-") as temporary:
+            root = Path(temporary)
+            path = root / "scripts" / "process_budget.py"
+            path.parent.mkdir()
+            prefix = b"raise AssertionError('unverified helper must not import')\n"
+            for label, length in (("obsolete", 30820), ("short", size - 1),
+                                  ("same-size-mismatch", size), ("oversize", size + 1)):
+                with self.subTest(case=label), mock.patch.object(qualification, "ModuleType") as module:
+                    path.write_bytes(prefix + b" " * (length - len(prefix)))
+                    with self.assertRaisesRegex(ValueError, "observer-budget-source"):
+                        qualification.observer_budget_module(root)
+                    module.assert_not_called()
+
+    def test_focus_source_reader_refuses_obsolete_or_modified_mutation_bytes(self):
+        name = "scripts/tests/test_money_mutation.py"
+        size, _ = qualification.SHELL_FOCUS_SOURCES[name]
+        with tempfile.TemporaryDirectory(prefix="focus-pinned-mutation-") as temporary:
+            root = Path(temporary)
+            path = root / name
+            path.parent.mkdir(parents=True)
+            prefix = b"raise AssertionError('source reader must not execute the target')\n"
+            for label, length in (("obsolete", 235983), ("short", size - 1),
+                                  ("same-size-mismatch", size), ("oversize", size + 1)):
+                with self.subTest(case=label):
+                    path.write_bytes(prefix + b" " * (length - len(prefix)))
+                    with self.assertRaisesRegex(ValueError, "focus-source-binding"):
+                        qualification.shell_focus_sources(root)
 
     def test_source_closure_is_exact_and_fixed_child_binds_controller_without_execution(self):
         with tempfile.TemporaryDirectory(prefix="focus-synthetic-source-") as temporary:

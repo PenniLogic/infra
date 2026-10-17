@@ -34,16 +34,16 @@ OBSERVER_FILES = {
     "auxiliary-boundary": (LOOKUP.with_name("api106-approved-shell-auxiliary-boundary.bin"), 7),
     "auxiliary-lookup": (LOOKUP.with_name("api106-approved-shell-auxiliary-module-lookup.jsonl"), LOOKUP_FILE_LIMIT),
 }
-OBSERVER_BUDGET_BYTES = 30820
-OBSERVER_BUDGET_SHA256 = "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"
+OBSERVER_BUDGET_BYTES = 33441
+OBSERVER_BUDGET_SHA256 = "eca36677c55d7addb00660532fd1aafa4343db752bb014641c667530ada83525"
 OBSERVER_COMMAND_SECONDS = 270
 OBSERVER_CLOSED_SECONDS = 300
 SHELL_FOCUS_TARGET = "test_money_mutation.ProcessBudgetTest.test_approved_system_shell_survives_without_inheriting_ambient_path"
 SHELL_FOCUS_SOURCES = {
-    "scripts/tests/test_money_mutation.py": (235983, "c237505d6d986aa6fe98472ac874f92a4be62363fa7774723ea8cb9016d2fb72"),
+    "scripts/tests/test_money_mutation.py": (248547, "987aeb75eb219d2cd5a927f89eb84a0e2f9c67f834ab419f45a8d02d383f390e"),
     "scripts/money_mutation.py": (24847, "b4e9ca3218d16af605537714b365962d94f40265d092bb5302538e7efb7de000"),
     "scripts/quality.py": (33687, "725fac94b7c4496a265260503f5492acdc28d45e7690254f1328e596a11b42cd"),
-    "scripts/process_budget.py": (30820, "a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364"),
+    "scripts/process_budget.py": (33441, "eca36677c55d7addb00660532fd1aafa4343db752bb014641c667530ada83525"),
 }
 SHELL_FOCUS_CONTROLS = ("plain-bare-command", "os-module-root-environment", "explicit-built-in-utility")
 SHELL_FOCUS_CONTROL_DIRECTORY = LOOKUP.parent / "api106-fixed-shell-controls"
@@ -1674,7 +1674,8 @@ def shell_focus_control_command(environment, runtime, label):
         modules = observer_runtime_path(str(shell.parent / "Modules"), directory=True)
         observer_require(";" not in str(modules), "focus-control-environment")
         command[-1] = shell_focus_environment_script(shell, modules)
-        # The unchanged helper strips PSModulePath; only this already-owned bridge sets the child's input.
+        # The helper discards ambient input and builds OS-inbox plus KnownFolder-shared output.
+        # This bridge deliberately replaces that output with the child's singleton inbox path.
         bridge = (
             "import os,subprocess,sys\n"
             "child={key:value for key,value in os.environ.items() if key.upper()!='PSMODULEPATH'}\n"

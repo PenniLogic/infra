@@ -741,7 +741,7 @@ cause contains a timeout. There is no retry.
 The serial order is `plain-bare-command`, `os-module-root-environment`, then
 `explicit-built-in-utility`. All use the same admitted Windows PowerShell image with
 `-NoProfile -NonInteractive -Command`, the original `scripts` working directory, the
-unchanged inner-helper environment sanitization and merged capture. The first
+admitted helper's filtered environment and merged capture. The first
 command is exactly `Write-Output 'approved-shell'`, without lookup delegates or
 child checkpoints. The last checks that the shell's `$PSHOME` matches its
 admitted image directory, imports only that directory's absolute
@@ -756,7 +756,8 @@ control's helper starts.
 The middle arm measures one **prospective child-only environment input**. Its
 fixed `-I -S -B` Python bridge runs inside the same unchanged helper-owned process
 tree and starts only the approved absolute Windows PowerShell image. It inherits
-the helper-filtered environment and replaces only the child's `PSModulePath` with
+the helper-filtered environment, including its constructed Windows module list,
+and deliberately replaces only the child's `PSModulePath` with
 the literal `WindowsPowerShell\v1.0\Modules` directory derived from the helper's
 OS-selected system shell. It does not patch the helper's environment function,
 change registry/global settings, introduce a configurable command/path, or
@@ -826,9 +827,10 @@ Earlier baseline/control execution can affect caches, and runner-image metadata
 does not establish identical image/context. The focused baseline already failed
 without preceding full/pair execution; the older hooks-disarmed pair auxiliary
 also failed in its owning-suite context. Neither proves that removing hooks or
-explicitly importing a module fixes the cause. The shipped environment already
-excludes `PSModulePath`/`WinPSModulePath`; generic module-path advice is not a
-demonstrated repair. Native, performance, parity and cleanup holds remain.
+explicitly importing a module fixes the cause. The aligned helper still discards
+ambient `PSModulePath`/`WinPSModulePath`; Windows `PSModulePath` output is constructed
+rather than inherited. This input policy is not a demonstrated repair.
+Native, performance, parity and cleanup holds remain.
 
 The retained API manual run `38895034128` at `2af8335` failed the original
 target and plain control (about 10.014 seconds), while its last explicit-import
@@ -843,7 +845,43 @@ the earlier failures.
 
 Canonical mock regressions are not live nested-Job or hosted-target qualification.
 
-**Current actual-source binding.** The API registry now names actual
+**API helper SOURCE alignment (local-only input).** The observed API source commit is
+`5948543f7ce6c3d8382c63bda0510e81f4941c17`, sole parent
+`5a1c3cedc39d489aae7c8edc1c404a77ffbad08b`, with actual tree
+`d1fcb9bd91b513d2b247ab26593664267abd061e`. Its committed, retained source is the
+input to this uncommitted canonical alignment, not a claim of remote API
+availability, hosted repair or protected acceptance.
+
+The common observer loader and four-member focus closure both pin its
+33,441-byte `scripts/process_budget.py`; the focus mutation-test pin is
+248,547 bytes. The `money_mutation.py` and `quality.py` pins are unchanged.
+The helper declares exact `PSModulePath` as an allowed **output**, but excludes it
+from ambient input on every OS. On Windows it constructs the output with the OS
+inbox first, then the shared Modules directory obtained through the OS KnownFolder
+API, not ambient `ProgramFiles`. Case-variant inputs remain denied; non-Windows
+output omits `PSModulePath`. This ordering is an input policy, not universal engine
+or configuration isolation. The diagnostic bridge deliberately replaces that
+constructed list with its singleton OS-inbox input; its target, lifecycle,
+budgets and validator have not changed.
+
+Real loader/focus validation uses the retained API commit, raw commit/tree and
+mode/blob/body provenance, without changing the source pins or executing the
+original target. Source/mock/local-history checks do not require that API commit
+to be remote; there is no hosted-context waiver or simulated-host acceptance. One private
+official 25-output generation/check must leave the other 24 outputs byte-identical
+to the accepted 8b87/1dec preview; only `scripts/qualify_windows.py` changes.
+Nothing is generated into the live API checkout.
+
+The prior Infra SOURCE `8b87ef8188c68e68c8c0e9cb33878c3151a7e18e` and binding
+`1dec8cbd5a752e474a7340373d26c6cf8392aa6e` have been published on the existing topic
+for source availability only. The API registry still names 8b87. Registry/history
+alignment needs a later **actual Infra SOURCE commit**, never the API commit,
+a DATA tree or a predicted commit. That binding, separate non-author review,
+source-PR/protected acceptance and every native/product hold remain later work.
+
+**Earlier 8b87 binding-preparation record (retained history).** The following keeps
+the then-local-only, uncommitted and pending states; it is not the status of the
+new SOURCE alignment. The API registry at that preparation stage names actual
 `8b87ef8188c68e68c8c0e9cb33878c3151a7e18e`, with sole parent
 `cfc7c741e22e0ef060edc2f736b1ba073810991a`. Its tree
 `6a1ebb15cfe7d50b1823fba299e35d53be698201` is reviewed DATA, not a commit
