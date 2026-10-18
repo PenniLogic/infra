@@ -1064,9 +1064,13 @@ class RuntimeRepairTests(unittest.TestCase):
         document = json.loads(support.generator.workflow("api"))
         step = next(step for step in document["jobs"]["windows"]["steps"]
                     if step["name"] == "Run Windows owning suites")
-        commands = step["run"].splitlines()[::2]
-        self.assertEqual("python -I -S -B scripts\\money_client_interop.py prepare --require-prepared", commands[-2])
-        step["run"] = support.generator.powershell_commands(commands[:-2] + commands[-1:])
+        lines = step["run"].splitlines()
+        prepare = "python -I -S -B scripts\\money_client_interop.py prepare --require-prepared"
+        guard = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+        self.assertEqual(1, lines.count(prepare))
+        position = lines.index(prepare)
+        self.assertEqual(guard, lines[position + 1])
+        step["run"] = "\n".join(lines[:position] + lines[position + 2:])
         root, context = self.consumer("api", {".github/workflows/ci.yml": support.generator.encoded(document)})
         before = support.tree_digest(root)
         baseline = defects.subprocess_runner([sys.executable, "scripts/check_repository.py"], root)

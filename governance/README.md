@@ -279,14 +279,18 @@ described below. The lookup JSON grammar and its 4096-byte public bound remain
 unchanged by that extension.
 
 An optional `Read approved-shell command boundary` step follows `Run Windows owning
-suites` in that same job. Its `always()` condition retains reporting after an owning
-failure. It uses `pwsh` at `${{ github.workspace }}` and a one-minute step cap inside
+suites` in that same job. Its ordinary-route `always()` condition retains reporting
+after an owning failure. The explicit observer-pair route below instead collects
+this carrier together with the other five, only after confirmed command ownership
+has settled; the original reader is excluded on that route. The original reader
+uses `pwsh` at `${{ github.workspace }}` and a one-minute step cap inside
 the unchanged job cap. The reader is embedded in the generator, keeping historical
 CI rendering self-contained in the existing generator/profile pair. There is no
 `hashFiles` expression or extra helper: file hashing would read the whole marker
 before the step, outside the reader's bound. The owning result, all twelve native
 fail-fast guards and the required CI result remain unchanged; there is no
-`continue-on-error`, upload action or qualifier/parser change.
+`continue-on-error` or upload action. The ordinary reader's script bytes and
+qualifier behavior remain unchanged by observer-pair forwarding.
 
 The reader consumes at most eight bytes to detect overflow, accepts only the finite
 zero-to-seven-byte checkpoint protocol, and emits a fixed JSON record bounded to
@@ -325,6 +329,257 @@ cause, pipe identity, shell exit, EOF, cleanup or qualification. Runner loss or 
 hard timeout may prevent any readback. Instrumentation, fresh same-job custody,
 independent review, publication and any one-shot hosted use require separate release.
 
+The API-only Boolean `workflow_dispatch.inputs.api106_observer_pair` defaults to
+`false`. Only an explicit dispatch value `true` selects the qualifier's
+`--api106-observer-pair` argument, together with `--require-prepared`. Push/PR,
+ordinary Windows, Linux, setup and other repositories do not opt in. The qualifier
+does not promote an ambient environment variable into this selection. The paired
+argument forwards to the existing full
+`python scripts/quality.py test --require-prepared --api106-observer-pair` interface:
+full ordinary unittest discovery and, if that succeeds, the existing Gradle test
+and metrics path. It is not a selected-test proxy.
+
+**The paired route has source-level runtime wiring, not native activation or
+acceptance.** The explicit route uses the fixed `OBSERVER_COMMAND_SECONDS = 270`,
+with no environment or CLI allowance override, and the API's existing, byte-pinned
+`scripts/process_budget.py` at SHA-256
+`a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364`
+(30,820 bytes), loaded only at that explicit callsite. Its `run` interface owns
+creation, the release-gated Windows Job, separate stdout/stderr capture and
+cleanup. Its existing four-MiB combined capture bound and ten-second Job cleanup
+allowance are not changed. Existing capture/Job/timing exception-note parsers
+retain only their bounded public projections. No replacement controller, native
+operation at import time, raw output or environment dump is introduced.
+
+The workflow binds only the first application in PowerShell's Git command-resolution
+order before checkout and places that exact directory first for checkout. It selects
+the command before reading its path or hashing it: multiple candidates never become
+a space-joined path/digest, and an invalid first candidate refuses without fallback.
+The same pinned checkout/setup-Python/
+setup-Java actions supply the executed commit, Python image/version and JDK
+home/version to the opt-in call. Its same-job read-only Git admission requires a
+clean standalone checkout, matching workspace/Git/common directories and the
+dispatch commit, and binds the current HEAD, index and repository configuration
+bytes. The qualifier rejects changed metadata or a changed selected Git image,
+and requires outer-owner/target Python and base-prefix agreement. These setup
+selections, the hosted runner's installed runtimes and the checked-out source
+are provenance inputs; merely filtering an inherited PATH would not bind them.
+No path is copied from a developer's host or an earlier run.
+Only the opt-in qualifier driver uses `-I -S -B` to exclude inherited Python
+startup injection; the full `quality.py test` child retains its ordinary
+interpreter startup and exact existing argument list.
+
+An opt-in Java-selection refusal retains `observer-java-selection` and emits
+one diagnostic-only `windows_observer_java_selection` record naming only the
+first failed check: `home-match`, `home-single-path`,
+`release-version-single-match`, `selected-version-match`, or
+`release-implementor`. Its `matched` value is always false; the fixed record is
+at most 192 bytes including the line ending. It contains no Java path, version,
+release contents, environment value or exception text. Valid selections emit
+no such record. Only `selected-version-match` also emits a separate
+`windows_observer_java_versions` diagnostic-only record with `release_version`
+and `selected_version`: the release's numeric version and the setup label's
+numeric core, retaining the earlier diagnostic projection without exporting
+runtime/build metadata. Each operand is either an
+unchanged numeric Java 21 version or the fixed string `unavailable`. The export
+grammar is `21(?:\.(?:0|[1-9][0-9]{0,4})){1,3}`, at most 20 ASCII characters:
+one to three components after 21, each zero or one to five digits without
+leading zeros. Malformed, oversized and non-string operands are unavailable,
+never truncated, coerced or normalized. The version-only record also fits
+192 bytes including its line ending. These two diagnostic projections are not
+the complete version comparison below. Accepted selections remain silent.
+The five check names/order, home/path and Adoptium requirements remain unchanged.
+Path/read/decode failures retain their existing static refusal rather than
+inventing a failed selection predicate. Diagnostic I/O cannot replace the
+primary refusal; the existing fixed secondary-failure path records unavailable
+reporting. Admission still stops before owner/custody creation, so absent
+collector state remains a refusal.
+
+Java admission compares two different representations, not just their first
+three components. The pinned setup-java
+[`de7274f`](https://github.com/actions/setup-java/blob/de7274f081f381c8f8158605e0321c36c376e2e6/src/distributions/temurin/installer.ts)
+reports Adoptium's `version_data.semver`, including when selected from its cache.
+The pinned Adoptium
+[`c980bfc`](https://github.com/adoptium/api.adoptium.net/blob/c980bfc3f0262fec6e696cf4401a3b7b59178ea4/adoptium-models-parent/adoptium-api-v3-models/src/main/kotlin/net/adoptium/api/v3/models/VersionData.kt)
+encodes a nonzero Java patch as `patch * 100 + build` in SemVer build metadata.
+Admission therefore requires one canonical `JAVA_VERSION` and one
+`JAVA_RUNTIME_VERSION` from the already bounded 16-KiB release file. The runtime
+version must exactly repeat the Java numeric version and supply a build from
+1 through 99, optionally followed by the fixed `-LTS` suffix. A build suffix
+present in `JAVA_VERSION` must agree too. This bounded build range makes the
+patch/build encoding unambiguous; no division, truncation or guessed carry is
+used. Missing/duplicate/malformed fields, leading zeros, non-ASCII digits,
+control characters and builds of 0 or 100 and above refuse.
+
+Numeric Java versions have exactly three components, or four with a nonzero
+patch, using the bounded numeric component grammar above. The setup label must
+have the same first three components plus the exact encoded patch/build number;
+its only permitted additional metadata is the observed zero-only `.0` suffix.
+Nonzero/extra distribution metadata is unproved, not ignored. Ordinary
+`21.0.9+10` and `21.0.9+10.0` labels still match release `21.0.9` with runtime
+`21.0.9+10[-LTS]`. Release `21.0.12.1` with runtime `21.0.12.1+1[-LTS]` matches
+`21.0.12+101[.0]`, but wrong patch/build/update/major values do not. Metadata-free
+labels, raw four-part setup labels and earlier permissive numeric/suffix forms
+are no longer sufficient evidence of a selected build.
+
+The actual manual run `38662126136/1` reported release `21.0.12.1` versus setup
+numeric core `21.0.12`, from label `21.0.12+101.0`. It did not establish the
+runtime build or vendor. This source correction addresses that evidenced
+representation mismatch; a reviewed changed-source native run must still prove
+qualification. No native, timing, parity, cleanup or protected-integration hold
+is cleared by synthetic correspondence.
+
+The existing successful terminal `materialize_money_sources.py --verify`
+binds all eleven Money inputs and fourteen provider files. The immediately
+preceding no-fetch database `prepare`/`verify` and interop SOURCE
+`prepare --require-prepared` checks retain the exact five database payloads and
+39 interop inputs plus their acquisition receipt. Only their guarded same-job
+path reaches the prepared marker and qualifier; missing preparation is refusal,
+not a substitute for executing the intended prepared test paths. There is no
+client-runtime `interop verify`, selected-test replacement or new preparation
+framework.
+
+The finite owner environment has **one** explicit additional runtime directory:
+the bound Git executable's parent. The existing helper derives the same Python/
+base-prefix Scripts directories, the selected `JAVA_HOME` bin and actual
+System32/WindowsPowerShell/Wbem paths. The existing resolver must select the
+bound Python, Git and Java images; shadowed selections or missing approved
+System32 cmd/WindowsPowerShell images refuse before process creation.
+No Node, npm, Docker or oasdiff directory
+is needed by this command. The Docker-named native fixture copies `cmd.exe`; it
+does not need Docker. The parent passes a constructed mapping, never ambient
+PATH or `dict(os.environ)`: explicit CI flags, selected JDK and fresh,
+exclusive same-job HOME/USERPROFILE, TEMP/TMP/TMPDIR and GRADLE_USER_HOME roots.
+Credentials, proxies, Git selectors and Python/Java/Node/Gradle option injection
+variables are not carried into the owner. Existing tests may still construct
+their own source-defined synthetic child environments.
+
+The fresh Gradle home contains only toolchain-selection properties for the
+setup-Java JDK21; alternate JDK detection/download is disabled, not ordinary
+Gradle/dependency acquisition. Pre-existing project `.gradle`/`.kotlin` state
+or executable shadow files refuse this route. The job-owned runtime directories
+are retained rather than deleted on uncertain cleanup. This is intentionally
+not a claim of a warm cache or offline execution: the normal success-only
+wrapper distribution and locked/checksummed dependency downloads remain inside
+the full command's 270-second work allowance. There is no `--offline`, install/
+prewarming step, task filter, unrelated SDK or database-service graph. Ordinary
+JVM tests retain their loopback use and existing visible privilege/skip behavior.
+
+The work allowance plus the unchanged single ten-second outer cleanup is
+nominally 280 seconds, leaving twenty seconds below **300**, not establishing a
+timing result. A separate monotonic-nanosecond interval starts before owner
+environment construction and ends after owner return, capture EOF, custody
+settlement and custody close. Thus it includes child interpreter startup, the
+child's final printing/exit and physical owner cleanup. Qualification refuses
+an actual interval **at or above 300 seconds**, independently of a child exit
+code or the nominal budget. An existing primary budget/cleanup error is not
+replaced by this additional timing failure. The fixed
+`windows_observer_owning_interval` record is diagnostic-only; a fast failure or
+watchdog return is not suite acceptance.
+
+Owning budget/output failures retain their original exception as the explicit
+cause; an owning process/cleanup `OSError` retains its identity. Diagnostic I/O
+does not prevent the required custody settlement or close attempt, nor replace
+an active failure when either attempt also fails. Fixed-code
+`windows_observer_secondary_failure` records report these secondary facts on
+stderr; fixed exception notes retain them if that reporting also fails. No
+secondary exception text, host path or child output is published. Unconfirmed
+owner release still leaves prepared-only custody. A custody-close failure can
+occur after settled bytes are already visible; those bytes do not attest close.
+
+If a nonzero owning result was already captured before an interval, report or
+custody-finalization failure, qualification retains that failed result and uses
+the same Python outcome parser and bounded diagnostic projection: complete
+hashed outcomes or the existing incomplete negative prefix with capture byte
+counts and hashes. It then refuses with the owning command failure; no partial
+inventory can become acceptance. A further projection I/O failure retains the
+nonzero result and fixed secondary facts rather than replacing it. A successful
+child still refuses on a closed interval at or above 300 seconds or any required
+report/finalization failure. This adds neither an alternate acceptance parser
+nor another process owner.
+
+The opt-in qualifier consumes the owner's already captured bytes directly,
+without copying them through a second pair of temporary files. Thus outer
+temporary-file write, seek, read or close cannot replace a returned nonzero
+result or an active owning refusal. A normally returned nonzero result uses
+the same failure-retained Python projection and, when that inventory and the
+fresh Gradle task evidence are available, the preexisting JUnit outcomes or
+bounded duplicate-case diagnostic before refusing. These records are evidence,
+not acceptance. An active owning refusal keeps its existing Python-only
+projection; that path does not establish a normal settled return. Later JUnit read,
+parse, close or outcome-report failures retain the owning result and fixed
+secondary facts without replaying already emitted outcomes or falling back to
+raw captures. Zero-result parsing and required reporting remain strict,
+including later JUnit reporting. The ordinary non-opt-in subprocess, temporary
+captures, lookup diagnostic and all acceptance gates are unchanged.
+
+Runtime/source/preparation admission before that interval, subsequent outcome/
+JUnit parsing and the separate collector remain job/workflow costs. Inner
+`quality_duration` starts only after argparse and is not the closed owning-call
+measurement. The earlier less-than-230 arithmetic charged the collector to the
+suite; it was a conservative proposal, not the product's suite limit. The
+collector's one-minute ceiling remains separate. The pair's 48-second work /
+60-second total / 12-second reserve, both 10+10 arms and supervisor cleanup are
+nested inside the command, not added again. API's actual complete-suite
+under-300 and strict native job **and** whole-workflow under-600 requirements,
+the 30-minute platform cap, ordinary defaults and the both-success aggregate
+are unchanged. Source/synthetic checks do not demonstrate any native threshold;
+activation, actual history binding and native acceptance require their separate
+releases.
+
+The opt-in `Read API106 observer-pair diagnostics` step runs under `always()` in
+the same Windows job, including after an owning failure, at the workspace root
+with a one-minute cap. Its `--collect-api106-observer-pair` mode cannot run the
+owner. It reads only this fixed allowlist under `build/diagnostics`:
+
+| Carrier | File | Whole-input limit |
+| --- | --- | --- |
+| Required checkpoint | `api106-approved-shell-boundary.bin` | 7 bytes; read at most 8 |
+| Required lookup | `api106-approved-shell-module-lookup.jsonl` | 8,192 bytes |
+| Pair | `api106-approved-shell-observer-pair.jsonl` | 4,096 bytes; at most 6 records |
+| Enclosure | `api106-approved-shell-enclosure.jsonl` | 8,192 bytes; at most 8 records |
+| Auxiliary checkpoint | `api106-approved-shell-auxiliary-boundary.bin` | 7 bytes; read at most 8 |
+| Auxiliary lookup | `api106-approved-shell-auxiliary-module-lookup.jsonl` | 8,192 bytes |
+
+Pair/enclosure envelopes remain v1 with at most 1,024 bytes per LF-terminated
+record; the implementation being called v3 does not change their wire versions.
+The existing v1/v2 lookup grammar, five-record v2 and 6,144-byte line caps remain
+unchanged. The no-lookup-delegates auxiliary can have only its roots record; that
+is not a completed lookup capsule. Duplicate keys, extra fields, impossible
+ordering, changed budgets, truncated lines and oversized suffixes refuse the
+whole carrier. Valid prefixes are explicitly partial, never complete-pair credit.
+Pair `acceptance: false`, required failure, whole-command failure and all existing
+full-discovery/JUnit qualification gates remain authoritative. An enclosure's
+cleanup record explicitly does not attest report close; a complete sequence also
+does not turn a false release or failed suite into success.
+
+A seventh, collector-owned fixed file,
+`api106-observer-collection-state.jsonl`, carries only two custody records:
+prepared and settled, at most 512 bytes each / 1,024 bytes total, with a one-byte
+overflow read. Preparation requires all six carriers and this state file to be
+absent, and uses exclusive creation without deleting stale evidence. Its context
+digest binds the workspace directory identity and, on GitHub, the exact API
+numeric repository/organization, Windows job, run, attempt and executed SHA.
+Local explicit use is bound only to that workspace identity, not represented as
+hosted evidence. Confirmed return from the existing owner, including its
+post-cleanup budget exception, permits the settled record. A spawn, capture,
+cleanup or state-finalization error without that proof leaves collection closed.
+Missing, stale, linked, changed or incomplete custody does not authorize reading
+any carrier. Regular-file, reparse, identity, size and modification checks bracket
+each bounded read; no glob, arbitrary-file scan or timestamp-only freshness claim
+is used.
+
+The collector emits at most six diagnostic-only projections, each at most the
+unchanged 4,096-byte public bound. It repeats the actual owning return status,
+never raw streams, paths, values, handles or credentials. Missing, invalid or
+partial observations return a nonzero collection result; the owning failure is
+not caught, overwritten or converted to success. The default route retains the
+original independent readback. On the paired route, unconfirmed ownership refuses
+readback rather than falling through to that less restrictive legacy reader.
+Job cancellation or runner loss can still prevent collection. The existing
+10,001-ms approved-shell work expiration and its unknown cause are not repaired
+or explained by this plumbing.
+
 The shared unittest parser accepts an outcome only on its case line or the
 immediately following docstring line. Interleaved diagnostics, orphaned status
 lines and incomplete records refuse the entire outcome stream; they cannot be
@@ -348,12 +603,39 @@ the Infra extension below originally retained all three API output bytes. The
 shared outcome-parser correction changed only the generated qualifier. The
 input-only prerequisite correction changes API CI and its checker digest, leaving
 that qualifier, API Linux/setup/manual commands and every other profile unchanged.
-The API registry now binds the `C` reader to the real source commit
+The accepted API registry binds the `C` reader to the real source commit
 `822c5a501879b5224a4e0020c5e84157749e9071` through a separate binding change.
 Its historical generator must reproduce the current API workflow and checker;
 the prior `d31994d6` binding cannot represent this reader. Full-history validation
 remains required, and a prebinding mismatch remains an honest failure, not a
 placeholder reference or an acceptance waiver.
+The observer-pair increment additionally changed the workflow and checker, so
+that old reader reference cannot bind it. The Java/SemVer contract was bound
+separately to actual source `1ddc3434d8826605fc9dce7adb843d185dc92aaa`.
+The current focused-diagnostic binding is described below. Reversing only its
+exact input/job and derived checker digest recovers the Java/SemVer workflow
+and checker; the qualifier from actual `1ddc3434` remains the version-contract
+historical control. Prior `14af2187` and `02fdb18b` render that same pre-focus
+workflow but retain the same operand-only qualifier. Reversing only the
+version-contract helper and exact
+release/selected comparison block from actual `1ddc3434` reproduces both
+historical qualifiers byte for byte; other differences are refused.
+Prior `865ae908` and `cc779064` render the same workflow but retain the same
+categorical qualifier without version operands. Removing only the bounded operand
+projection, optional version record and its argument from actual `14af2187`
+reproduces that qualifier byte for byte, rather than applying the old reversal
+to the current version-contract source.
+Prior `f714f1df` and `f3dc0a9b` render the same workflow but retain the same older
+qualifier without categorical diagnostics, compared to actual `865ae908`.
+Prior `e94792d8` and `f719c9d0` share that older
+qualifier and also lack scalar selection; the regression permits only the exact
+selection-line and derived checker-digest distinction. Older `cf96bdb7` and
+`eaf93a88` retain a different qualifier, which remains a separate failing binding
+predicate. This local source binding is not publication, consumer adoption,
+proof of the native runtime build/vendor or native qualification.
+The accepted `a40b9018` and `0f5f7b7c` workflow/checker/qualifier pins remain
+historical controls, and removing only the explicit observer additions must
+recover the entire accepted `0f5f7b7c` workflow byte for byte.
 Adopt all three atomically with the API-owned combined-build interface, only after
 separate producer/consumer review and protected acceptance. Synthetic Infra runner,
 parser and shell controls are not execution of the two API tests. Native Windows
@@ -362,6 +644,358 @@ and supported full Linux **local** qualification remain unverified. No workflow 
 dispatched or published by this source change; the existing Windows holds and
 [Infra #22](https://github.com/PenniLogic/infra/issues/22)'s trusted-workflow
 identity/mandatory-absence gap remain open.
+
+### Default-off isolated approved-shell diagnostic (native execution held)
+
+The API-only Boolean `workflow_dispatch.inputs.api106_shell_focus` defaults to
+false. Its separate `api106-shell-focus` job requires both `workflow_dispatch`
+and typed `true`. It has no test-name, command, destination or budget input and
+no `continue-on-error`. The three required `ci`, `windows` and `ci-result` jobs,
+their dependencies, read-only permissions, full 557-test Windows suite, ordinary
+and observer-pair routes and existing deadlines are unchanged byte for byte.
+This optional job is not a replacement qualification or required-result bypass.
+The source regression removes only the exact pinned focus input/job before the
+existing observer/native reversals; any extra or changed input, job or required
+workflow byte is refused.
+
+The new job reuses the pinned checkout, actions, preparation and same-job
+Git/index/config, Java and runtime admission. Only this job selects and requires
+observed CPython **3.14.8**. It records bounded runner-image metadata and its
+digest, and byte counts/SHA-256s of the selected Python, system `cmd.exe` and
+Windows PowerShell images. Runner labels or metadata are not image equivalence
+or build/vendor attestation. Its job identity is admitted separately; the
+observer route still admits only `windows`. Its new runner-temp namespace and
+checkout `build/diagnostics` must be absent and non-reparse. No prior diagnostic
+directory/file or required-suite output is deleted, moved, overwritten or reused.
+
+`--api106-shell-focus --require-prepared` invokes a fixed isolated Python child.
+The child rebinds its controller bytes and uses a newly created private Python
+bytecode-cache prefix with bytecode writing disabled, so the local import closure
+does not consume existing ignored `.pyc` files. It imports the original
+`test_money_mutation` module and runs only
+`ProcessBudgetTest.test_approved_system_shell_survives_without_inheriting_ambient_path`,
+first, with the original module/SCRIPTS identity and pair seam `None`. The four
+unchanged test/import-closure bodies are individually size/hash-bound to API
+`6ccd4eda3f424f22825ef20d27622005ed3f1144`; this does not identify the new generated
+checkout as that old commit. Bare `Write-Output`, argv, environment, capture and
+the target's own 10-second work assertion remain unchanged. Count must be exactly
+one, and failures, errors, skips and expected/unexpected failures fail closed.
+
+The unchanged 30,820-byte `process_budget.py`, SHA-256
+`a551e6959a2a56c91e657a7c2a5b64b04607f56fe2f55f68e9e5cc4c9270f364`,
+is loaded through `observer_budget_module`. One fixed
+`run(command, root, 150, capture=True, separate=True, env=admitted_environment)`
+leaves `inherit_tree` at its shipped default `False` (Windows ownership is
+Job Object-based): **150 seconds work plus one shared
+10-second cleanup allowance**, not 150+5. Nested Windows Job assignment gates
+the real command; capture is bounded by the shipped combined 4 MiB limit.
+The reported monotonic interval surrounds only that helper call. Preparation,
+admission and reporting are outside it, and synchronous calls are checked when
+they return: this is not a new hard 160-second caller/job watchdog, application
+deadline, or 300/600-second acceptance claim.
+
+Only bounded redacted projections are emitted: the one-case result (at most
+4,096 bytes, written as binary ASCII plus one LF, without Windows text newline
+translation), safe exception categories/cause-context chain and available capture
+digests, and the final diagnostic report (at most 16,384 bytes). Raw traceback,
+output, environment, executable paths and diagnostic contents are not published.
+`OutputExceeded` is distinguished before `BudgetExceeded`; a cleanup exception
+may supersede either and may carry no capture. Unknown settlement is failure with
+`owner_release: unconfirmed`, unavailable carriers and no clean-release claim.
+Carriers are read only after the helper confirms its owned tree has settled.
+This is not system-wide physical cleanup or native acceptance.
+
+The focused report separates `target_status` (`passed`, `failed`, or `unavailable`
+when no valid child result was captured) from `lookup_evidence`. Its `passed`
+status requires the genuine child pass **and** `complete-observed` lookup
+evidence: validated roots, an armed observer, observed pre/post records, available
+timing samples and lookup duration, and available command/module classification.
+A v2 negative hook must be armed; its not-found event need not occur, but if
+present its observation and timing must be available. Observed absent roots,
+no command or no module remain facts, not missing observations; an unknown
+module path or null timing does not establish complete available evidence.
+
+Missing files, empty or any valid partial prefix, unavailable observer/hook
+metadata, and terminal `post` records with unavailable evidence produce
+`lookup_evidence: inconclusive`. With a genuine child pass the overall status is
+`inconclusive`, exit one, and the original passing child record is retained.
+Parser/read errors or explicit refused phases produce `lookup_evidence: refused`
+and an overall failure without relabeling the child. A terminal phase or the
+shared reader's `capsule_complete`/`observed` flags alone are insufficient.
+Real child, capture, owner or cleanup failures keep precedence. Unconfirmed-owner
+suppression leaves lookup evidence `unavailable`; a preceding boundary or
+collection error can classify it `refused` without proving that lookup was read.
+The shared observer/pair parsers and their partial, unavailable and nullable
+representations are unchanged.
+
+After that original report is emitted, a separate
+`windows_shell_focus_controls` event records at most three fixed serial command
+observations, **not additional tests**. The original named target remains first
+and only, with `tests_run: 1`; its status, nested exception, lookup and four source
+hashes are not replaced by control results. No control starts unless the baseline
+helper positively settled, and a later control cannot start after unknown earlier
+settlement. A direct shipped timeout/output exception establishes settlement;
+a superseding creation, capture, owner or cleanup error does not, even when its
+cause contains a timeout. There is no retry.
+
+The serial order is `plain-bare-command`, `os-module-root-environment`, then
+`explicit-built-in-utility`. All use the same admitted Windows PowerShell image with
+`-NoProfile -NonInteractive -Command`, the original `scripts` working directory, the
+admitted helper's filtered environment and merged capture. The first
+command is exactly `Write-Output 'approved-shell'`, without lookup delegates or
+child checkpoints. The last checks that the shell's `$PSHOME` matches its
+admitted image directory, imports only that directory's absolute
+`Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1` using
+`-ErrorAction Stop`, then runs the same bare command. Reparse paths, wildcard
+paths, missing/empty/oversized manifests and changed shell bytes are refused.
+There is no caller-supplied module, module search, third-party module, execution
+policy bypass, prewarming or larger work allowance. Manifest admission checks
+only path/type/size metadata; it does not read or import the module before the
+control's helper starts.
+
+The middle arm measures one **prospective child-only environment input**. Its
+fixed `-I -S -B` Python bridge runs inside the same unchanged helper-owned process
+tree and starts only the approved absolute Windows PowerShell image. It inherits
+the helper-filtered environment, including its constructed Windows module list,
+and deliberately replaces only the child's `PSModulePath` with
+the literal `WindowsPowerShell\v1.0\Modules` directory derived from the helper's
+OS-selected system shell. It does not patch the helper's environment function,
+change registry/global settings, introduce a configurable command/path, or
+reintroduce an ambient module list. The extra Python bridge/process boundary is
+explicit in the record. Its fixed carrier instrumentation also uses terminating
+error handling; this is not an equivalent plain-shell invocation.
+
+Before the same bare `Write-Output 'approved-shell'`, Core/.NET-only code checks
+`$PSHOME`, then writes and flushes a pre record to the fixed exclusive non-reparse
+`module-environment.jsonl` carrier. It reads the child's **effective post-startup**
+`PSModulePath`, not just the bridge's supplied value. At most 32 roots retain their
+order, normalized digests, duplicate-of indexes, and only `injected`, `unknown` or
+`empty` identities. Normalization replaces slashes, folds only ASCII A-Z and
+removes trailing separators while preserving a minimum of three characters.
+Non-ASCII characters remain exact, avoiding Python/.NET Unicode-fold differences;
+the minimum-three boundary is not universal for arbitrary Unicode. Python counts
+code points while .NET counts UTF-16 units, so very short non-BMP unknown roots
+can retain different trailing separators. No general normalization-equivalence
+claim follows; such short unknown entries cannot equal the longer fixed injected
+root. There is no path resolution, root recovery or module-content read.
+A strict singleton comparison with the
+injected root is reported separately from the supplied count of one. Startup may
+insert additional roots; those remain unknown, and a passing command does not
+assert that the supplied singleton survived.
+
+No module import, command lookup hook, `Get-Command`, or prewarm precedes the
+middle arm's bare command. The explicit-import positive control stays last.
+A successful post record is written only after the bare command returns.
+The 4,096-byte carrier is read only after confirmed helper settlement; a retained
+pre prefix can survive lookup timeout, with missing post evidence left null.
+Missing/empty evidence and valid partial prefixes stay unavailable or inconclusive.
+Torn/malformed lines, oversized, reparse or read-failed evidence are refused;
+any valid pre record already read remains available. Existing command/owner
+failures retain precedence. Carrier or bridge failures cannot replace the
+baseline or launch a retry. A bridge OS launch failure returns nonzero without
+printing its exception.
+
+Each control calls the unchanged shipped helper once with **10 seconds work
+plus its existing single 10-second cleanup allowance**. Bridge/shell startup,
+carrier writing and explicit import are inside their respective ten work seconds.
+There is no nested control owner, inner bridge timeout or deadline rearm.
+Actual monotonic elapsed time surrounds
+that helper call, including its cleanup, not admission/reporting. These intervals
+are separate from the baseline's **150+10**, the original target's **10+10**, and
+application **300/600** gates; none supplies a new hard end-to-end guarantee.
+One newly created, non-reparse `build/diagnostics/api106-fixed-shell-controls`
+directory spends the control namespace. It must not already exist and is never
+deleted or reused. Only the middle control writes its fixed new carrier there;
+none changes the baseline carriers.
+
+The additional event remains capped at 8,192 ASCII bytes. Its three closed records retain
+fixed labels, parent stages and the middle arm's separate child-carrier evidence,
+actual elapsed/exit/outcome, known or unconfirmed
+helper settlement, bounded manifest size metadata (not a content digest), and safe exception
+projections. Normal merged output is only counted/hashed as **decoded UTF-8 text**,
+not misreported as original wire bytes. Budget exceptions retain the existing
+partial raw-capture snapshot projection when available; missing/malformed evidence
+stays unavailable, never an invented zero. Raw paths, environment values, exception
+messages and child streams are not emitted. Nonzero exits, unexpected output,
+timeouts, refused evidence or unknown settlement keep the control event nonpassing.
+Overall exit zero additionally requires all three controls and complete middle-arm
+evidence to pass; their success can
+never override a failed/refused/inconclusive baseline or unavailable lookup.
+
+These ordered counterfactual observations are diagnostic, not causal proof.
+Earlier baseline/control execution can affect caches, and runner-image metadata
+does not establish identical image/context. The focused baseline already failed
+without preceding full/pair execution; the older hooks-disarmed pair auxiliary
+also failed in its owning-suite context. Neither proves that removing hooks or
+explicitly importing a module fixes the cause. The aligned helper still discards
+ambient `PSModulePath`/`WinPSModulePath`; Windows `PSModulePath` output is constructed
+rather than inherited. This input policy is not a demonstrated repair.
+Native, performance, parity and cleanup holds remain.
+
+The retained API manual run `38895034128` at `2af8335` failed the original
+target and plain control (about 10.014 seconds), while its last explicit-import
+control returned the expected 16-byte decoded output in 0.5747907 seconds.
+The original target/helper had already discarded incoming `PSModulePath`, yet
+the child's startup reported six effective roots, with PSHOME at index four
+and five unknown digests. Deleting the incoming variable again is not a repair.
+The new middle arm is the pending measurement needed to investigate an
+environment-only change, not a production fix, singleton guarantee, or causal
+conclusion. Manual 457.999 and natural 313.540 seconds remain FAIL300 alongside
+the earlier failures.
+
+Canonical mock regressions are not live nested-Job or hosted-target qualification.
+
+**API helper registry/history binding (2026-10-17; local only).** The API entry in
+`conformance/check-names.json` now names actual Infra SOURCE
+`78e6d573f5956cfc933354d2a3fdf22bdea1d4b3`, sole parent
+`1dec8cbd5a752e474a7340373d26c6cf8392aa6e`, with tree
+`3a239dfa95b6917c6cc705a92a47050f996ae29d`. That SOURCE contains the 117,552-byte
+qualifier, SHA-256 `6f6b47f9be3557a910b605b64a1f422be7bfa59000997a57997f4ef99b0443b7`.
+The tree is not a commit substitute. The other eight registry entries, including
+Infra's primary check and `PR workflow integrity` gate at
+`889c5c35a1677ef33899a2e63bc528d3bac802f9`, are unchanged.
+
+At this binding's preparation, both Infra SOURCE 78e6 and API source
+`5948543f7ce6c3d8382c63bda0510e81f4941c17` are local only: neither has been remotely
+published or protected accepted. This is a separate, uncommitted registry/history
+binding, not another SOURCE implementation change or a future binding commit.
+It requires fresh non-author Core, QA and CI/privacy review; the SOURCE opinions
+do not approve this binding. Persistence, publication, consumer adoption and
+native qualification remain separate later work.
+
+The history regression first reverses exactly five helper-pin/comment assignments
+to recover the historical 117,468-byte `b5850ffb` qualifier. Only then does it apply
+the existing environment inverse, retaining the exact 1,265-byte `a4b26469` block
+and the 105,474-byte `69db94e8` to 97,831-byte `5ea60d30` and older Java/SemVer
+oracles. Actual 8b87 and 1dec must first render matching valid workflows and
+checkers before their qualifiers and source refs are refused for the current
+binding. API commit 5948 and DATA tree 3a239 are explicitly rejected as Infra
+SOURCE substitutes. Missing required local history is a failure, not a passing skip.
+
+Validation requires the complete affected registry/history module, the repository
+checker and diff hygiene, plus one official private API 25-output generation and
+check. All 25 outputs must be byte-identical to the approved 3a239 SOURCE preview;
+relative to the older 8b87/1dec preview, only `scripts/qualify_windows.py` differs.
+Nothing is generated into the live API checkout. No native 300/600-second,
+WindowsCI, parity, vendor/context, cleanup, source-PR/protected or product hold is
+cleared by these local binding checks.
+
+**Earlier API helper SOURCE-alignment record (retained history, 2026-10-17).**
+The following keeps that scope's then-uncommitted canonical alignment and 8b87
+registry state; it is not the status of the new binding.
+
+The observed API source commit is
+`5948543f7ce6c3d8382c63bda0510e81f4941c17`, sole parent
+`5a1c3cedc39d489aae7c8edc1c404a77ffbad08b`, with actual tree
+`d1fcb9bd91b513d2b247ab26593664267abd061e`. Its committed, retained source is the
+input to this uncommitted canonical alignment, not a claim of remote API
+availability, hosted repair or protected acceptance.
+
+The common observer loader and four-member focus closure both pin its
+33,441-byte `scripts/process_budget.py`; the focus mutation-test pin is
+248,547 bytes. The `money_mutation.py` and `quality.py` pins are unchanged.
+The helper declares exact `PSModulePath` as an allowed **output**, but excludes it
+from ambient input on every OS. On Windows it constructs the output with the OS
+inbox first, then the shared Modules directory obtained through the OS KnownFolder
+API, not ambient `ProgramFiles`. Case-variant inputs remain denied; non-Windows
+output omits `PSModulePath`. This ordering is an input policy, not universal engine
+or configuration isolation. The diagnostic bridge deliberately replaces that
+constructed list with its singleton OS-inbox input; its target, lifecycle,
+budgets and validator have not changed.
+
+Real loader/focus validation uses the retained API commit, raw commit/tree and
+mode/blob/body provenance, without changing the source pins or executing the
+original target. Source/mock/local-history checks do not require that API commit
+to be remote; there is no hosted-context waiver or simulated-host acceptance. One private
+official 25-output generation/check must leave the other 24 outputs byte-identical
+to the accepted 8b87/1dec preview; only `scripts/qualify_windows.py` changes.
+Nothing is generated into the live API checkout.
+
+The prior Infra SOURCE `8b87ef8188c68e68c8c0e9cb33878c3151a7e18e` and binding
+`1dec8cbd5a752e474a7340373d26c6cf8392aa6e` have been published on the existing topic
+for source availability only. The API registry still names 8b87. Registry/history
+alignment needs a later **actual Infra SOURCE commit**, never the API commit,
+a DATA tree or a predicted commit. That binding, separate non-author review,
+source-PR/protected acceptance and every native/product hold remain later work.
+
+**Earlier 8b87 binding-preparation record (retained history).** The following keeps
+the then-local-only, uncommitted and pending states; it is not the status of the
+new SOURCE alignment. The API registry at that preparation stage names actual
+`8b87ef8188c68e68c8c0e9cb33878c3151a7e18e`, with sole parent
+`cfc7c741e22e0ef060edc2f736b1ba073810991a`. Its tree
+`6a1ebb15cfe7d50b1823fba299e35d53be698201` is reviewed DATA, not a commit
+substitute. Actual 8b87 contains the 117,468-byte environment-control qualifier,
+SHA-256 `b5850ffb3286086602a617f0a99152f8c312453b160cd0b96e9e6bfbfcfccf10`.
+That source is **local only** at binding preparation. The other eight registry
+entries and Infra gate are unchanged. This separate uncommitted binding needs
+fresh non-author review; the SOURCE opinions do not approve it. Binding
+persistence, remote availability and consumer validation remain later steps.
+
+The exact history regression first validates actual e504 and cfc7 against the
+same workflow SHA-256
+`b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e` and checker
+SHA-256 `33eaa615a6d2fc79b21dd6054b5c026e38c1ecdb14a0e00ee53fc96495266e2d`.
+It then rejects their 105,474-byte two-control qualifier for the new binding.
+Ten counted environment-delta reversals, including two exact hashed blocks,
+recover that prior qualifier byte for byte; the earlier fixed-control/focus,
+valid and crossed workflow/checker, and Java/SemVer regressions remain intact.
+The binding's private validation requires one official 25-output API generation
+and `--check`: only `scripts/qualify_windows.py` may change from 105,474 to
+117,468 bytes, with every other output compared byte for byte against the
+prior e504/cfc7 preview. Nothing is generated into the live API consumer.
+
+SOURCE evidence retains its limits: the author's 62-method/597-subtest result
+is author evidence. QA's normal 19-method subset was denied at the unchanged
+`ctypes` import before methods and was not rerun. Its separate 35-reader/8-Python
+and Windows PowerShell 5.1 parser/pure checks are not native-control execution.
+Full stdin-runner/outer-callback evidence remains missing, and the arbitrary-Unicode
+minimum-three caveat above applies. Source/mock, parser and local history results
+do not demonstrate an environment-only repair or clear any native/performance hold.
+
+**Earlier environment-arm SOURCE-freeze record (retained history).** The following
+records preserve that scope's then-uncommitted and unbound state, including its
+publication-preparation wording; they are not assertions about the current binding:
+
+The API registry names actual source commit
+`e504364cbce8525053540d48d661b23e1d930db9`, whose sole parent is
+`e2bd839f8e79c7146c2bf006f811e0638647669b`. That source and its later
+`cfc7c741e22e0ef060edc2f736b1ba073810991a` binding have been published on the
+existing topic; the new environment arm is a separate uncommitted SOURCE candidate.
+Its actual-source binding, publication and consumer adoption remain later steps.
+The earlier reviewed `a09f30073ae6af946b87227681de9b2bd6e8a72c`
+tree is not a source commit; neither moving `HEAD` nor a future binding commit
+is an acceptable substitute. A later registry update for this environment arm
+requires its own actual reviewed source commit, not this DATA candidate.
+
+Actual e504 history reproduces the earlier two-control qualifier, workflow and checker,
+not this pending environment-arm extension. Registry/history files are unchanged;
+their current-source assertions are not claimed to pass for this unbound candidate.
+The earlier a5 source and e2bd binding still reproduce the **same workflow and
+checker**: the workflow remains SHA-256
+`b4377f326ed95313328172fff4c78eb7c40f9ef203098074ff7d2a0702dc724e`, and the
+generated checker binds that workflow digest, not the qualifier body. Their
+97,831-byte qualifier, SHA-256
+`5ea60d30e6ea09c640243a461746c393627b2390b98bffd4e473deb7a8723799`, cannot
+bind that 105,474-byte two-control qualifier, SHA-256
+`69db94e8923e299c399bfd8d80c1b2e9b54a1195e943bb85e387264664223f02`.
+The retained e504 binding history tests positively validate both workflow/checker
+baselines before rejecting the stale qualifier. Reversing only the five exact fixed-control changes
+recovers the old qualifier byte for byte. The older focus reversal still recovers
+the distinct workflow/checker of `1ddc3434` and `47f8ac77`; their original
+crossed-digest negatives and Java/SemVer reversal anchors remain required.
+
+The prior binding's private 25-output API generation/check compared every body
+with its accepted preview; only the two-control qualifier changed. No new generation,
+native control or hosted run is included in this environment-arm SOURCE scope.
+Generated workflow, checker digest
+and qualifier must still be adopted together after separate producer/consumer
+review. Source persistence, this binding, later publication and consumer adoption
+are distinct steps. None establishes a causal repair, source PR, hosted pass,
+native execution, automatic source trust, deployment/spend approval or product
+acceptance. No dispatch, full-suite/performance waiver or change to the original
+Windows/CI failures, 319.677/399.807-second FAIL300 results, parity, vendor,
+cleanup, protected, [#22](https://github.com/PenniLogic/infra/issues/22) or
+[PenniLogic/api#3](https://github.com/PenniLogic/api/issues/3) holds follows.
 
 ## Infra Windows/Linux ordinary qualification (owner transition held)
 

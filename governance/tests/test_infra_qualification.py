@@ -21,6 +21,7 @@ import zipfile
 import conformance_support as support
 from conformance import generator as generator_module
 import qualify as qualification
+from test_api_native_source_fetch import remove_observer_pair
 from test_api_node_runtime import shell_path
 
 
@@ -128,46 +129,53 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
                 generator.infra_windows_job(generator.profile_for("infra"), suite)
 
     def test_api_caller_checker_and_qualifier_match_their_exact_source_bindings(self):
-        historical = {
+        historical = {"a40b9018a4b04fa78a5643905ebedc3a1a107db3": {
             ".github/workflows/ci.yml": "f6738c070157b5fdb59b84bfe854b22a6371e8be711bf308667ecf555f1bc3da",
             "scripts/check_repository.py": "5654613c86d17b070c06c7492dbf187302e7c6b3fb6bf02d38286726415a4cbf",
             "scripts/qualify_windows.py": "a98c825995da19e8e0499bc51b5a272b17da2bb065fb5d3593671467901e31b2",
-        }
-        current = {
+        }, "0f5f7b7ce4baa8206add295ce0adee03292a5b20": {
             ".github/workflows/ci.yml": "51bf74f97dbb427e68c4db320ebd69bf9daadcc116c9ca628fcbd33f2349fceb",
             "scripts/check_repository.py": "cecfa08f274f4705ee08939d31b1b15808b25cfac83df827befaec2459e60f7f",
             "scripts/qualify_windows.py": "0a073083148e670081eee72612fd9853a1a78100c2a50129ce89a2da9adfe1b3",
+        }}
+        current = {
             "scripts/materialize_money_sources.py": "e9f83c57079c6cadc42c751da4db8c0524012ee3f2629cd9b1f010d6413656b5",
             "scripts/prepare_database_admission.py": "fdcab20a76569fc4b03991003e06918f9d03d4f845e2562b844ee76dcc50ab49",
             "src/main/resources/database-admission-installation.json": "6d9821ac08ffba68865793d2998cba2aad21bbb8acd6a237d7aceec0a40b0195",
         }
         with tempfile.TemporaryDirectory(prefix="exact-api-source-bindings-") as temporary:
             root = Path(temporary)
-            accepted = root / "historical"
-            for relative in ("generate.py", "repository-profiles.json", "templates/check_repository.py",
-                             "templates/api_ci_checker.py", "templates/qualify_windows.py"):
-                content = subprocess.run(
-                    ["git", "--no-pager", "show", "a40b9018a4b04fa78a5643905ebedc3a1a107db3:governance/" + relative],
-                    cwd=support.GOVERNANCE.parent, capture_output=True, check=True, timeout=30,
-                ).stdout
-                path = accepted / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(content)
-            previous = generator_module.load(accepted / "generate.py", name="historical_api_exact_bindings")
-            previous_bytes = {
-                ".github/workflows/ci.yml": previous.workflow("api").encode("utf-8"),
-                "scripts/check_repository.py": previous.checker("api").encode("utf-8"),
-                "scripts/qualify_windows.py": (accepted / "templates/qualify_windows.py").read_bytes(),
-            }
-            for path, digest in historical.items():
-                with self.subTest(historical=path):
-                    self.assertEqual(digest, hashlib.sha256(previous_bytes[path]).hexdigest())
+            for ref, expected in historical.items():
+                accepted = root / ref
+                for relative in ("generate.py", "repository-profiles.json", "templates/check_repository.py",
+                                 "templates/api_ci_checker.py", "templates/qualify_windows.py"):
+                    content = subprocess.run(
+                        ["git", "--no-pager", "show", ref + ":governance/" + relative],
+                        cwd=support.GOVERNANCE.parent, capture_output=True, check=True, timeout=30,
+                    ).stdout
+                    path = accepted / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
+                previous = generator_module.load(accepted / "generate.py", name="historical_api_exact_" + ref)
+                previous_bytes = {
+                    ".github/workflows/ci.yml": previous.workflow("api").encode("utf-8"),
+                    "scripts/check_repository.py": previous.checker("api").encode("utf-8"),
+                    "scripts/qualify_windows.py": (accepted / "templates/qualify_windows.py").read_bytes(),
+                }
+                for path, digest in expected.items():
+                    with self.subTest(ref=ref, historical=path):
+                        self.assertEqual(digest, hashlib.sha256(previous_bytes[path]).hexdigest())
+            without = remove_observer_pair(self, json.loads(generator.workflow("api")))
+            self.assertEqual(historical["0f5f7b7ce4baa8206add295ce0adee03292a5b20"][".github/workflows/ci.yml"],
+                             hashlib.sha256(generator.encoded(without).encode("utf-8")).hexdigest())
             candidate = root / "current"
             generator.generate("api", candidate)
             generator.generate("api", candidate, check=True)
             for path, digest in current.items():
                 with self.subTest(current=path):
                     self.assertEqual(digest, hashlib.sha256((candidate / path).read_bytes()).hexdigest())
+            self.assertEqual((support.GOVERNANCE / "templates/qualify_windows.py").read_bytes(),
+                             (candidate / "scripts/qualify_windows.py").read_bytes())
 
     def test_only_the_two_exact_profiles_admit_their_qualification_workflows(self):
         for repo in generator.PROFILES["repositories"]:

@@ -21,13 +21,15 @@ GATE = ".github/workflows/pr-workflow-integrity.yml"
 SOURCE = "f3331d5bc24556d11b9f3ad0b517db37e9caac9d"
 SECURITY_PREPARATION_BASE = "0f5f7b7ce4baa8206add295ce0adee03292a5b20"
 WINDOWS_SPLIT_BASE = "7298eaf4fa145b0000835395b90bdfd4c33be337"
+# API has a separately reviewed source after these Infra-only transitions.
+API_SOURCE = "78e6d573f5956cfc933354d2a3fdf22bdea1d4b3"
 generator = support.generator
 
 
 def historical_generator(root, source=SOURCE):
     paths = ["governance/generate.py", "governance/repository-profiles.json",
              "governance/templates/check_repository.py", "governance/templates/setup.py"]
-    if source in (SECURITY_PREPARATION_BASE, WINDOWS_SPLIT_BASE):
+    if source in (SECURITY_PREPARATION_BASE, WINDOWS_SPLIT_BASE, API_SOURCE):
         paths.extend(("governance/api-money-sources.json", "governance/api-database-admission-installation.json"))
         paths.extend(support.git(support.GOVERNANCE.parent, "ls-tree", "-r", "--name-only",
                                  source, "--", "governance/templates").splitlines())
@@ -248,7 +250,9 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
             accepted = historical_generator(Path(temporary), SECURITY_PREPARATION_BASE)
             self.assertEqual(accepted.PROFILES, generator.PROFILES)
             for name in generator.PROFILES["repositories"]:
-                old, new = accepted.artifacts(name), generator.artifacts(name)
+                baseline = (historical_generator(Path(temporary) / "api-source", API_SOURCE)
+                            if name == "api" else accepted)
+                old, new = baseline.artifacts(name), generator.artifacts(name)
                 changed = {path for path in set(old) | set(new) if old.get(path) != new.get(path)}
                 with self.subTest(repository=name):
                     self.assertEqual({GATE, "scripts/check_repository.py", ".github/workflows/ci.yml"}
@@ -259,7 +263,9 @@ class GeneratedPRWorkflowTests(unittest.TestCase):
             accepted = historical_generator(Path(temporary), WINDOWS_SPLIT_BASE)
             self.assertEqual(accepted.PROFILES, generator.PROFILES)
             for name in generator.PROFILES["repositories"]:
-                old, new = accepted.artifacts(name), generator.artifacts(name)
+                baseline = (historical_generator(Path(temporary) / "api-source", API_SOURCE)
+                            if name == "api" else accepted)
+                old, new = baseline.artifacts(name), generator.artifacts(name)
                 changed = {path for path in set(old) | set(new) if old.get(path) != new.get(path)}
                 with self.subTest(repository=name):
                     self.assertEqual({GATE, "scripts/check_repository.py", ".github/workflows/ci.yml"}
