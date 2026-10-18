@@ -146,9 +146,16 @@ class ProducedCheckTests(unittest.TestCase):
                 expected_checks = ({policy["required_native_check"], "Linux qualification",
                                     "Windows governance qualification", "Windows scripts qualification"}
                                    if name == "infra" else
-                                   {policy["required_native_check"], "Linux qualification", "Windows qualification"}
+                                   {policy["required_native_check"], "Linux qualification", "Windows qualification",
+                                    "API106 isolated shell diagnostic"}
                                    if name == "api" else {policy["required_native_check"]})
                 self.assertEqual(expected_checks, steps.produced_check_names(workflow))
+                if name == "api":
+                    jobs = json.loads(workflow)["jobs"]
+                    self.assertEqual("${{ github.event_name == 'workflow_dispatch' && inputs.api106_shell_focus == true }}",
+                                     jobs["api106-shell-focus"]["if"])
+                    self.assertEqual(["ci", "windows"], jobs["ci-result"]["needs"])
+                    self.assertEqual("CI", jobs["ci-result"]["name"])
                 manual = support.generator.PROFILES["repositories"][name]["commands"]
                 expected = [
                     native_command(command) if name == "api"
@@ -228,7 +235,8 @@ class ProducedCheckTests(unittest.TestCase):
             with self.subTest(profile=name):
                 native = ({"CI", "Linux qualification", "Windows governance qualification", "Windows scripts qualification"}
                           if name == "infra" else
-                          {"CI", "Linux qualification", "Windows qualification"} if name == "api" else {"CI"})
+                          {"CI", "Linux qualification", "Windows qualification", "API106 isolated shell diagnostic"}
+                          if name == "api" else {"CI"})
                 expected = native | {"PR workflow integrity"} if name == "infra" else native
                 self.assertEqual(expected, steps.produced_pr_check_names(files))
                 files.pop(".github/workflows/pr-workflow-integrity.yml", None)

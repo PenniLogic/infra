@@ -39,7 +39,16 @@ class ApiBuildCoverageTests(unittest.TestCase):
     def test_base_expression_and_all_event_triggers_are_preserved(self):
         workflow = json.loads(generator.workflow("api"))
         self.assertEqual({
-            "workflow_dispatch": {}, "push": {"branches": ["main"]},
+            "workflow_dispatch": {"inputs": {
+                "api106_observer_pair": {
+                    "description": "Opt in to the diagnostic observer pair; owning failures still fail CI",
+                    "type": "boolean", "required": False, "default": False,
+                },
+                "api106_shell_focus": {
+                    "description": "Run only the original approved-shell diagnostic in a separate job; never qualification",
+                    "type": "boolean", "required": False, "default": False,
+                },
+            }}, "push": {"branches": ["main"]},
             "pull_request": {"branches": ["main"]},
         }, workflow["on"])
         steps = workflow["jobs"]["ci"]["steps"]

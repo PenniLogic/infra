@@ -68,8 +68,25 @@ class ApiNodeRuntimeTests(unittest.TestCase):
         self.assertEqual(30, workflow["jobs"]["ci"]["timeout-minutes"])
         self.assertNotIn("env", workflow["jobs"]["ci"])
         for forbidden in ("ORG_GRADLE_PROJECT", "GRADLE_OPTS", "command -v",
-                          "which node", "sudo", "ln -s", "GITHUB_PATH"):
+                          "which node", "sudo", "ln -s"):
             self.assertNotIn(forbidden, json.dumps(workflow))
+        path_steps = [(job, index, step["name"]) for job, body in workflow["jobs"].items()
+                      for index, step in enumerate(body["steps"]) if "GITHUB_PATH" in json.dumps(step)]
+        self.assertEqual([("windows", 0, "Bind API106 checkout Git"),
+                          ("api106-shell-focus", 0, "Bind API106 checkout Git")], path_steps)
+        expected_if = {
+            "windows": "${{ github.event_name == 'workflow_dispatch' && inputs.api106_observer_pair == true }}",
+            "api106-shell-focus": "${{ github.event_name == 'workflow_dispatch' && inputs.api106_shell_focus == true }}",
+        }
+        for job, index, _ in path_steps:
+            step = workflow["jobs"][job]["steps"][index]
+            self.assertEqual({**generator.api_observer_git_step(), "if": expected_if[job]}, step)
+            self.assertEqual(1, step["run"].count("$env:GITHUB_PATH"))
+            self.assertIn('[IO.File]::AppendAllText($env:GITHUB_PATH, [IO.Path]::GetDirectoryName($git) + "`n")',
+                          step["run"])
+            self.assertEqual("pwsh", step["shell"])
+        self.assertNotIn("GITHUB_PATH", json.dumps(workflow["jobs"]["ci"]))
+        self.assertNotIn("GITHUB_PATH", json.dumps(workflow["jobs"]["ci-result"]))
 
     def test_api_requires_the_reviewed_sdk_and_does_not_accept_missing_or_floating_versions(self):
         for node in (None, "", "24", "24.x", "22.23.3", "24.21.0", "${{ github.token }}"):

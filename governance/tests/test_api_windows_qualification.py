@@ -46,6 +46,15 @@ def api_checker():
     return namespace["validate_workflow"]
 
 
+def use_physical_interpreter(test):
+    """The production path check refuses links, so fixtures bind the resolved interpreter on every platform."""
+    physical = os.path.realpath(sys.executable)
+    if physical != sys.executable:
+        patch = mock.patch.object(sys, "executable", physical)
+        patch.start()
+        test.addCleanup(patch.stop)
+
+
 def without_absent_lookup(test, records):
     observed = [record for record in records if record["event"] == "windows_shell_lookup_diagnostic"]
     test.assertEqual([{
@@ -1280,12 +1289,26 @@ class WindowsShellFocusTests(unittest.TestCase):
 
 class WindowsShellControlTests(unittest.TestCase):
     def setUp(self):
+        use_physical_interpreter(self)
         spawn = mock.patch.object(subprocess, "Popen", side_effect=AssertionError("No live shell in source controls"))
         spawn.start()
         self.addCleanup(spawn.stop)
         self.focus = WindowsShellFocusTests()
         self.focus.fixture = WindowsObserverPairDiagnosticTests()
         self.addCleanup(self.focus.fixture.doCleanups)
+
+    def test_runtime_path_refuses_a_link_and_accepts_the_resolved_interpreter(self):
+        physical = Path(os.path.realpath(sys.executable))
+        self.assertEqual(physical, qualification.observer_runtime_path(str(physical), directory=False))
+        self.assertEqual(str(physical), sys.executable)
+        with tempfile.TemporaryDirectory(prefix="observer-interpreter-link-") as temporary:
+            link = Path(temporary) / physical.name
+            try:
+                link.symlink_to(physical)
+            except (OSError, NotImplementedError):
+                self.skipTest("Symbolic links are unavailable on this host")
+            with self.assertRaisesRegex(qualification.Refused, "observer-runtime-path"):
+                qualification.observer_runtime_path(str(link), directory=False)
 
     def environment_records(self, environment, *, roots=None):
         modules = str(Path(environment["COMSPEC"]).parent / "WindowsPowerShell" / "v1.0" / "Modules")

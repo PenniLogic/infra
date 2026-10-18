@@ -125,7 +125,8 @@ class TripwireTests(unittest.TestCase):
                 self.assertIn("python scripts/check_repository.py", " ".join(strings))
                 expected = [
                     (("jobs", job, "steps", index, "env", "PENNILOGIC_NATIVE_SOURCE_TOKEN"), "${{ github.token }}")
-                    for job, index in (("ci", 6), ("ci", 8), ("windows", 5), ("windows", 7))
+                    for job, index in (("ci", 6), ("ci", 8), ("windows", 6), ("windows", 8),
+                                       ("api106-shell-focus", 6), ("api106-shell-focus", 8))
                 ] if repo == "api" and not setup else []
                 self.assertEqual(expected, [
                     (path, text) for path, text in checker.workflow_string_locations(workflow)
