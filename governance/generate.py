@@ -275,6 +275,252 @@ def uv_install_step(windows=False):
     return {"name": "Install uv", "run": profile_for("ai-service")["install"][0]}
 
 
+def infra_security_program(windows=False):
+    settings = {
+        "platform": "win32" if windows else "linux",
+        "runner_os": "Windows" if windows else "Linux",
+        "archive": "gitleaks_8.30.1_windows_x64.zip" if windows else "gitleaks_8.30.1_linux_x64.tar.gz",
+        "archive_sha256": ("d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e" if windows else
+                           "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"),
+        "executable": "gitleaks.exe" if windows else "gitleaks",
+        "git": r"C:\Program Files\Git\cmd\git.exe" if windows else "/usr/bin/git",
+    }
+    # Bootstrap stays embedded and isolated: it must not import candidate source to prepare trusted tools.
+    return "SETTINGS = " + repr(settings) + "\n" + r'''
+import gzip
+import hashlib
+import http.client
+import io
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+import zlib
+
+ARCHIVE_LIMIT = 32 * 1024 * 1024
+EXECUTABLE_LIMIT = 64 * 1024 * 1024
+DOCUMENT_LIMIT = 1024 * 1024
+BINDINGS = ("PENNILOGIC_TEST_GIT", "PENNILOGIC_TEST_GITLEAKS",
+            "PENNILOGIC_TEST_GITLEAKS_SHA256", "PENNILOGIC_TEST_GIT_SHA256")
+
+
+class Refused(ValueError):
+    pass
+
+
+def require(condition, code):
+    if not condition:
+        raise Refused(code)
+
+
+def regular_path(value, directory=False):
+    require(isinstance(value, str) and value and not any(ord(c) < 32 or ord(c) == 127 for c in value),
+            "tool-path-invalid")
+    path = Path(value)
+    require(path.is_absolute() and path == path.resolve(strict=True), "tool-path-not-canonical")
+    for part in (path, *path.parents):
+        require(not part.is_symlink() and not part.is_junction(), "tool-path-linked")
+    require(path.is_dir() if directory else path.is_file(), "tool-path-not-regular")
+    return path
+
+
+def remaining(deadline):
+    value = deadline - time.monotonic()
+    require(value > 0, "tool-preparation-deadline")
+    return min(value, 15)
+
+
+class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        url = urllib.parse.urlsplit(newurl)
+        require(url.scheme == "https" and url.hostname in {"github.com", "release-assets.githubusercontent.com"}
+                and url.port in (None, 443) and url.username is None and url.password is None
+                and not url.fragment, "archive-redirect-refused")
+        return super().redirect_request(request, fp, code, message, headers, newurl)
+
+
+def download(deadline):
+    url = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/" + SETTINGS["archive"]
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), ReleaseRedirect())
+    request = urllib.request.Request(url, headers={"User-Agent": "PenniLogic-infra-qualification"})
+    with opener.open(request, timeout=remaining(deadline)) as response:
+        length = response.headers.get("Content-Length")
+        require(response.status == 200 and isinstance(length, str)
+                and re.fullmatch(r"[1-9][0-9]{0,8}", length) is not None
+                and int(length) <= ARCHIVE_LIMIT, "archive-response-invalid")
+        data = bytearray()
+        while True:
+            remaining(deadline)
+            chunk = response.read1(65536)
+            if not chunk:
+                break
+            data.extend(chunk)
+            require(len(data) <= int(length), "archive-length-mismatch")
+        require(len(data) == int(length), "archive-length-mismatch")
+    require(hashlib.sha256(data).hexdigest() == SETTINGS["archive_sha256"], "archive-digest-mismatch")
+    return bytes(data)
+
+
+def executable_bytes(data):
+    expected = {"LICENSE", "README.md", SETTINGS["executable"]}
+    contents = {}
+    if SETTINGS["platform"] == "win32":
+        archive = zipfile.ZipFile(io.BytesIO(data))
+        members = archive.infolist()
+    else:
+        limit = EXECUTABLE_LIMIT + 3 * DOCUMENT_LIMIT
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
+            unpacked = compressed.read(limit + 1)
+        require(len(unpacked) <= limit and len(unpacked) % 512 == 0
+                and unpacked.endswith(b"\0" * 1024), "archive-tar-invalid")
+        archive = tarfile.open(fileobj=io.BytesIO(unpacked), mode="r:")
+        members = archive
+    with archive:
+        for member in members:
+            name = member.filename if isinstance(member, zipfile.ZipInfo) else member.name
+            require(name in expected and name not in contents, "archive-member-inventory")
+            limit = EXECUTABLE_LIMIT if name == SETTINGS["executable"] else DOCUMENT_LIMIT
+            if isinstance(member, zipfile.ZipInfo):
+                mode = member.external_attr >> 16
+                require(not member.is_dir() and stat.S_IFMT(mode) == stat.S_IFREG
+                        and not mode & 0o7000 and not member.flag_bits & 1
+                        and not member.external_attr & 0x10
+                        and member.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                        and 0 < member.file_size <= limit, "archive-member-not-regular")
+                stream = archive.open(member)
+                size = member.file_size
+            else:
+                require(member.type in (tarfile.REGTYPE, tarfile.AREGTYPE) and not member.issparse()
+                        and not member.mode & 0o7000 and 0 < member.size <= limit,
+                        "archive-member-not-regular")
+                stream = archive.extractfile(member)
+                size = member.size
+            with stream:
+                payload = stream.read(limit + 1)
+            require(len(payload) == size, "archive-member-size")
+            contents[name] = payload
+    require(set(contents) == expected, "archive-member-inventory")
+    return contents[SETTINGS["executable"]]
+
+
+def digest(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def version(command, directory, environment, deadline, expected_sha256):
+    executable = regular_path(command[0])
+    require(digest(executable) == expected_sha256, "tool-digest-changed")
+    with tempfile.TemporaryFile(dir=directory) as stdout, tempfile.TemporaryFile(dir=directory) as stderr:
+        result = subprocess.run(command, cwd=directory, env=environment, stdin=subprocess.DEVNULL,
+                                stdout=stdout, stderr=stderr, timeout=remaining(deadline), check=False)
+        stdout.seek(0)
+        stderr.seek(0)
+        value = stdout.read(129)
+        require(result.returncode == 0 and not stderr.read(1) and len(value) <= 128,
+                "tool-version-process-failed")
+    require(regular_path(command[0]) == executable and digest(executable) == expected_sha256, "tool-digest-changed")
+    return value.strip()
+
+
+def prepare():
+    deadline = time.monotonic() + 180
+    expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
+                "RUNNER_OS": SETTINGS["runner_os"], "RUNNER_ARCH": "X64",
+                "GITHUB_REPOSITORY": "PenniLogic/infra", "GITHUB_REPOSITORY_ID": "1394135059",
+                "GITHUB_REPOSITORY_OWNER_ID": "335295566"}
+    require(sys.platform == SETTINGS["platform"] and sys.version_info[:2] == (3, 14)
+            and all(os.environ.get(key) == value for key, value in expected.items()),
+            "tool-preparation-host-mismatch")
+    require(not any(name in os.environ for name in BINDINGS), "tool-binding-already-present")
+    workspace = regular_path(os.environ.get("GITHUB_WORKSPACE"), directory=True)
+    temporary = regular_path(os.environ.get("RUNNER_TEMP"), directory=True)
+    env_file = regular_path(os.environ.get("GITHUB_ENV"))
+    git = regular_path(SETTINGS["git"])
+    require(not temporary.is_relative_to(workspace) and not git.is_relative_to(workspace)
+            and env_file.is_relative_to(temporary) and not env_file.is_relative_to(workspace),
+            "tool-path-inside-candidate-or-outside-runner")
+    directory = temporary / "pennilogic-gitleaks-8.30.1"
+    require(not os.path.lexists(directory), "tool-directory-already-present")
+    git_sha256 = digest(git)
+    payload = executable_bytes(download(deadline))
+    remaining(deadline)
+    directory.mkdir(mode=0o700)
+    executable = directory / SETTINGS["executable"]
+    with executable.open("xb") as stream:
+        stream.write(payload)
+    executable.chmod(0o700)
+    executable_sha256 = hashlib.sha256(payload).hexdigest()
+    environment = {key: value for key, value in os.environ.items() if key.upper() in {"SYSTEMROOT", "WINDIR"}}
+    environment.update(PATH=str(git.parent), PATHEXT=".EXE", NoDefaultCurrentDirectoryInExePath="1",
+                       GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_COUNT="0",
+                       GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL="file", GIT_NO_LAZY_FETCH="1",
+                       GIT_NO_REPLACE_OBJECTS="1", GIT_OPTIONAL_LOCKS="0")
+    require(digest(git) == git_sha256 and digest(executable) == executable_sha256, "tool-digest-changed")
+    require(re.fullmatch(rb"git version [0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.windows\.[0-9]+)?",
+                         version([str(git), "--version"], directory, environment, deadline, git_sha256)) is not None,
+            "git-version-mismatch")
+    require(version([str(executable), "version"], directory, environment, deadline, executable_sha256) == b"8.30.1",
+            "gitleaks-version-mismatch")
+    require(digest(git) == git_sha256 and digest(executable) == executable_sha256, "tool-digest-changed")
+    require(regular_path(str(env_file)) == env_file, "tool-environment-file-changed")
+    remaining(deadline)
+    bindings = dict(zip(BINDINGS, (str(git), str(executable), executable_sha256, git_sha256)))
+    with env_file.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write("".join(key + "=" + value + "\n" for key, value in bindings.items()))
+    return {"version": "8.30.1", "archive_sha256": SETTINGS["archive_sha256"],
+            "executable_sha256": executable_sha256, "git_sha256": git_sha256}
+
+
+def main():
+    try:
+        values = prepare()
+    except Refused as error:
+        code = str(error)
+    except KeyboardInterrupt:
+        code = "tool-preparation-interrupted"
+    except (OSError, ValueError, EOFError, subprocess.SubprocessError, http.client.HTTPException,
+            urllib.error.URLError, zipfile.BadZipFile, tarfile.TarError, zlib.error):
+        code = "tool-preparation-io-or-process-failed"
+    else:
+        print(json.dumps({"event": "infra_security_tools_prepared", **values}, sort_keys=True))
+        return 0
+    print(json.dumps({"event": "infra_security_preparation_refused", "code": code}, sort_keys=True))
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def infra_security_step(windows=False):
+    program = infra_security_program(windows)
+    if windows:
+        command = '& "$env:pythonLocation\\python.exe" -I -S -c @\'\n' + program + "\n'@"
+        script = ('$ErrorActionPreference = "Stop"\n'
+                  'if ($env:pythonLocation -notmatch "^[A-Za-z]:[\\\\/]" '
+                  '-or $env:pythonLocation -match "[`r`n]") { throw "Setup Python path is invalid" }\n'
+                  + powershell_commands([command]))
+    else:
+        script = ('set -euo pipefail\n'
+                  'case "${pythonLocation-}" in /*) ;; *) echo "::error::Setup Python path is invalid." >&2; exit 1 ;; esac\n'
+                  'case "$pythonLocation" in *$\'\\n\'*|*$\'\\r\'*) echo "::error::Setup Python path is invalid." >&2; exit 1 ;; esac\n'
+                  '"${pythonLocation:?Setup Python is missing}/bin/python" -I -S - <<\'PY\'\n'
+                  + program + "\nPY")
+    return {"name": "Prepare security tools", "run": script}
+
+
 def api_node_step(profile):
     # The pinned action has no node-path output. Bind its exact Linux x64 cache
     # layout before repository commands run, without consulting PATH.
@@ -557,14 +803,19 @@ def api_shell_focus_job(profile):
     return job
 
 
-def infra_windows_job(profile):
+def infra_windows_job(profile, suite):
+    if suite not in ("governance", "scripts"):
+        raise ValueError("Infra Windows qualification requires one complete ordinary suite")
+    other_suite = "scripts" if suite == "governance" else "governance"
+    excluded = {"docker compose -f docker-compose.yml config --quiet",
+                f"python -m unittest discover -s {other_suite}/tests"}
     commands = [infra_ci_command(command).replace("/", "\\") for command in profile["commands"]
-                if command != "docker compose -f docker-compose.yml config --quiet"]
+                if command not in excluded]
     return {
-        "name": "Windows qualification", "runs-on": "windows-2025",
+        "name": f"Windows {suite} qualification", "runs-on": "windows-2025",
         "timeout-minutes": profile.get("timeout_minutes", DEFAULT_TIMEOUT_MINUTES),
-        "steps": [*tool_steps(profile), uv_install_step(windows=True), {
-            "name": "Run Windows owning suites", "run": powershell_commands(commands),
+        "steps": [*tool_steps(profile), infra_security_step(windows=True), uv_install_step(windows=True), {
+            "name": f"Run Windows {suite} suite", "run": powershell_commands(commands),
         }],
     }
 
@@ -573,13 +824,21 @@ def ci_result_job(repo):
     if repo not in ("api", "infra"):
         raise ValueError("Only API and Infra have OS qualification results")
     label = "API" if repo == "api" else "Infra"
+    needs = ["ci", "windows"] if repo == "api" else ["ci", "windows-governance", "windows-scripts"]
+    results = ({"LINUX_RESULT": "${{ needs.ci.result }}", "WINDOWS_RESULT": "${{ needs.windows.result }}"}
+               if repo == "api" else {
+                   "LINUX_RESULT": "${{ needs.ci.result }}",
+                   "WINDOWS_GOVERNANCE_RESULT": "${{ needs.windows-governance.result }}",
+                   "WINDOWS_SCRIPTS_RESULT": "${{ needs.windows-scripts.result }}",
+               })
+    refused = " || ".join(f'[ "${{{name}-}}" != success ]' for name in results)
     return {
         "name": "CI", "runs-on": PROFILES["runner"], "timeout-minutes": 1,
-        "needs": ["ci", "windows"], "if": "always()",
+        "needs": needs, "if": "always()",
         "steps": [{
-            "name": "Require both qualification results",
-            "env": {"LINUX_RESULT": "${{ needs.ci.result }}", "WINDOWS_RESULT": "${{ needs.windows.result }}"},
-            "run": f"""if [ "${{LINUX_RESULT-}}" != success ] || [ "${{WINDOWS_RESULT-}}" != success ]; then
+            "name": "Require both qualification results" if repo == "api" else "Require all qualification results",
+            "env": results,
+            "run": f"""if {refused}; then
   echo "::error::{label} CI requires successful Linux and Windows qualification." >&2
   exit 1
 fi""",
@@ -591,6 +850,8 @@ def workflow(repo, setup=False):
     profile = profile_for(repo)
     steps = tool_steps(profile)
     if repo == "infra":
+        if not setup:
+            steps.append(infra_security_step())
         steps.append(uv_install_step())
     if repo == "api" and not setup:
         steps.append(api_node_step(profile))
@@ -637,8 +898,12 @@ def workflow(repo, setup=False):
     jobs = {"copilot-setup-steps" if setup else "ci": job}
     if repo in ("api", "infra") and not setup:
         job["name"] = "Linux qualification"
-        windows = api_windows_job(profile) if repo == "api" else infra_windows_job(profile)
-        jobs.update({"windows": windows, "ci-result": ci_result_job(repo)})
+        if repo == "api":
+            jobs["windows"] = api_windows_job(profile)
+        else:
+            for suite in ("governance", "scripts"):
+                jobs["windows-" + suite] = infra_windows_job(profile, suite)
+        jobs["ci-result"] = ci_result_job(repo)
         if repo == "api":
             jobs["api106-shell-focus"] = api_shell_focus_job(profile)
     return encoded({

@@ -27,6 +27,8 @@ from test_api_native_source_fetch import remove_native_steps
 ACCEPTED_BASE = "1360c30a5caaff8039d76d57bfb9b060cf81a351"
 RUNTIME_BASE = "e601c13091bf156193ba266a6f03fdbae279a69e"
 QUALIFICATION_SOURCE = "889c5c35a1677ef33899a2e63bc528d3bac802f9"
+INFRA_SECURITY_SOURCE = "1e16ccc161d1bd964e3c0c438d9e3bac2c95f8e1"
+INFRA_WORKFLOW_SOURCE = "e8a7558e90614e1f766596b6df331450db55deb9"
 API_WORKFLOW_SOURCE = "733c42e177d61c552e5baa9dc01d55c850e1b33f"
 HISTORICAL_ACCEPTED = "a40b9018a4b04fa78a5643905ebedc3a1a107db3"
 NATIVE_API_SOURCE = next(entry["workflow_ref"] for entry in registry.load_registry()["entries"]
@@ -212,11 +214,14 @@ class CanonicalPrivacyTests(unittest.TestCase):
         contracts = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/contracts")
         contracts["workflow_ref"] = "68a59601b4f24986dbc66cf23d8b58c0913327bc"
         next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/api")["workflow_ref"] = NATIVE_API_SOURCE
+        infra = next(entry for entry in expected["entries"] if entry["repo"] == "PenniLogic/infra")
+        infra["workflow_ref"] = INFRA_WORKFLOW_SOURCE
+        infra["pr_gate"]["workflow_ref"] = INFRA_WORKFLOW_SOURCE
         self.assertEqual(expected, current, "registry composition differs from the proven references")
         for name, workflow, source in (
             ("api", registry.CI_WORKFLOW, NATIVE_API_SOURCE),
-            ("infra", registry.CI_WORKFLOW, QUALIFICATION_SOURCE),
-            ("infra", registry.PR_GATE_WORKFLOW, QUALIFICATION_SOURCE),
+            ("infra", registry.CI_WORKFLOW, INFRA_WORKFLOW_SOURCE),
+            ("infra", registry.PR_GATE_WORKFLOW, INFRA_WORKFLOW_SOURCE),
         ):
             with self.subTest(repo=name, workflow=workflow):
                 rendered = registry.render_workflow_at(
@@ -245,9 +250,13 @@ class CanonicalPrivacyTests(unittest.TestCase):
             ("api", "workflow_ref", QUALIFICATION_SOURCE),
             ("api", "workflow_ref", API_WORKFLOW_SOURCE),
             ("infra", "workflow_ref", previous_source),
+            ("infra", "workflow_ref", QUALIFICATION_SOURCE),
             ("infra", "workflow_ref", API_WORKFLOW_SOURCE),
+            ("infra", "workflow_ref", INFRA_SECURITY_SOURCE),
             ("infra", "pr_gate", previous_source),
+            ("infra", "pr_gate", QUALIFICATION_SOURCE),
             ("infra", "pr_gate", API_WORKFLOW_SOURCE),
+            ("infra", "pr_gate", INFRA_SECURITY_SOURCE),
             ("android", "workflow_ref", API_WORKFLOW_SOURCE),
             ("docs", "workflow_ref", QUALIFICATION_SOURCE),
             ("infra", "language", "kotlin"),

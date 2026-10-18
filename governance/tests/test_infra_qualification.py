@@ -1,5 +1,6 @@
 """Infra routing and synthetic qualification controls, not held workstation experiments."""
 
+import ast
 import contextlib
 import copy
 import hashlib
@@ -7,16 +8,21 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
+import types
 import unittest
 from unittest import mock
+import zipfile
 
 import conformance_support as support
 from conformance import generator as generator_module
 import qualify as qualification
 from test_api_native_source_fetch import remove_observer_pair
+from test_api_node_runtime import shell_path
 
 
 generator = support.generator
@@ -29,13 +35,35 @@ LINUX_PROCESS_IDS = frozenset({
     "test_an_escaped_descendant_is_not_mistaken_for_a_terminated_owned_tree",
 })
 LINUX_PROCESS_SKIP = "skipped 'native Linux owned-group/escaped-descendant evidence'"
+WINDOWS_SECURITY_IDS = frozenset({
+    "test_security_controls.ScannerBoundaryTests.test_interrupted_teardown_never_claims_confirmed_cleanup",
+    "test_security_controls.ScannerBoundaryTests.test_timeout_terminates_actual_descendants_holding_pipes_and_files",
+    "test_security_controls.GitleaksIntegrationTests."
+    "test_confirmed_interruption_keeps_public_cleanup_unconfirmed_and_incidents",
+})
+
+
+def without_python_location(environment):
+    return {key: value for key, value in environment.items() if key.upper() != "PYTHONLOCATION"}
 
 
 class InfraQualificationWorkflowTests(unittest.TestCase):
     def test_both_ordinary_suites_preserve_the_linux_graph_and_windows_preparation(self):
+        self.test_independent_windows_jobs_keep_complete_suites_and_all_preparation()
+        jobs = json.loads(generator.workflow("infra"))["jobs"]
+        governance = jobs["windows-governance"]["steps"][-1]["run"]
+        scripts = jobs["windows-scripts"]["steps"][-1]["run"]
+        installer = jobs["windows-governance"]["steps"][4]["run"]
+        support.assert_powershell_failure_boundaries(self, installer, 1)
+        # Both emitted suites share the checked prefix; retain every original failure boundary.
+        combined = governance + "\n" + "\n".join(scripts.splitlines()[-2:])
+        support.assert_powershell_failure_boundaries(self, combined, 4)
+
+    def test_independent_windows_jobs_keep_complete_suites_and_all_preparation(self):
         document = json.loads(generator.workflow("infra"))
         jobs = document["jobs"]
-        self.assertEqual({"ci", "windows", "ci-result"}, set(jobs))
+        windows_jobs = ("windows-governance", "windows-scripts")
+        self.assertEqual({"ci", *windows_jobs, "ci-result"}, set(jobs))
         profile = generator.profile_for("infra")
         expected = [generator.infra_ci_command(command) for command in profile["commands"]]
         self.assertEqual(expected, jobs["ci"]["steps"][-1]["run"].splitlines())
@@ -46,26 +74,59 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
             "docker compose -f docker-compose.yml config --quiet",
             "python governance/qualify.py -- python -m unittest discover -s scripts/tests",
         ], expected)
-        self.assertEqual("windows-2025", jobs["windows"]["runs-on"])
-        self.assertEqual(generator.tool_steps(profile), jobs["windows"]["steps"][:3])
-        windows = jobs["windows"]["steps"][-1]["run"]
-        self.assertEqual([line.replace("/", "\\") for line in expected if not line.startswith("docker ")],
-                         windows.splitlines()[::2])
+        for suite, discovery in (("governance", expected[2]), ("scripts", expected[4])):
+            job = jobs["windows-" + suite]
+            with self.subTest(suite=suite):
+                self.assertEqual({"name", "runs-on", "timeout-minutes", "steps"}, set(job))
+                self.assertEqual("Windows " + suite + " qualification", job["name"])
+                self.assertEqual("windows-2025", job["runs-on"])
+                self.assertEqual(generator.tool_steps(profile), job["steps"][:3])
+                self.assertEqual({
+                    "name": "Checkout",
+                    "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                    "with": {"persist-credentials": False, "fetch-depth": 0},
+                }, job["steps"][0])
+                self.assertEqual(6, len(job["steps"]))
+                self.assertEqual(generator.uv_install_step(windows=True), job["steps"][4])
+                self.assertEqual("Run Windows " + suite + " suite", job["steps"][-1]["name"])
+                windows = job["steps"][-1]["run"].splitlines()
+                self.assertEqual([line.replace("/", "\\") for line in [*expected[:2], discovery]], windows[::2])
+                self.assertEqual(["if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"] * 3, windows[1::2])
+                self.assertNotIn("if", job)
+                self.assertNotIn("needs", job)
+        self.assertIsNot(jobs[windows_jobs[0]]["steps"], jobs[windows_jobs[1]]["steps"])
         self.assertNotIn("PENNILOGIC_SKIP_DOCKER_TESTS", json.dumps(document))
         self.assertEqual("always()", jobs["ci-result"]["if"])
-        self.assertEqual(["ci", "windows"], jobs["ci-result"]["needs"])
+        self.assertEqual(["ci", *windows_jobs], jobs["ci-result"]["needs"])
+        self.assertEqual({
+            "LINUX_RESULT": "${{ needs.ci.result }}",
+            "WINDOWS_GOVERNANCE_RESULT": "${{ needs.windows-governance.result }}",
+            "WINDOWS_SCRIPTS_RESULT": "${{ needs.windows-scripts.result }}",
+        }, jobs["ci-result"]["steps"][0]["env"])
         self.assertEqual("CI", jobs["ci-result"]["name"])
         self.assertEqual(1, sum(job["name"] == "CI" for job in jobs.values()))
-        for name in ("ci", "windows"):
+        for name in ("ci", *windows_jobs):
             self.assertNotIn("needs", jobs[name])
             self.assertEqual(10, jobs[name]["timeout-minutes"])
         self.assertEqual({"contents": "read"}, document["permissions"])
-        installer = jobs["windows"]["steps"][3]["run"]
+        installer = jobs["windows-governance"]["steps"][4]["run"]
         self.assertIn("uv-0.11.33-py3-none-win_amd64.whl", installer)
         self.assertIn("#sha256=521229afa69ad5f57127de800120cb2bea1ac729a05a0851aaf920124f8edf66", installer)
         self.assertIn("--only-binary :all: --require-hashes --no-deps", installer)
-        support.assert_powershell_failure_boundaries(self, installer, 1)
-        support.assert_powershell_failure_boundaries(self, windows, 4)
+        for name, windows_os in (("ci", False), *((name, True) for name in windows_jobs)):
+            preparation = jobs[name]["steps"][3]
+            self.assertEqual(generator.infra_security_step(windows_os), preparation)
+            self.assertEqual({"name", "run"}, set(preparation))
+            self.assertIn(generator.infra_security_program(windows_os), preparation["run"])
+            self.assertIn("pythonLocation", preparation["run"])
+            self.assertIn("-I -S", preparation["run"])
+        for document in (generator.workflow("infra", setup=True), generator.conformance_workflow()):
+            self.assertNotIn("Prepare security tools", document)
+
+    def test_windows_suite_selection_refuses_partial_or_unknown_directories(self):
+        for suite in ("", "governance/tests", "scripts/tests", "governance -p test_*", "security"):
+            with self.subTest(suite=suite), self.assertRaisesRegex(ValueError, "complete ordinary suite"):
+                generator.infra_windows_job(generator.profile_for("infra"), suite)
 
     def test_api_caller_checker_and_qualifier_match_their_exact_source_bindings(self):
         historical = {"a40b9018a4b04fa78a5643905ebedc3a1a107db3": {
@@ -127,17 +188,819 @@ class InfraQualificationWorkflowTests(unittest.TestCase):
                 continue
             original = json.loads(generator.workflow(repo))
             validate(".github/workflows/ci.yml", generator.encoded(original).encode())
+            windows_jobs = ("windows",) if repo == "api" else ("windows-governance", "windows-scripts")
+            for job_name in windows_jobs:
+                for mutate in (
+                    lambda value: value["jobs"].pop(job_name),
+                    lambda value: value["jobs"]["ci-result"].pop("if"),
+                    lambda value: value["jobs"]["ci-result"].update(needs=["ci"]),
+                    lambda value: value["jobs"][job_name].update({"continue-on-error": True}),
+                    lambda value: value["jobs"][job_name]["steps"][-1].update(run="echo skipped"),
+                ):
+                    changed = copy.deepcopy(original)
+                    mutate(changed)
+                    with self.subTest(repo=repo, job=job_name, mutate=mutate), self.assertRaisesRegex(ValueError, "CI must match"):
+                        validate(".github/workflows/ci.yml", generator.encoded(changed).encode())
+
+    def test_split_windows_jobs_refuse_serialization_partial_suites_or_weakened_result_gate(self):
+        namespace = {"__file__": str(support.GOVERNANCE.parent / "scripts/check_repository.py")}
+        exec(compile(generator.checker("infra"), "rendered split checker", "exec"), namespace)
+        original = json.loads(generator.workflow("infra"))
+        validate = namespace["validate_workflow"]
+        validate(".github/workflows/ci.yml", generator.encoded(original).encode())
+        for job_name in ("windows-governance", "windows-scripts"):
+            other = "windows-scripts" if job_name == "windows-governance" else "windows-governance"
             for mutate in (
-                lambda value: value["jobs"].pop("windows"),
-                lambda value: value["jobs"]["ci-result"].pop("if"),
-                lambda value: value["jobs"]["ci-result"].update(needs=["ci"]),
-                lambda value: value["jobs"]["windows"].update({"continue-on-error": True}),
-                lambda value: value["jobs"]["windows"]["steps"][-1].update(run="echo skipped"),
+                lambda value: value["jobs"][job_name].update(needs=[other]),
+                lambda value: value["jobs"][job_name].update({"if": "success()"}),
+                lambda value: value["jobs"][job_name].update({"runs-on": "windows-latest"}),
+                lambda value: value["jobs"][job_name].update({"timeout-minutes": 11}),
+                lambda value: value["jobs"][job_name]["steps"][-1].update(run="python -m unittest test_one"),
+                lambda value: value["jobs"][job_name]["steps"][-1].update(
+                    run=value["jobs"][job_name]["steps"][-1]["run"].replace(
+                        "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", "", 1)),
+                lambda value: value["jobs"]["ci-result"]["needs"].remove(job_name),
+                lambda value: value["jobs"]["ci-result"]["steps"][0].update(run="true"),
             ):
                 changed = copy.deepcopy(original)
                 mutate(changed)
-                with self.subTest(repo=repo, mutate=mutate), self.assertRaisesRegex(ValueError, "CI must match"):
+                with self.subTest(job=job_name, mutate=mutate), self.assertRaisesRegex(ValueError, "CI must match"):
                     validate(".github/workflows/ci.yml", generator.encoded(changed).encode())
+
+    def test_security_preparation_shells_require_bound_python_and_propagate_the_native_exit(self):
+        for windows, tool in ((False, "bash"), (True, "pwsh")):
+            runner = support.shutil.which(tool)
+            self.assertIsNotNone(runner, "The existing emitted-shell test prerequisite is missing")
+            for code in (0, 37, None, "relative"):
+                with self.subTest(windows=windows, code=code), \
+                        tempfile.TemporaryDirectory(prefix="infra-security-shell-") as temporary:
+                    root = Path(temporary)
+                    program = generator.infra_security_program(windows)
+                    script = generator.infra_security_step(windows)["run"]
+                    self.assertEqual(1, script.count(program))
+                    exit_code = code if isinstance(code, int) else 0
+                    environment = without_python_location({
+                        **support.defects.probe_environment(),
+                        "PYTHONLOCATION": r"C:\synthetic-inherited-python",
+                    })
+                    after, captured = root / "after", root / "captured-program"
+                    environment["PENNILOGIC_FIXTURE_AFTER"] = str(after)
+                    environment["PENNILOGIC_FIXTURE_PROGRAM"] = str(captured)
+                    environment["PENNILOGIC_FIXTURE_EXIT"] = str(exit_code)
+                    if windows:
+                        invocation = '& "$env:pythonLocation\\python.exe"'
+                        self.assertEqual(1, script.count(invocation))
+                        fixture = """function Invoke-PreparedPython {
+  if ($args.Count -ne 4 -or $args[0] -cne "-I" -or $args[1] -cne "-S" -or $args[2] -cne "-c") {
+    throw "Unexpected prepared Python arguments"
+  }
+  [System.IO.File]::WriteAllText($env:PENNILOGIC_FIXTURE_PROGRAM, $args[3])
+  $global:LASTEXITCODE = [int]$env:PENNILOGIC_FIXTURE_EXIT
+}
+"""
+                        script = fixture + script.replace(invocation, "Invoke-PreparedPython")
+                        environment["pythonLocation"] = r"C:\fixture-python"
+                        script += '\n[System.IO.File]::WriteAllText($env:PENNILOGIC_FIXTURE_AFTER, "continued")'
+                        path = root / "step.ps1"
+                        command = [runner, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(path)]
+                    else:
+                        sdk = root / "sdk" / "bin"
+                        sdk.mkdir(parents=True)
+                        python = sdk / "python"
+                        python.write_text("""#!/bin/bash
+if [ "$#" -ne 3 ] || [ "$1" != "-I" ] || [ "$2" != "-S" ] || [ "$3" != "-" ]; then exit 91; fi
+status=0
+IFS= read -r -d '' program || status=$?
+if [ "$status" -ne 1 ]; then exit 92; fi
+printf '%s' "$program" > "$PENNILOGIC_FIXTURE_PROGRAM"
+exit "$PENNILOGIC_FIXTURE_EXIT"
+""", encoding="utf-8", newline="\n")
+                        python.chmod(0o700)
+                        environment["pythonLocation"] = shell_path(sdk.parent)
+                        environment["PENNILOGIC_FIXTURE_AFTER"] = shell_path(after)
+                        environment["PENNILOGIC_FIXTURE_PROGRAM"] = shell_path(captured)
+                        script += '\nprintf continued > "$PENNILOGIC_FIXTURE_AFTER"'
+                        path = root / "step.sh"
+                        command = [runner, "--noprofile", "--norc", str(path)]
+                    if code is None:
+                        environment.pop("pythonLocation")
+                    elif code == "relative":
+                        environment["pythonLocation"] = "sdk"
+                    path.write_text(script, encoding="utf-8", newline="\n")
+                    result = subprocess.run(command, cwd=root, env=environment,
+                                            capture_output=True, check=False, timeout=15)
+                    if not isinstance(code, int):
+                        self.assertNotEqual(0, result.returncode)
+                    else:
+                        self.assertEqual(code, result.returncode, result.stderr)
+                    self.assertEqual(code == 0, after.exists())
+                    if isinstance(code, int):
+                        self.assertEqual(program + ("\n" if not windows else ""),
+                                         captured.read_text(encoding="utf-8"))
+                    else:
+                        self.assertFalse(captured.exists(), "invalid interpreter binding must start nothing")
+
+    def test_security_preparation_fixture_removes_inherited_python_location_aliases(self):
+        aliases = {
+            "PYTHONLOCATION": r"C:\synthetic-upper-python",
+            "pythonLocation": r"C:\synthetic-camel-python",
+            "PythonLocation": r"C:\synthetic-title-python",
+            "pythonlocation": "/synthetic-lower-python",
+        }
+        ambient = {"PATH": "synthetic-runtime-path", "PYTHONLOCATION_SUFFIX": "unrelated", **aliases}
+        original = ambient.copy()
+        inherited = support.defects.probe_environment(ambient)
+        self.assertEqual(aliases, {key: inherited[key] for key in aliases})
+        before = inherited.copy()
+        environment = without_python_location(inherited)
+        self.assertFalse(any(key.upper() == "PYTHONLOCATION" for key in environment))
+        self.assertEqual(before, {**environment, **aliases})
+        self.assertEqual(before, inherited)
+        self.assertEqual(original, ambient)
+        for binding in (None, "sdk", r"C:\fixture-python"):
+            with self.subTest(binding=binding):
+                child = environment.copy()
+                child["pythonLocation"] = r"C:\fixture-python"
+                if binding is None:
+                    child.pop("pythonLocation")
+                else:
+                    child["pythonLocation"] = binding
+                self.assertEqual({} if binding is None else {"pythonLocation": binding},
+                                 {key: value for key, value in child.items() if key.upper() == "PYTHONLOCATION"})
+
+
+class InfraSecurityPreparationTests(unittest.TestCase):
+    payload = b"nonfunctional synthetic scanner executable"
+
+    def archive(self, windows, entries=None):
+        executable = "gitleaks.exe" if windows else "gitleaks"
+        entries = entries if entries is not None else [
+            ("LICENSE", b"fixture", "file"), ("README.md", b"fixture", "file"),
+            (executable, self.payload, "file"),
+        ]
+        stream = io.BytesIO()
+        if windows:
+            with zipfile.ZipFile(stream, "w") as archive:
+                for name, data, kind in entries:
+                    entry = zipfile.ZipInfo(name)
+                    entry.create_system = 3
+                    mode = {"file": stat.S_IFREG | 0o755, "link": stat.S_IFLNK | 0o777,
+                            "directory": stat.S_IFDIR | 0o755, "special": stat.S_IFIFO | 0o600,
+                            "setuid": stat.S_IFREG | 0o4755, "dos": 0}[kind]
+                    entry.external_attr = mode << 16
+                    archive.writestr(entry, data)
+        else:
+            with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+                for name, data, kind in entries:
+                    entry = tarfile.TarInfo(name)
+                    entry.type = {"file": tarfile.REGTYPE, "link": tarfile.SYMTYPE,
+                                  "directory": tarfile.DIRTYPE, "special": tarfile.FIFOTYPE,
+                                  "setuid": tarfile.REGTYPE, "dos": tarfile.REGTYPE}[kind]
+                    entry.mode = 0o4755 if kind == "setuid" else 0o755
+                    entry.size = len(data) if entry.isreg() else 0
+                    if kind == "link":
+                        entry.linkname = "../outside"
+                    archive.addfile(entry, io.BytesIO(data))
+        return stream.getvalue()
+
+    @contextlib.contextmanager
+    def fixture(self, windows):
+        module = types.ModuleType("infra_security_preparation_fixture")
+        exec(compile(generator.infra_security_program(windows), "<emitted security preparation>", "exec"),
+             module.__dict__)
+        with tempfile.TemporaryDirectory(prefix="infra-security-preparation-") as temporary:
+            root = Path(temporary).resolve()
+            workspace, runner, host = root / "candidate", root / "runner", root / "host"
+            for path in (workspace, runner, host):
+                path.mkdir()
+            git = host / ("git.exe" if windows else "git")
+            git.write_bytes(b"synthetic runner image Git")
+            env_file = runner / "github-env"
+            env_file.write_bytes(b"")
+            raw = self.archive(windows)
+            module.SETTINGS.update(git=str(git), archive_sha256=hashlib.sha256(raw).hexdigest())
+            response = io.BytesIO(raw)
+            response.status = 200
+            response.headers = {"Content-Length": str(len(raw))}
+            opener = mock.Mock()
+            opener.open.return_value = response
+            state = {"module": module, "root": root, "workspace": workspace, "runner": runner, "git": git,
+                     "env_file": env_file, "directory": runner / "pennilogic-gitleaks-8.30.1",
+                     "response": response, "opener": opener, "calls": [], "on_version": None}
+
+            def run(command, **options):
+                state["calls"].append(command)
+                self.assertEqual(state["directory"], options["cwd"])
+                self.assertTrue(Path(command[0]).is_absolute())
+                self.assertNotIn(MARKER, json.dumps(options["env"]))
+                self.assertNotIn("GH_TOKEN", options["env"])
+                self.assertEqual(str(git.parent), options["env"]["PATH"])
+                self.assertEqual("1", options["env"]["NoDefaultCurrentDirectoryInExePath"])
+                self.assertEqual(".EXE", options["env"]["PATHEXT"])
+                self.assertGreater(options["timeout"], 0)
+                self.assertLessEqual(options["timeout"], 15)
+                if state["on_version"] is not None:
+                    return state["on_version"](command, options)
+                value = b"git version 2.53.0.windows.1\n" if command[0] == str(git) else b"8.30.1\n"
+                options["stdout"].write(value)
+                return subprocess.CompletedProcess(command, 0)
+
+            environment = {
+                "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
+                "RUNNER_OS": module.SETTINGS["runner_os"], "RUNNER_ARCH": "X64",
+                "GITHUB_REPOSITORY": "PenniLogic/infra", "GITHUB_REPOSITORY_ID": "1394135059",
+                "GITHUB_REPOSITORY_OWNER_ID": "335295566", "GITHUB_WORKSPACE": str(workspace),
+                "RUNNER_TEMP": str(runner), "GITHUB_ENV": str(env_file),
+                "GH_TOKEN": MARKER, "GITLEAKS_CONFIG": MARKER, "GIT_CONFIG_PARAMETERS": MARKER,
+            }
+            with mock.patch.dict(os.environ, environment, clear=True), \
+                    mock.patch.object(sys, "platform", module.SETTINGS["platform"]), \
+                    mock.patch.object(module.urllib.request, "build_opener", return_value=opener) as network, \
+                    mock.patch.object(module.subprocess, "run", side_effect=run):
+                state["network"] = network
+                yield state
+
+    def invoke(self, state):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = state["module"].main()
+        self.assertEqual("", stderr.getvalue())
+        for private in (MARKER, str(state["root"]), str(state["workspace"]), "Traceback"):
+            self.assertNotIn(private, stdout.getvalue())
+        return code, json.loads(stdout.getvalue())
+
+    def replace_download(self, state, raw, *, bind=True):
+        response = io.BytesIO(raw)
+        response.status = 200
+        response.headers = {"Content-Length": str(len(raw))}
+        state["response"] = response
+        state["opener"].open.return_value = response
+        if bind:
+            state["module"].SETTINGS["archive_sha256"] = hashlib.sha256(raw).hexdigest()
+
+    def bindings(self, state):
+        return dict(line.split("=", 1) for line in state["env_file"].read_text(encoding="utf-8").splitlines())
+
+    def test_both_emitted_programs_verify_then_publish_only_the_exact_tool_bindings(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows), self.fixture(windows) as state:
+                code, result = self.invoke(state)
+                self.assertEqual(0, code)
+                self.assertEqual("infra_security_tools_prepared", result["event"])
+                executable = state["directory"] / state["module"].SETTINGS["executable"]
+                self.assertEqual(self.payload, executable.read_bytes())
+                self.assertEqual([executable], list(state["directory"].iterdir()))
+                bindings = self.bindings(state)
+                self.assertEqual(set(state["module"].BINDINGS), set(bindings))
+                self.assertEqual(str(state["git"]), bindings["PENNILOGIC_TEST_GIT"])
+                self.assertEqual(str(executable), bindings["PENNILOGIC_TEST_GITLEAKS"])
+                self.assertEqual(hashlib.sha256(self.payload).hexdigest(),
+                                 bindings["PENNILOGIC_TEST_GITLEAKS_SHA256"])
+                self.assertEqual(hashlib.sha256(state["git"].read_bytes()).hexdigest(),
+                                 bindings["PENNILOGIC_TEST_GIT_SHA256"])
+                self.assertEqual([[str(state["git"]), "--version"], [str(executable), "version"]], state["calls"])
+                request = state["opener"].open.call_args.args[0]
+                self.assertEqual("GET", request.get_method())
+                self.assertEqual("https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/"
+                                 + state["module"].SETTINGS["archive"], request.full_url)
+                self.assertEqual({}, state["network"].call_args.args[0].proxies)
+                self.assertFalse(request.has_header("Authorization"))
+                self.assertEqual(1, state["opener"].open.call_count)
+
+    def test_fixed_archive_and_image_git_pins_match_qualification_without_candidate_lookup(self):
+        for windows, platform in ((False, "linux"), (True, "win32")):
+            module = types.ModuleType("infra_fixed_tool_pins")
+            exec(generator.infra_security_program(windows), module.__dict__)
+            self.assertEqual(qualification.GITLEAKS_ARCHIVE_PINS[platform], module.SETTINGS["archive_sha256"])
+            self.assertEqual(qualification.HOST_GIT[platform], module.SETTINGS["git"])
+            for text in ("shutil.which", "extractall", "pip install", "GITHUB_PATH"):
+                self.assertNotIn(text, generator.infra_security_program(windows))
+
+    def test_wrong_whole_archive_digest_prevents_parsing_extraction_and_every_child(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows), self.fixture(windows) as state:
+                state["module"].SETTINGS["archive_sha256"] = "0" * 64
+                with mock.patch.object(state["module"], "executable_bytes") as extract:
+                    code, result = self.invoke(state)
+                self.assertEqual((1, "archive-digest-mismatch"), (code, result["code"]))
+                extract.assert_not_called()
+                self.assertEqual([], state["calls"])
+                self.assertFalse(state["directory"].exists())
+                self.assertEqual(b"", state["env_file"].read_bytes())
+
+    def test_failed_truncated_oversized_and_malformed_downloads_never_extract_or_publish(self):
+        for windows in (False, True):
+            for case in ("status", "missing-length", "length-text", "length-large", "truncated", "overlong",
+                         "denied", "read-error", "deadline"):
+                with self.subTest(windows=windows, case=case), self.fixture(windows) as state:
+                    response = state["response"]
+                    if case == "status":
+                        response.status = 403
+                    elif case.startswith("length-") or case == "missing-length":
+                        response.headers["Content-Length"] = {
+                            "missing-length": None, "length-text": MARKER,
+                            "length-large": str(state["module"].ARCHIVE_LIMIT + 1),
+                        }[case]
+                    elif case in ("truncated", "overlong"):
+                        response.headers["Content-Length"] = str(
+                            int(response.headers["Content-Length"]) + (1 if case == "truncated" else -1)
+                        )
+                    elif case == "denied":
+                        state["opener"].open.side_effect = state["module"].urllib.error.URLError(MARKER)
+                    elif case == "read-error":
+                        response.read1 = mock.Mock(side_effect=OSError(MARKER))
+                    with contextlib.ExitStack() as stack:
+                        if case == "deadline":
+                            stack.enter_context(mock.patch.object(state["module"].time, "monotonic",
+                                                                  side_effect=[0, 181]))
+                        code, result = self.invoke(state)
+                    self.assertEqual((1, "infra_security_preparation_refused"), (code, result["event"]))
+                    self.assertEqual([], state["calls"])
+                    self.assertFalse(state["directory"].exists())
+                    self.assertEqual(b"", state["env_file"].read_bytes())
+
+    def test_archive_members_must_be_exact_unique_regular_bounded_files(self):
+        for windows in (False, True):
+            for case in ("missing", "extra", "traversal", "absolute", "backslash", "link", "directory",
+                         "special", "setuid", "empty", "size", "malformed", "truncated"):
+                with self.subTest(windows=windows, case=case), self.fixture(windows) as state:
+                    executable = state["module"].SETTINGS["executable"]
+                    entries = [("LICENSE", b"fixture", "file"), ("README.md", b"fixture", "file"),
+                               (executable, self.payload, "file")]
+                    if case == "missing":
+                        entries.pop()
+                    elif case == "extra":
+                        entries.append(("extra.exe", self.payload, "file"))
+                    elif case in ("traversal", "absolute", "backslash"):
+                        entries[-1] = ({"traversal": "../" + executable, "absolute": "/" + executable,
+                                        "backslash": "folder\\" + executable}[case], self.payload, "file")
+                    elif case in ("link", "directory", "special", "setuid"):
+                        entries[-1] = (executable, self.payload, case)
+                    elif case == "empty":
+                        entries[-1] = (executable, b"", "file")
+                    elif case == "size":
+                        state["module"].EXECUTABLE_LIMIT = len(self.payload) - 1
+                    raw = self.archive(windows, entries)
+                    if case == "malformed":
+                        raw = b"not a release archive"
+                    elif case == "truncated":
+                        raw = raw[:-12]
+                    self.replace_download(state, raw)
+                    code, _ = self.invoke(state)
+                    self.assertEqual(1, code)
+                    self.assertEqual([], state["calls"])
+                    self.assertFalse(state["directory"].exists())
+                    self.assertEqual(b"", state["env_file"].read_bytes())
+
+    def test_duplicate_archive_member_is_not_last_entry_wins(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows), self.fixture(windows) as state:
+                entries = [("LICENSE", b"a", "file"), ("README.md", b"a", "file"),
+                           (state["module"].SETTINGS["executable"], self.payload, "file"),
+                           ("LICENSE", b"b", "file")]
+                with contextlib.redirect_stderr(io.StringIO()):
+                    raw = self.archive(windows, entries)
+                self.replace_download(state, raw)
+                code, result = self.invoke(state)
+                self.assertEqual((1, "archive-member-inventory"), (code, result["code"]))
+                self.assertEqual([], state["calls"])
+
+    def test_metadata_paths_links_and_existing_bindings_fail_before_download(self):
+        for windows in (False, True):
+            for case in ("identity", "owner", "runner", "relative", "inside", "env-outside", "git-inside",
+                         "exists", "binding", "symlink", "junction"):
+                with self.subTest(windows=windows, case=case), self.fixture(windows) as state:
+                    if case in ("identity", "owner", "runner"):
+                        os.environ[{"identity": "GITHUB_REPOSITORY_ID", "owner": "GITHUB_REPOSITORY_OWNER_ID",
+                                    "runner": "RUNNER_ENVIRONMENT"}[case]] = "wrong"
+                    elif case == "relative":
+                        os.environ["RUNNER_TEMP"] = "relative"
+                    elif case == "inside":
+                        os.environ["RUNNER_TEMP"] = str(state["workspace"])
+                    elif case == "env-outside":
+                        os.environ["GITHUB_ENV"] = str(state["git"])
+                    elif case == "git-inside":
+                        candidate = state["workspace"] / "git"
+                        candidate.write_bytes(b"untrusted")
+                        state["module"].SETTINGS["git"] = str(candidate)
+                    elif case == "exists":
+                        state["directory"].mkdir()
+                    elif case == "binding":
+                        os.environ["PENNILOGIC_TEST_GIT"] = MARKER
+                    with contextlib.ExitStack() as stack:
+                        if case in ("symlink", "junction"):
+                            stack.enter_context(mock.patch.object(
+                                Path, "is_symlink" if case == "symlink" else "is_junction",
+                                autospec=True, side_effect=lambda path: path == state["git"].parent,
+                            ))
+                        code, _ = self.invoke(state)
+                    self.assertEqual(1, code)
+                    state["network"].assert_not_called()
+                    self.assertEqual([], state["calls"])
+                    self.assertEqual(b"", state["env_file"].read_bytes())
+
+    def test_redirects_cannot_select_another_scheme_host_or_authenticated_endpoint(self):
+        for windows in (False, True):
+            with self.fixture(windows) as state:
+                module = state["module"]
+                request = module.urllib.request.Request("https://github.com/gitleaks/gitleaks")
+                handler = module.ReleaseRedirect()
+                for url in ("http://github.com/file", "file:///file", "https://example.invalid/file",
+                            "https://github.com.evil.invalid/file", "https://user:password@github.com/file",
+                            "https://github.com:8443/file", "https://github.com/file#fragment"):
+                    with self.subTest(windows=windows, url=url), self.assertRaises(module.Refused):
+                        handler.redirect_request(request, None, 302, "redirect", {}, url)
+                redirected = handler.redirect_request(
+                    request, None, 302, "redirect", {}, "https://release-assets.githubusercontent.com/file?synthetic=1",
+                )
+                self.assertEqual("GET", redirected.get_method())
+                state["network"].assert_not_called()
+
+    def test_versions_exits_timeouts_interrupts_and_changed_bytes_never_publish_bindings(self):
+        for windows in (False, True):
+            for which in ("git", "gitleaks"):
+                for case in ("exit", "stderr", "version", "timeout", "os-error", "interrupted", "changed"):
+                    with self.subTest(windows=windows, tool=which, case=case), self.fixture(windows) as state:
+                        def run(command, options):
+                            git_command = command[0] == str(state["git"])
+                            target = git_command == (which == "git")
+                            value = b"git version 2.53.0\n" if git_command else b"8.30.1\n"
+                            if target:
+                                if case == "timeout":
+                                    raise subprocess.TimeoutExpired(MARKER, 15)
+                                if case == "os-error":
+                                    raise OSError(MARKER)
+                                if case == "interrupted":
+                                    raise KeyboardInterrupt(MARKER)
+                                if case == "stderr":
+                                    options["stderr"].write(MARKER.encode())
+                                elif case == "version":
+                                    value = MARKER.encode()
+                                elif case == "changed":
+                                    Path(command[0]).write_bytes(b"changed after verification")
+                            options["stdout"].write(value)
+                            return subprocess.CompletedProcess(command, 23 if target and case == "exit" else 0)
+
+                        state["on_version"] = run
+                        code, result = self.invoke(state)
+                        self.assertEqual((1, "infra_security_preparation_refused"), (code, result["event"]))
+                        self.assertEqual(b"", state["env_file"].read_bytes())
+                        self.assertTrue(state["directory"].exists(), "no false cleanup claim or automatic retry")
+
+    def test_environment_publication_error_is_a_failure_not_prepared_success(self):
+        with self.fixture(True) as state:
+            original = Path.open
+
+            def open_file(path, mode="r", *args, **kwargs):
+                if path == state["env_file"] and mode == "a":
+                    raise PermissionError(MARKER)
+                return original(path, mode, *args, **kwargs)
+
+            with mock.patch.object(Path, "open", open_file):
+                code, result = self.invoke(state)
+            self.assertEqual((1, "infra_security_preparation_refused"), (code, result["event"]))
+            self.assertEqual(b"", state["env_file"].read_bytes())
+
+    def test_changed_scanner_after_git_probe_is_refused_before_scanner_execution(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows), self.fixture(windows) as state:
+                def run(command, options):
+                    if command[0] == str(state["git"]):
+                        (state["directory"] / state["module"].SETTINGS["executable"]).write_bytes(b"replaced")
+                        options["stdout"].write(b"git version 2.53.0\n")
+                    else:
+                        options["stdout"].write(b"8.30.1\n")
+                    return subprocess.CompletedProcess(command, 0)
+
+                state["on_version"] = run
+                self.assertEqual(1, self.invoke(state)[0])
+                self.assertEqual([[str(state["git"]), "--version"]], state["calls"])
+                self.assertEqual(b"", state["env_file"].read_bytes())
+
+    def test_qualifier_consumes_prepared_paths_and_digests_without_git_lookup(self):
+        for windows, platform in ((False, "linux"), (True, "win32")):
+            with self.subTest(windows=windows), self.fixture(windows) as state:
+                self.assertEqual(0, self.invoke(state)[0])
+                with mock.patch.dict(os.environ, self.bindings(state)), \
+                        mock.patch.dict(qualification.HOST_GIT, {platform: str(state["git"])}), \
+                        mock.patch.object(qualification.shutil, "which") as lookup:
+                    values = qualification.security_tools(state["workspace"])
+                self.assertEqual(str(state["git"]), values["git"])
+                self.assertEqual(self.bindings(state)["PENNILOGIC_TEST_GITLEAKS_SHA256"], values["gitleaks_sha256"])
+                lookup.assert_not_called()
+
+    def test_qualifier_refuses_missing_forged_moved_linked_and_changed_tool_bindings(self):
+        for windows, platform in ((False, "linux"), (True, "win32")):
+            for case in ("missing-git", "missing-scanner", "missing-digest", "missing-git-digest", "digest",
+                         "uppercase", "inside", "moved-git", "moved-scanner", "changed-git", "changed-scanner",
+                         "symlink", "junction"):
+                with self.subTest(windows=windows, case=case), self.fixture(windows) as state:
+                    self.assertEqual(0, self.invoke(state)[0])
+                    bindings = self.bindings(state)
+                    if case.startswith("missing-"):
+                        key = {"missing-git": "PENNILOGIC_TEST_GIT", "missing-scanner": "PENNILOGIC_TEST_GITLEAKS",
+                               "missing-digest": "PENNILOGIC_TEST_GITLEAKS_SHA256",
+                               "missing-git-digest": "PENNILOGIC_TEST_GIT_SHA256"}[case]
+                        bindings.pop(key)
+                    elif case in ("digest", "uppercase"):
+                        bindings["PENNILOGIC_TEST_GITLEAKS_SHA256"] = ("a" if case == "digest" else "A") * 64
+                    elif case in ("inside", "moved-git", "moved-scanner"):
+                        key = "PENNILOGIC_TEST_GIT" if case == "moved-git" else "PENNILOGIC_TEST_GITLEAKS"
+                        path = (state["workspace"] if case == "inside" else state["runner"]) / "shadow"
+                        path.write_bytes(Path(bindings[key]).read_bytes())
+                        bindings[key] = str(path)
+                    elif case.startswith("changed-"):
+                        key = "PENNILOGIC_TEST_GIT" if case == "changed-git" else "PENNILOGIC_TEST_GITLEAKS"
+                        Path(bindings[key]).write_bytes(b"changed")
+                    with contextlib.ExitStack() as stack:
+                        stack.enter_context(mock.patch.dict(os.environ, bindings))
+                        stack.enter_context(mock.patch.dict(qualification.HOST_GIT, {platform: str(state["git"])}))
+                        probe = stack.enter_context(mock.patch.object(qualification, "checked"))
+                        if case in ("symlink", "junction"):
+                            stack.enter_context(mock.patch.object(
+                                Path, "is_symlink" if case == "symlink" else "is_junction", autospec=True,
+                                side_effect=lambda path: path == state["directory"],
+                            ))
+                        with self.assertRaises(qualification.Refused):
+                            qualification.source_inventory(state["workspace"])
+                        probe.assert_not_called()
+
+    @contextlib.contextmanager
+    def qualifier_fixture(self, windows):
+        with self.fixture(windows) as state:
+            self.assertEqual(0, self.invoke(state)[0])
+            state["calls"].clear()
+            scanner = state["directory"] / state["module"].SETTINGS["executable"]
+            node = state["root"] / "node" / "bin" / ("node.exe" if windows else "node")
+            npm = (node.parent / "node_modules/npm/bin/npm-cli.js" if windows
+                   else node.parent.parent / "lib/node_modules/npm/bin/npm-cli.js")
+            npm.parent.mkdir(parents=True)
+            npm.write_bytes(b"synthetic npm")
+            tools = {"node": str(node), "uv": str(state["root"] / "uv"),
+                     "bash": str(state["root"] / "bash")}
+            listing = b"".join(b"100644 blob " + b"c" * 40 + b"\t" + name.encode() + b"\0"
+                               for name in sorted(qualification.SECURITY_SOURCE_FILES))
+            replies = {
+                (str(node), "--version"): b"v24.14.0\n",
+                (str(node), str(npm), "--version"): b"11.9.0\n",
+                (tools["uv"], "--version"): b"uv 0.11.33 (fixture)\n",
+                (str(state["git"]), "--version"): b"git version 2.53.0\n",
+                (tools["bash"], "--noprofile", "--norc", "--version"): b"GNU bash, version 5.2.37\n",
+                (str(scanner), "version"): b"8.30.1\n",
+                (str(state["git"]), "--no-pager", "rev-parse", "HEAD"): b"a" * 40 + b"\n",
+                (str(state["git"]), "--no-pager", "rev-parse", "--is-shallow-repository"): b"false\n",
+                (str(state["git"]), "--no-pager", "status", "--porcelain", "--untracked-files=normal"): b"",
+                (str(state["git"]), "--no-pager", "rev-parse", "HEAD^{tree}"): b"b" * 40 + b"\n",
+                (str(state["git"]), "--no-pager", "ls-tree", "-r", "-z", "HEAD"): listing,
+            }
+            state.update(scanner=scanner, node=node, tools=tools, replies=replies,
+                         on_qualifier_probe=None, on_discovery=None)
+
+            def run(command, **options):
+                if command[1:3] == ["-c", qualification.UNITTEST_DISCOVERY]:
+                    self.assertEqual({"cwd", "stdout", "stderr", "check"}, set(options))
+                    self.assertEqual(state["workspace"], options["cwd"])
+                    self.assertFalse(options["check"])
+                    state["calls"].append(command)
+                    Path(command[3]).write_text(
+                        "test_pass (test_binding_inventory.ControlTests.test_pass) ... ok\n\n"
+                        "----------------------------------------------------------------------\n"
+                        "Ran 1 test in 0.001s\n\nOK\n", encoding="utf-8",
+                    )
+                    if state["on_discovery"] is not None:
+                        state["on_discovery"]()
+                    return subprocess.CompletedProcess(command, 0)
+                self.assertEqual({"cwd": state["workspace"], "capture_output": True, "check": False}, options)
+                self.assertIn(tuple(command), replies)
+                state["calls"].append(command)
+                if state["on_qualifier_probe"] is not None:
+                    result = state["on_qualifier_probe"](command)
+                    if result is not None:
+                        return result
+                return subprocess.CompletedProcess(command, 0, replies[tuple(command)], b"")
+
+            environment = {**self.bindings(state), "ImageOS": "win25" if windows else "ubuntu24",
+                           "ImageVersion": "20261001.3.2", "GITHUB_SHA": "a" * 40}
+            platform = "win32" if windows else "linux"
+            with mock.patch.dict(os.environ, environment), \
+                    mock.patch.dict(qualification.HOST_GIT, {platform: str(state["git"])}), \
+                    mock.patch.object(qualification.shutil, "which", side_effect=tools.get), \
+                    mock.patch.object(qualification.subprocess, "run", side_effect=run):
+                yield state
+
+    def test_qualifier_rejects_scanner_replacement_during_an_earlier_probe_before_dispatch(self):
+        for windows in (False, True):
+            for earlier in ("node", "git", "bash"):
+                with self.subTest(windows=windows, earlier=earlier), self.qualifier_fixture(windows) as state:
+                    def replace(command):
+                        path = str(state["git"]) if earlier == "git" else state["tools"][earlier]
+                        if command[0] == path:
+                            state["scanner"].write_bytes(b"replaced after original admission")
+
+                    state["on_qualifier_probe"] = replace
+                    refusal = None
+                    try:
+                        qualification.versions(state["workspace"])
+                    except qualification.Refused as error:
+                        refusal = str(error)
+                    self.assertEqual(0, sum(command[0] == str(state["scanner"]) for command in state["calls"]))
+                    self.assertIsNotNone(refusal)
+
+    def test_qualifier_rejects_git_replacement_between_inventory_queries_before_next_dispatch(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows), self.qualifier_fixture(windows) as state:
+                class ReplaceAfterRead(bytes):
+                    def decode(self, *args, **kwargs):
+                        state["git"].write_bytes(b"replaced between inventory queries")
+                        return super().decode(*args, **kwargs)
+
+                def replace(command):
+                    if command[-2:] == ["rev-parse", "HEAD"]:
+                        return subprocess.CompletedProcess(command, 0, ReplaceAfterRead(b"a" * 40 + b"\n"), b"")
+
+                state["on_qualifier_probe"] = replace
+                refusal = None
+                try:
+                    qualification.source_inventory(state["workspace"])
+                except qualification.Refused as error:
+                    refusal = str(error)
+                self.assertEqual(1, len(state["calls"]))
+                self.assertIsNotNone(refusal)
+
+    def change_qualifier_binding(self, state, tool, case):
+        path = state[tool]
+        key = "PENNILOGIC_TEST_" + ("GIT" if tool == "git" else "GITLEAKS")
+        if case in ("bytes", "bytes-and-digest"):
+            path.write_bytes(b"changed synthetic tool")
+            if case == "bytes-and-digest":
+                os.environ[key + "_SHA256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        elif case in ("missing", "directory"):
+            path.unlink()
+            if case == "directory":
+                path.mkdir()
+        elif case == "missing-digest":
+            del os.environ[key + "_SHA256"]
+        elif case == "path":
+            moved = state["root"] / "tool-shadow"
+            moved.write_bytes(path.read_bytes())
+            os.environ[key] = str(moved)
+        elif case == "noncanonical":
+            os.environ[key] = str(path.parent / ".." / path.parent.name / path.name)
+        elif case == "prepared-relocation":
+            runner = state["root"] / "other-runner"
+            scanner = runner / state["directory"].name / state["scanner"].name
+            scanner.parent.mkdir(parents=True)
+            scanner.write_bytes(state["scanner"].read_bytes())
+            os.environ.update(RUNNER_TEMP=str(runner), PENNILOGIC_TEST_GITLEAKS=str(scanner))
+        elif case == "linked-parent":
+            parent = path.parent
+            target = parent.with_name(parent.name + "-target")
+            parent.rename(target)
+            if os.name == "nt":
+                import _winapi
+                _winapi.CreateJunction(str(target), str(parent))
+            else:
+                parent.symlink_to(target, target_is_directory=True)
+            self.assertTrue(parent.is_junction() or parent.is_symlink())
+        else:
+            self.fail("unknown synthetic binding mutation")
+
+    def qualifier_main(self, state):
+        output, errors = io.StringIO(), io.StringIO()
+        arguments = ["qualify.py", "--", "python", "-m", "unittest", "discover", "-s", "governance/tests"]
+        with mock.patch.object(qualification, "ROOT", state["workspace"]), \
+                mock.patch.object(sys, "argv", arguments), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = qualification.main()
+        self.assertEqual("", errors.getvalue())
+        for private in (MARKER, str(state["root"]), "Traceback"):
+            self.assertNotIn(private, output.getvalue())
+        return code, [json.loads(line) for line in output.getvalue().splitlines()]
+
+    def test_qualifier_unchanged_bound_tools_preserve_versions_and_complete_inventory(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows), self.qualifier_fixture(windows) as state:
+                values = qualification.versions(state["workspace"])
+                source = qualification.source_inventory(state["workspace"])
+                bindings = self.bindings(state)
+                self.assertEqual(("a" * 40, "b" * 40), source[:2])
+                self.assertEqual({qualification.identifier(name) for name in qualification.SECURITY_SOURCE_FILES},
+                                 {row["path_sha256"] for row in source[2]})
+                self.assertEqual((bindings["PENNILOGIC_TEST_GIT_SHA256"],
+                                  bindings["PENNILOGIC_TEST_GITLEAKS_SHA256"], "8.30.1"),
+                                 (values["git_sha256"], values["gitleaks_sha256"], values["gitleaks"]))
+                self.assertEqual(list(state["replies"]), [tuple(command) for command in state["calls"]])
+
+    def test_qualifier_rechecks_after_every_bound_version_and_inventory_command(self):
+        for windows in (False, True):
+            for index in range(7):
+                with self.subTest(windows=windows, index=index), self.qualifier_fixture(windows) as state:
+                    targets = [command for command in state["replies"]
+                               if command[0] in (str(state["git"]), str(state["scanner"]))]
+                    target = targets[index]
+
+                    def replace(command):
+                        if tuple(command) == target:
+                            tool = "git" if command[0] == str(state["git"]) else "scanner"
+                            self.change_qualifier_binding(state, tool, "bytes")
+
+                    state["on_qualifier_probe"] = replace
+                    operation = qualification.versions if index < 2 else qualification.source_inventory
+                    with self.assertRaisesRegex(qualification.Refused, "security-tool-digest-changed"):
+                        operation(state["workspace"])
+                    self.assertEqual(target, tuple(state["calls"][-1]))
+
+    def test_qualifier_post_use_path_link_digest_and_binding_failures_are_sanitized(self):
+        for windows in (False, True):
+            for tool in ("git", "scanner"):
+                for case in ("bytes-and-digest", "missing", "directory", "missing-digest", "path",
+                             "noncanonical", "prepared-relocation", "linked-parent"):
+                    with self.subTest(windows=windows, tool=tool, case=case), \
+                            self.qualifier_fixture(windows) as state:
+                        def replace(command):
+                            if command[0] == str(state[tool]):
+                                self.change_qualifier_binding(state, tool, case)
+                                return subprocess.CompletedProcess(
+                                    command, 0, state["replies"][tuple(command)], MARKER.encode(),
+                                )
+
+                        state["on_qualifier_probe"] = replace
+                        code, records = self.qualifier_main(state)
+                        self.assertEqual(1, code)
+                        self.assertEqual("infra_qualification_refused", records[-1]["event"])
+                        self.assertEqual(str(state[tool]), state["calls"][-1][0])
+                        self.assertEqual(1, sum(command[0] == str(state[tool]) for command in state["calls"]))
+
+    def test_qualifier_primary_command_failures_survive_failed_post_use_rechecks(self):
+        for windows in (False, True):
+            for tool in ("git", "scanner"):
+                for failure in ("exit", "os-error", "subprocess-error", "value-error", "interrupt"):
+                    for changed in (False, True):
+                        with self.subTest(windows=windows, tool=tool, failure=failure, changed=changed), \
+                                self.qualifier_fixture(windows) as state:
+                            def fail(command):
+                                if command[0] != str(state[tool]):
+                                    return None
+                                if changed:
+                                    self.change_qualifier_binding(state, tool, "missing")
+                                if failure == "exit":
+                                    return subprocess.CompletedProcess(command, 37, MARKER.encode(), MARKER.encode())
+                                raise {"os-error": OSError, "subprocess-error": subprocess.SubprocessError,
+                                       "value-error": ValueError, "interrupt": KeyboardInterrupt}[failure](MARKER)
+
+                            state["on_qualifier_probe"] = fail
+                            code, records = self.qualifier_main(state)
+                            self.assertEqual(130 if failure == "interrupt" else 1, code)
+                            expected = "qualification-prerequisite-command-failed" if failure == "exit" else (
+                                "qualification-interrupted" if failure == "interrupt" else "process-or-evidence-error"
+                            )
+                            events = ([{"event": "qualification_tool_recheck_refused",
+                                        "code": "post-use-security-tool-binding-invalid"}] if changed else [])
+                            self.assertEqual([*events, {"event": "infra_qualification_refused", "code": expected}],
+                                             records)
+                            self.assertEqual(str(state[tool]), state["calls"][-1][0])
+
+    def test_qualifier_retains_original_bindings_across_versions_and_both_inventories(self):
+        identity = "test_binding_inventory.ControlTests.test_pass"
+        for windows in (False, True):
+            for phase in ("unchanged", "after-versions", "during-discovery"):
+                for case in ("bytes-and-digest", "prepared-relocation"):
+                    with self.subTest(windows=windows, phase=phase, case=case), \
+                            self.qualifier_fixture(windows) as state:
+                        def change():
+                            self.change_qualifier_binding(state, "scanner", case)
+                            qualification.security_tools(state["workspace"])
+
+                        class ChangeAfterRead(bytes):
+                            def strip(self, *args, **kwargs):
+                                change()
+                                return super().strip(*args, **kwargs)
+
+                        if phase == "after-versions":
+                            def reply(command):
+                                if command[0] == str(state["scanner"]):
+                                    return subprocess.CompletedProcess(command, 0, ChangeAfterRead(b"8.30.1\n"), b"")
+
+                            state["on_qualifier_probe"] = reply
+                        elif phase == "during-discovery":
+                            state["on_discovery"] = change
+                        with mock.patch.object(qualification, "discovery_inventory", return_value={
+                                qualification.identifier(identity): identity,
+                        }), mock.patch.object(qualification, "SKIPS", {
+                            "win32": {"governance": set()}, "linux": {"governance": set()},
+                        }):
+                            code, records = self.qualifier_main(state)
+                        if phase == "unchanged":
+                            self.assertEqual(0, code)
+                            self.assertEqual({"event": "infra_qualification", "suite": "governance", "ok": True,
+                                              "tests": 1, "skipped": 0}, records[-1])
+                            git_count = 11
+                        else:
+                            self.assertEqual(1, code)
+                            self.assertEqual({"event": "infra_qualification_refused",
+                                              "code": "security-tool-original-binding-changed"}, records[-1])
+                            git_count = 1 if phase == "after-versions" else 6
+                        self.assertEqual(git_count, sum(command[0] == str(state["git"]) for command in state["calls"]))
 
 
 class PowerShellFixtureDiagnosticTests(unittest.TestCase):
@@ -479,6 +1342,76 @@ class InfraDiscoveryTests(unittest.TestCase):
                     self.assertTrue(records[-1]["ok"])
                     self.assertEqual(len(qualification.SKIPS[system][suite]), records[-1]["skipped"])
 
+    def test_windows_security_ids_have_only_their_exact_linux_skips_and_windows_passes(self):
+        self.assertEqual(WINDOWS_SECURITY_IDS, qualification.WINDOWS_SECURITY)
+        for system, status, expected in (("win32", "ok", "passed"), ("linux", "skipped 'Windows only'", "skipped")):
+            with self.subTest(system=system):
+                records = self.exercise(system, "scripts", statuses=dict.fromkeys(WINDOWS_SECURITY_IDS, status))
+                outcomes = {row["id_sha256"]: row["outcome"] for row in records if row["event"] == "test_outcome"}
+                for name in WINDOWS_SECURITY_IDS:
+                    self.assertEqual(expected, outcomes[qualification.identifier(name)])
+                self.assertTrue(records[-1]["ok"])
+        self.assertTrue(WINDOWS_SECURITY_IDS.isdisjoint(qualification.SKIPS["win32"]["scripts"]))
+        self.assertEqual(qualification.WINDOWS_SCRIPTS | WINDOWS_SECURITY_IDS,
+                         qualification.SKIPS["linux"]["scripts"])
+
+    def test_missing_security_ids_cannot_be_hidden_from_discovery_or_its_result(self):
+        class InventoryCase(unittest.TestCase):
+            def __init__(self, name):
+                super().__init__()
+                self.name = name
+
+            def id(self):
+                return self.name
+
+            def runTest(self):
+                self.fail("inventory must not execute test bodies")
+
+        for system in ("win32", "linux"):
+            for missing in sorted(WINDOWS_SECURITY_IDS):
+                loader = mock.Mock(errors=[])
+                loader.discover.return_value = unittest.TestSuite(
+                    InventoryCase(name) for name in sorted(qualification.REQUIRED["scripts"] - {missing})
+                )
+                with self.subTest(system=system, missing=missing), \
+                        mock.patch.object(qualification.sys, "platform", system), \
+                        mock.patch.object(qualification.unittest, "TestLoader", return_value=loader):
+                    with self.assertRaisesRegex(qualification.Refused, "full-discovery-inventory-is-incomplete"):
+                        qualification.discovery_inventory(Path.cwd(), "scripts")
+                with self.subTest(system=system, omitted=missing), \
+                        self.assertRaisesRegex(qualification.Refused, "executed-test-ids-differ-from-full-discovery"):
+                    self.exercise(system, "scripts", omitted={missing})
+
+    def test_wrong_platform_extra_skip_and_false_green_security_outcomes_are_refused(self):
+        for system, wrong in (("win32", "skipped 'not admitted'"), ("linux", "ok")):
+            for name in sorted(WINDOWS_SECURITY_IDS):
+                for status in (wrong, "FAIL", "ERROR", "expected failure", "unexpected success"):
+                    with self.subTest(system=system, name=name, status=status), \
+                            self.assertRaises(qualification.Refused):
+                        self.exercise(system, "scripts", statuses={name: status})
+            for name in ("test_security_controls.ScannerBoundaryTests.test_unknown",
+                         "test_unrelated.Example.test_other"):
+                with self.subTest(system=system, unknown=name), \
+                        self.assertRaisesRegex(qualification.Refused, "test-outcome-differs-from-exact-platform"):
+                    self.exercise(system, "scripts", extra_names={name}, statuses={name: "skipped 'unknown'"})
+
+    def test_required_security_platform_ids_match_the_actual_three_decorated_methods(self):
+        source = ast.parse((support.GOVERNANCE.parent / "scripts/tests/test_security_controls.py").read_text(
+            encoding="utf-8",
+        ))
+        actual = set()
+        for cls in source.body:
+            if isinstance(cls, ast.ClassDef):
+                for method in cls.body:
+                    if isinstance(method, ast.FunctionDef) and any(
+                        "skipUnless" in ast.unparse(decorator) for decorator in method.decorator_list
+                    ):
+                        self.assertEqual(["unittest.skipUnless(os.name == 'nt', "],
+                                         [ast.unparse(decorator).split(", ", 1)[0] + ", "
+                                          for decorator in method.decorator_list])
+                        actual.add("test_security_controls." + cls.name + "." + method.name)
+        self.assertEqual(WINDOWS_SECURITY_IDS, actual)
+
     def test_linux_process_ids_have_exact_platform_outcomes(self):
         for system, status, expected in (("win32", LINUX_PROCESS_SKIP, "skipped"), ("linux", "ok", "passed")):
             with self.subTest(system=system):
@@ -600,20 +1533,61 @@ class InfraDiscoveryTests(unittest.TestCase):
             self.assertNotIn(MARKER, output.getvalue())
 
     def test_source_inventory_requires_clean_full_history_and_the_native_sha(self):
+        listing = b"".join(b"100644 blob " + b"c" * 40 + b"\t" + name.encode() + b"\0"
+                           for name in sorted(qualification.SECURITY_SOURCE_FILES | {"unrelated/file.txt"}))
         replies = [b"a" * 40 + b"\n", b"false\n", b"", b"b" * 40 + b"\n",
-                   b"100644 blob " + b"c" * 40 + b"\tgovernance/qualify.py\0"]
+                   listing]
         with mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), \
-                mock.patch.object(qualification, "checked", side_effect=replies):
+                mock.patch.object(qualification, "security_tools", return_value={"git": "bound-git"}), \
+                mock.patch.object(qualification, "checked", side_effect=replies) as probe:
             head, tree, files = qualification.source_inventory(Path.cwd())
         self.assertEqual(("a" * 40, "b" * 40), (head, tree))
-        self.assertEqual(1, len(files))
+        self.assertEqual(len(qualification.SECURITY_SOURCE_FILES) + 1, len(files))
+        self.assertTrue(all(call.args[0][0] == "bound-git" for call in probe.call_args_list))
         for index, value in ((0, b"d" * 40), (1, b"true\n"), (2, b" M private-file"), (4, b"")):
             changed = list(replies)
             changed[index] = value
             with mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), \
+                    mock.patch.object(qualification, "security_tools", return_value={"git": "bound-git"}), \
                     mock.patch.object(qualification, "checked", side_effect=changed), \
                     self.subTest(index=index), self.assertRaises(qualification.Refused):
                 qualification.source_inventory(Path.cwd())
+
+    def test_source_inventory_requires_the_whole_security_closure_not_changed_files_only(self):
+        for missing in sorted(qualification.SECURITY_SOURCE_FILES):
+            listing = b"".join(b"100644 blob " + b"c" * 40 + b"\t" + name.encode() + b"\0"
+                               for name in sorted(qualification.SECURITY_SOURCE_FILES - {missing}))
+            with self.subTest(missing=missing), mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), \
+                    mock.patch.object(qualification, "security_tools", return_value={"git": "bound-git"}), \
+                    mock.patch.object(qualification, "checked", side_effect=[
+                        b"a" * 40, b"false", b"", b"b" * 40, listing,
+                    ]), self.assertRaisesRegex(qualification.Refused, "security-source-closure-is-incomplete"):
+                qualification.source_inventory(Path.cwd())
+
+    def test_security_closure_contains_static_local_imports_and_the_dynamic_windows_helpers(self):
+        root = support.GOVERNANCE.parent
+        self.assertTrue({
+            "scripts/bootstrap.py", "scripts/smoke_infra.py", "governance/repository-profiles.json",
+            "security/gitleaks.toml", "security/exceptions.json", "security/exceptions.schema.json",
+        } <= qualification.SECURITY_SOURCE_FILES)
+        for relative in sorted(qualification.SECURITY_SOURCE_FILES):
+            path = root / relative
+            self.assertTrue(path.is_file(), relative)
+            if path.suffix != ".py" or "tests" in path.parts:
+                continue
+            candidates = set()
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Import):
+                    candidates.update(name.name for name in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    candidates.add(node.module)
+                    candidates.update(node.module + "." + name.name for name in node.names)
+            for name in candidates:
+                for prefix in (root / "scripts", root / "governance"):
+                    module = prefix.joinpath(*name.split("."))
+                    for dependency in (module.with_suffix(".py"), module / "__init__.py"):
+                        if dependency.is_file():
+                            self.assertIn(dependency.relative_to(root).as_posix(), qualification.SECURITY_SOURCE_FILES)
 
     def test_real_synthetic_full_discovery_and_class_teardown_failure_are_not_counts_only(self):
         module = "test_qualification_owned_fixture"
@@ -956,10 +1930,14 @@ class InfraDiscoveryTests(unittest.TestCase):
 
 
 class InfraVersionTests(unittest.TestCase):
+    bindings = {"git": "bound-git", "gitleaks": "bound-gitleaks",
+                "git_sha256": "a" * 64, "gitleaks_sha256": "b" * 64}
+
     def environment(self):
         return {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
                 "RUNNER_OS": "Windows", "RUNNER_ARCH": "X64", "GITHUB_REPOSITORY": "PenniLogic/infra",
-                "GITHUB_REPOSITORY_ID": "1394135059", "ImageOS": "win25", "ImageVersion": "20261001.3.2"}
+                "GITHUB_REPOSITORY_ID": "1394135059", "GITHUB_REPOSITORY_OWNER_ID": "335295566",
+                "ImageOS": "win25", "ImageVersion": "20261001.3.2"}
 
     def test_actual_version_formats_and_image_build_identifier_are_required_not_an_image_byte_pin(self):
         for system, runner, image, image_version in (
@@ -978,9 +1956,10 @@ class InfraVersionTests(unittest.TestCase):
                                "ImageVersion": image_version}
                 tools = {"node": str(node), "uv": "uv", "git": "git", "bash": "bash"}
                 replies = [b"v24.14.0\n", b"11.9.0\n", b"uv 0.11.33 (fixture)\n",
-                           b"git version 2.53.0.windows.1\n", b"GNU bash, version 5.2.37(1)-release\n"]
+                           b"git version 2.53.0.windows.1\n", b"GNU bash, version 5.2.37(1)-release\n", b"8.30.1\n"]
                 with mock.patch.dict(os.environ, environment, clear=True), \
                         mock.patch.object(sys, "platform", system), \
+                        mock.patch.object(qualification, "security_tools", return_value=self.bindings), \
                         mock.patch.object(qualification.shutil, "which", side_effect=tools.get), \
                         mock.patch.object(qualification, "checked", side_effect=replies):
                     values = qualification.versions(root)
@@ -989,11 +1968,15 @@ class InfraVersionTests(unittest.TestCase):
                 self.assertEqual(("24.14.0", "11.9.0", "0.11.33", "5.2.37"),
                                  tuple(values[key] for key in ("node", "npm", "uv", "bash")))
                 self.assertNotIn("image_sha256", values)
+                self.assertEqual(("8.30.1", "a" * 64, "b" * 64),
+                                 tuple(values[key] for key in ("gitleaks", "git_sha256", "gitleaks_sha256")))
+                self.assertEqual(qualification.GITLEAKS_ARCHIVE_PINS[system], values["gitleaks_archive_pin"])
                 for index in range(len(replies)):
                     invalid = list(replies)
                     invalid[index] = MARKER.encode()
                     with self.subTest(index=index), mock.patch.dict(os.environ, environment, clear=True), \
                             mock.patch.object(sys, "platform", system), \
+                            mock.patch.object(qualification, "security_tools", return_value=self.bindings), \
                             mock.patch.object(qualification.shutil, "which", side_effect=tools.get), \
                             mock.patch.object(qualification, "checked", side_effect=invalid), \
                             self.assertRaises(qualification.Refused):
@@ -1007,6 +1990,7 @@ class InfraVersionTests(unittest.TestCase):
                                ("GITHUB_ACTIONS", "false"), ("RUNNER_ENVIRONMENT", "self-hosted"),
                                ("RUNNER_OS", "Linux"), ("RUNNER_ARCH", "ARM64"),
                                ("GITHUB_REPOSITORY", "Other/infra"),
+                               ("GITHUB_REPOSITORY_OWNER_ID", "1"),
                                ("GITHUB_REPOSITORY_ID", "1"), ("NODE_OPTIONS", MARKER)):
                 environment = {**self.environment(), "ImageOS": image, key: value}
                 with self.subTest(image=image, key=key), mock.patch.dict(os.environ, environment, clear=True), \
@@ -1025,6 +2009,9 @@ class InfraVersionTests(unittest.TestCase):
                 tools["node"] = None if missing_tool == "node" else str(Path(temporary) / "node.exe")
                 with self.subTest(tool=missing_tool), mock.patch.dict(os.environ, self.environment(), clear=True), \
                         mock.patch.object(sys, "platform", "win32"), \
+                        mock.patch.object(qualification, "security_tools", return_value=self.bindings,
+                                          side_effect=qualification.Refused("missing-git")
+                                          if missing_tool == "git" else None), \
                         mock.patch.object(qualification.shutil, "which", side_effect=tools.get), \
                         mock.patch.object(qualification, "checked") as probe:
                     with self.assertRaises(qualification.Refused):
